@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / Support
+    url: https://github.com/claw-project/claw-kernel/discussions
+    about: Please use GitHub Discussions for questions and support
+  
+  - name: Security Vulnerability
+    url: https://github.com/claw-project/claw-kernel/security
+    about: Please report security vulnerabilities privately
+  
+  - name: Documentation Issue
+    url: https://github.com/claw-project/claw-kernel/issues/new?template=documentation.yml
+    about: Report issues with documentation

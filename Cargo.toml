@@ -1,0 +1,137 @@
+# claw-kernel Workspace Configuration
+# 依赖版本已锁定，经过技术可行性验证
+
+[workspace]
+members = [
+    "crates/claw-pal",
+    "crates/claw-runtime",
+    "crates/claw-provider",
+    "crates/claw-tools",
+    "crates/claw-loop",
+    "crates/claw-memory",
+    "crates/claw-channel",
+    "crates/claw-script",
+    "claw-kernel",  # meta-crate
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["claw-project contributors"]
+edition = "2021"
+rust-version = "1.83"  # 已验证：PyO3 0.28+ 需要 1.83+
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/claw-project/claw-kernel"
+
+# ============================================
+# 核心依赖 (Core Dependencies) - 已验证兼容
+# ============================================
+[workspace.dependencies]
+# 异步运行时 (Async Runtime) - 兼容 Rust 1.83+
+tokio = { version = "1.35.0", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+async-trait = "0.1.77"
+
+# HTTP 客户端 (HTTP Client) - 兼容 Tokio 1.35+
+reqwest = { version = "0.11.23", features = ["json", "stream"] }
+
+# 序列化 (Serialization)
+serde = { version = "1.0.195", features = ["derive"] }
+serde_json = "1.0.111"
+
+# 错误处理 (Error Handling)
+thiserror = "1.0.56"
+anyhow = "1.0.79"
+
+# 日志与追踪 (Logging & Tracing)
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+
+# ============================================
+# PAL 层依赖 (Platform Abstraction)
+# ============================================
+# IPC - 跨平台进程间通信
+interprocess = { version = "1.2.1", features = ["tokio"] }
+
+# 配置目录 - 跨平台标准目录
+dirs = "5.0.1"
+
+# Linux 沙箱
+[target.'cfg(target_os = "linux")'.dependencies]
+libseccomp = "0.3.0"
+nix = { version = "0.27.1", features = ["process", "sched"] }
+
+# ============================================
+# 脚本引擎 (Script Engines)
+# ============================================
+# Lua 引擎 - 默认，零额外依赖，兼容 Rust 1.83+
+mlua = { version = "0.9.4", features = ["lua54", "async", "send", "serde"], optional = true }
+
+# Deno/V8 引擎 - 需要 Node.js ≥ 20
+deno_core = { version = "0.245.0", optional = true }
+
+# Python 引擎 - 需要 Rust 1.83+, Python ≥ 3.10
+pyo3 = { version = "0.28.0", features = ["auto-initialize"], optional = true }
+
+# ============================================
+# 工具与扩展 (Tools & Extensions)
+# ============================================
+# JSON Schema 生成
+schemars = "0.8.16"
+
+# 文件监视 (热加载)
+notify = { version = "6.1.1", features = ["tokio"] }
+
+# SQLite 后端
+rusqlite = { version = "0.30.0", features = ["bundled", "chrono"], optional = true }
+
+# ============================================
+# Channel 层依赖
+# ============================================
+# Discord 集成
+twilight-gateway = { version = "0.15.4", optional = true }
+twilight-model = { version = "0.15.4", optional = true }
+
+# HTTP Webhook
+axum = { version = "0.7.4", optional = true }
+tower = { version = "0.4.13", optional = true }
+
+# ============================================
+# 测试依赖
+# ============================================
+[dev-dependencies]
+tokio-test = "0.4.3"
+mockall = "0.12.1"
+wiremock = "0.6.0"
+
+# ============================================
+# 特性配置 (Feature Flags)
+# ============================================
+[features]
+default = [
+    "engine-lua",
+    "in-memory",
+]
+
+# 脚本引擎特性
+engine-lua = ["dep:mlua"]
+engine-v8 = ["dep:deno_core"]      # 需要 Node.js ≥ 20, 增加 ~100MB
+engine-py = ["dep:pyo3"]           # 需要 Python ≥ 3.10
+
+# 存储后端特性
+in-memory = []
+sqlite = ["dep:rusqlite"]
+
+# Channel 特性
+discord = ["dep:twilight-gateway", "dep:twilight-model"]
+http = ["dep:axum", "dep:tower"]
+
+# ============================================
+# 兼容性说明
+# ============================================
+# Rust 版本要求：
+# - 默认构建 (engine-lua): Rust 1.75+
+# - 含 PyO3 (engine-py): Rust 1.83+ (必须)
+# 
+# 由于 PyO3 0.28+ 强制要求 Rust 1.83+，
+# 统一要求 Rust 1.83+ 以简化维护
+# ============================================

@@ -1,0 +1,67 @@
+name: Documentation Issue
+description: Report issues with documentation or suggest improvements
+title: "[Docs]: "
+labels: ["documentation", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping us improve our documentation!
+
+  - type: dropdown
+    id: doc_type
+    attributes:
+      label: Type of documentation issue
+      options:
+        - Typo/grammar error
+        - Missing documentation
+        - Incorrect information
+        - Unclear explanation
+        - Translation issue
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: location
+    attributes:
+      label: Documentation location
+      description: Which file or page contains the issue?
+      placeholder: e.g., README.md, docs/guides/getting-started.md, API docs for claw-tools
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description of the issue
+      description: A clear description of what is wrong or missing.
+      placeholder: The documentation says X but should say Y because...
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested improvement
+      description: How should this be fixed or improved?
+
+  - type: dropdown
+    id: language
+    attributes:
+      label: Affected language
+      options:
+        - English
+        - Chinese
+        - Both
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues and this documentation issue has not been reported
+        - label: I am willing to submit a PR to fix this issue

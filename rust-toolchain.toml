@@ -1,0 +1,12 @@
+[toolchain]
+# Rust 版本锁定
+# PyO3 0.28+ 强制要求 Rust 1.83+
+# 统一使用 1.83 以简化维护
+channel = "1.83"
+components = ["rustfmt", "clippy", "rust-analyzer"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]

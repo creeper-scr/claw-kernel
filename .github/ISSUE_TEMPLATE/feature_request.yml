@@ -1,0 +1,67 @@
+name: Feature Request
+description: Suggest a new feature or enhancement
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to suggest a feature!
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Is your feature request related to a problem?
+      description: A clear and concise description of what the problem is.
+      placeholder: I'm always frustrated when...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Describe the solution you'd like
+      description: A clear and concise description of what you want to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Describe alternatives you've considered
+      description: A clear and concise description of any alternative solutions or features.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Which component(s) would this affect?
+      multiple: true
+      options:
+        - claw-pal (Platform Abstraction)
+        - claw-provider (LLM Provider)
+        - claw-tools (Tool Registry)
+        - claw-loop (Agent Loop)
+        - claw-runtime (Runtime)
+        - claw-script (Script Engine)
+        - claw-kernel (Meta-crate)
+        - Multiple / Core
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: platforms
+    attributes:
+      label: Platform relevance
+      description: Which platform(s) would this feature affect?
+      options:
+        - label: All platforms
+        - label: Linux
+        - label: macOS
+        - label: Windows
+        - label: Not platform specific
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add any other context, code examples, or screenshots about the feature request.

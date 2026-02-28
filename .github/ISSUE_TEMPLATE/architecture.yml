@@ -1,0 +1,87 @@
+name: Architecture Decision / Design Discussion
+description: Propose a significant architectural change or design discussion
+title: "[ADR]: "
+labels: ["adr", "design", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For significant architectural changes, we use Architecture Decision Records (ADRs).
+        This template helps structure the discussion before writing a formal ADR.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What is the issue that we're seeing that is motivating this decision or change?
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem are we trying to solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: options
+    attributes:
+      label: Considered Options
+      description: List the options that have been considered, with pros and cons for each.
+      placeholder: |
+        ### Option 1: ...
+        **Pros:**
+        - ...
+        **Cons:**
+        - ...
+        
+        ### Option 2: ...
+        **Pros:**
+        - ...
+        **Cons:**
+        - ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: recommendation
+    attributes:
+      label: Recommendation
+      description: Which option do you recommend and why?
+    validations:
+      required: true
+
+  - type: textarea
+    id: consequences
+    attributes:
+      label: Consequences
+      description: What are the positive and negative consequences of this decision?
+      placeholder: |
+        **Positive:**
+        - ...
+        
+        **Negative:**
+        - ...
+        
+        **Neutral:**
+        - ...
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ## Next Steps
+        After discussion reaches consensus (typically indicated by a maintainer's approval comment), a formal ADR should be written and submitted via PR to `docs/adr/`.
+        See [docs/adr/README.md](../../docs/adr/README.md) for format guidelines.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have read existing ADRs in docs/adr/
+        - label: This change affects the public API
+        - label: This change affects cross-platform behavior

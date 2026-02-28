@@ -1,0 +1,13 @@
+[package]
+name = "custom-tool"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+claw-kernel = { path = "../../crates/claw-kernel", version = "0.1" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+
+[[bin]]
+name = "custom-tool"
+path = "src/main.rs"
