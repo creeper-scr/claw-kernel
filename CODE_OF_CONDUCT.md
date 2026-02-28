@@ -1,3 +1,14 @@
+---
+title: Code of Conduct
+description: Contributor Covenant Code of Conduct for claw-kernel
+status: active
+version: "2.0"
+last_updated: "2026-02-28"
+language: bilingual
+---
+
+> **Project Status**: Design/Planning Phase — This Code of Conduct applies to all project interactions.
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>
@@ -66,15 +77,15 @@ representative at an online or offline event.
 
 "Community leaders" refer to project maintainers, code reviewers, and designated community moderators. These individuals are responsible for clarifying and enforcing our standards of acceptable behavior.
 
-Current community leaders are listed in [MAINTAINERS.md](MAINTAINERS.md) (if available) or can be identified by the "Maintainer" badge on GitHub.
+Current community leaders are the [@claw-project/maintainers](https://github.com/orgs/claw-project/teams/maintainers) team on GitHub. If the link is inaccessible, you can identify maintainers by the "Maintainer" badge on GitHub issues/PRs.
 
 ### Reporting
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at **conduct@claw-project.dev**.
 
 **Response Time Commitments:**
-- Initial acknowledgment: within 72 hours
-- Investigation completion: within 14 business days
+- Initial acknowledgment: within 72 hours (natural hours, UTC)
+- Investigation completion: within 14 business days (Mon-Fri, UTC)
 - For complex cases, regular updates will be provided to the reporter
 
 All complaints will be reviewed and investigated promptly and fairly.
@@ -207,15 +218,15 @@ https://www.contributor-covenant.org/translations.
 
 "社区领导者"指项目维护者、代码审查员和指定的社区管理员。这些人员负责明确和执行我们可接受行为的标准。
 
-当前社区领导者名单列在 [MAINTAINERS.md](MAINTAINERS.md) 中（如果有）或可通过 GitHub 上的 "Maintainer" 徽章识别。
+当前社区领导者是 GitHub 上的 [@claw-project/maintainers](https://github.com/orgs/claw-project/teams/maintainers) 团队。如果链接无法访问，您可以通过 GitHub issues/PRs 上的 "Maintainer" 徽章识别维护者。
 
 ### 举报方式
 
 辱骂、骚扰或其他不可接受行为的实例可以向负责执行的社区领导者报告，邮箱为 **conduct@claw-project.dev**。
 
 **响应时间承诺：**
-- 初次确认：72 小时内
-- 调查完成：14 个工作日内
+- 初次确认：72 小时内（自然小时，UTC）
+- 调查完成：14 个工作日内（周一至周五，UTC）
 - 对于复杂案件，将定期向举报人提供进展更新
 
 所有投诉都将得到及时和公平的审查和调查。

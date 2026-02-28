@@ -1,3 +1,10 @@
+---
+title: "ADR-004: Tool Hot-Loading"
+type: adr
+status: accepted
+date: "2026-02-28"
+---
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>
@@ -49,10 +56,10 @@ Tool registered & available immediately
 ```
 
 **Kernel Responsibility Boundary:**
-- ✅ Provide hot-loading mechanism (watcher, validation, compilation)
-- ✅ Ensure safe execution (sandbox, permission audit)
-- ❌ Decide what/when to load (application layer decision)
-- ❌ Implement self-evolution logic (out of scope for kernel)
+- Yes Provide hot-loading mechanism (watcher, validation, compilation)
+- Yes Ensure safe execution (sandbox, permission audit)
+- No Decide what/when to load (application layer decision)
+- No Implement self-evolution logic (out of scope for kernel)
 
 > **Note on Layer Boundary:** Hot-loading is a **Layer 3 (Extension Foundation)** kernel capability. How applications use this capability (e.g., for self-evolving agents, plugin systems) is an application-layer concern (Layers 4-5), not part of the kernel.
 
@@ -304,10 +311,10 @@ ScriptEngine 编译
 ```
 
 **内核职责边界：**
-- ✅ 提供热加载机制（监听器、验证、编译）
-- ✅ 确保安全执行（沙箱、权限审计）
-- ❌ 决定加载什么/何时加载（应用层决策）
-- ❌ 实现自进化逻辑（超出内核范围）
+- Yes 提供热加载机制（监听器、验证、编译）
+- Yes 确保安全执行（沙箱、权限审计）
+- No 决定加载什么/何时加载（应用层决策）
+- No 实现自进化逻辑（超出内核范围）
 
 > **分层边界说明：** 热加载是**第 3 层（扩展基础 / Extension Foundation）**的内核能力。应用如何使用此能力（例如，用于自进化智能体、插件系统）是应用层（第 4-5 层）的问题，不属于内核的一部分。
 

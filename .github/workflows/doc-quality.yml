@@ -1,0 +1,348 @@
+---
+# Document Quality CI Pipeline
+# 文档质量持续集成检查
+# 
+# 触发条件:
+# - 任何文档变更 (*.md)
+# - 手动触发 (workflow_dispatch)
+# - 定时检查 (每周一)
+
+name: Document Quality Check
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - '**.md'
+      - '.github/workflows/doc-quality.yml'
+      - 'scripts/doc-checks/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.md'
+      - '.github/workflows/doc-quality.yml'
+  workflow_dispatch:
+    inputs:
+      check_type:
+        description: '检查类型 (all/metadata/links/terminology/versions)'
+        required: false
+        default: 'all'
+      fail_level:
+        description: '失败级别 (error/warning)'
+        required: false
+        default: 'error'
+  schedule:
+    # 每周一 00:00 UTC 运行完整检查
+    - cron: '0 0 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_VERSION: "1.83"
+
+jobs:
+  # =============================================================================
+  # Job 1: 元数据完整性检查 (Metadata Integrity)
+  # =============================================================================
+  check-metadata:
+    name: Check YAML Front Matter
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install pyyaml
+
+      - name: Check metadata integrity
+        id: metadata
+        run: |
+          python scripts/doc-checks/check_metadata.py \
+            --format github \
+            --output metadata-report.json \
+            || echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Upload metadata report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metadata-report
+          path: metadata-report.json
+          retention-days: 30
+
+      - name: Comment PR (if failed)
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = JSON.parse(fs.readFileSync('metadata-report.json', 'utf8'));
+            const body = `## 📋 元数据检查报告\n\n` + 
+              report.errors.map(e => `- ❌ ${e.file}: ${e.message}`).join('\n');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+  # =============================================================================
+  # Job 2: 死链接检查 (Dead Links)
+  # =============================================================================
+  check-links:
+    name: Check Dead Links
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install markdown-link-check
+        run: |
+          npm install -g markdown-link-check@3.12.2
+
+      - name: Check internal links
+        run: |
+          python scripts/doc-checks/check_internal_links.py \
+            --format github \
+            --output link-report.json
+
+      - name: Check external links (scheduled only)
+        if: github.event_name == 'schedule' || github.event.inputs.check_type == 'links'
+        run: |
+          # 仅定时检查外部链接（避免 CI 中频繁网络请求）
+          find . -name "*.md" -not -path "./node_modules/*" -exec \
+            markdown-link-check --config .markdown-link-check.json {} \; \
+            || true  # 外部链接失败不阻断 CI
+
+      - name: Upload link report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: link-report
+          path: link-report.json
+          retention-days: 30
+
+  # =============================================================================
+  # Job 3: 术语一致性检查 (Terminology Consistency)
+  # =============================================================================
+  check-terminology:
+    name: Check Terminology
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check terminology consistency
+        run: |
+          python scripts/doc-checks/check_terminology.py \
+            --terminology docs/terminology.md \
+            --format github \
+            --output terminology-report.json
+
+      - name: Upload terminology report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terminology-report
+          path: terminology-report.json
+          retention-days: 30
+
+  # =============================================================================
+  # Job 4: 版本号同步检查 (Version Consistency)
+  # =============================================================================
+  check-versions:
+    name: Check Version Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check version consistency
+        run: |
+          python scripts/doc-checks/check_versions.py \
+            --config scripts/doc-checks/version-config.yaml \
+            --format github \
+            --output version-report.json
+
+      - name: Upload version report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: version-report
+          path: version-report.json
+          retention-days: 30
+
+  # =============================================================================
+  # Job 5: 双语文档同步检查 (Bilingual Sync)
+  # =============================================================================
+  check-bilingual:
+    name: Check Bilingual Sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check bilingual consistency
+        run: |
+          python scripts/doc-checks/check_bilingual.py \
+            --format github \
+            --output bilingual-report.json
+
+      - name: Upload bilingual report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bilingual-report
+          path: bilingual-report.json
+          retention-days: 30
+
+  # =============================================================================
+  # Job 6: 综合报告生成
+  # =============================================================================
+  generate-report:
+    name: Generate Quality Report
+    runs-on: ubuntu-latest
+    needs: [check-metadata, check-links, check-terminology, check-versions, check-bilingual]
+    if: always()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: reports
+          merge-multiple: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Generate consolidated report
+        run: |
+          python scripts/doc-checks/generate_report.py \
+            --input-dir reports \
+            --output doc-quality-report.md \
+            --format markdown
+
+      - name: Upload consolidated report
+        uses: actions/upload-artifact@v4
+        with:
+          name: consolidated-report
+          path: doc-quality-report.md
+          retention-days: 90
+
+      - name: Comment PR with report
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('doc-quality-report.md', 'utf8');
+            
+            // 截断过长报告
+            const maxLength = 65000;
+            const body = report.length > maxLength 
+              ? report.substring(0, maxLength) + '\n\n... (报告已截断，查看完整报告请下载 artifacts)'
+              : report;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      - name: Check overall status
+        run: |
+          # 如果有任何检查失败，则整体失败
+          if [ "${{ needs.check-metadata.result }}" == "failure" ] || \
+             [ "${{ needs.check-links.result }}" == "failure" ] || \
+             [ "${{ needs.check-terminology.result }}" == "failure" ] || \
+             [ "${{ needs.check-versions.result }}" == "failure" ] || \
+             [ "${{ needs.check-bilingual.result }}" == "failure" ]; then
+            echo "❌ 文档质量检查未通过"
+            exit 1
+          fi
+          echo "✅ 所有文档质量检查通过"
+
+  # =============================================================================
+  # Job 7: 更新 last_updated 字段 (仅限主分支推送)
+  # =============================================================================
+  update-timestamps:
+    name: Update Document Timestamps
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [generate-report]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Check for stale timestamps
+        id: check_stale
+        run: |
+          python scripts/doc-checks/update_timestamps.py \
+            --check-only \
+            --max-age-days 7 \
+            --output stale-files.txt
+          
+          if [ -s stale-files.txt ]; then
+            echo "has_stale=true" >> $GITHUB_OUTPUT
+            echo "files=$(cat stale-files.txt | tr '\n' ' ')" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update timestamps
+        if: steps.check_stale.outputs.has_stale == 'true'
+        run: |
+          python scripts/doc-checks/update_timestamps.py \
+            --files stale-files.txt
+          
+          # 提交变更
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add -A
+          git commit -m "docs: auto-update document timestamps [skip ci]" || exit 0
+          git push

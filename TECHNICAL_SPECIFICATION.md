@@ -1,8 +1,18 @@
+---
+title: claw-kernel Technical Specification
+description: Locked technical choices, version requirements, and compatibility constraints
+status: design-phase
+version: "1.0"
+last_updated: "2026-02-28"
+---
+
+> **Project Status**: Design/Planning Phase — Specifications are defined but implementation has not started.
+
 # claw-kernel 技术规格说明书
 # Technical Specification
 
-> 本文档锁定所有技术选型、版本要求和兼容性约束
-> 版本：v1.0 | 日期：2026-02-28
+**目标**：锁定所有技术选型、版本要求和兼容性约束  
+**版本**：v1.0 | **日期**：2026-02-28
 
 ---
 
@@ -137,11 +147,14 @@ tower = { version = "0.4.13", optional = true }
 
 | 配置 | 特性 | 适用场景 | 构建时间 | 二进制大小 |
 |------|------|----------|----------|------------|
-| **minimal** | `engine-lua` | 原型开发、简单工具 | < 2 min | ~5 MB |
-| **default** | `engine-lua`, `sqlite` | 生产环境、持久化 | < 3 min | ~8 MB |
-| **full-js** | `engine-lua`, `engine-v8`, `sqlite` | 需要 TS/JS 生态 | ~30 min | 约100-110MB（视平台而定） |
-| **ml-ready** | `engine-lua`, `engine-py`, `sqlite` | ML 集成 | ~10 min | ~50 MB |
-| **complete** | 全部 | 完整功能 | ~35 min | ~120 MB |
+| **minimal** | `engine-lua` | 原型开发、简单工具 | < 2 min* | ~5 MB |
+| **default** | `engine-lua`, `sqlite` | 生产环境、持久化 | < 3 min* | ~8 MB |
+| **full-js** | `engine-lua`, `engine-v8`, `sqlite` | 需要 TS/JS 生态 | ~30 min* | ~100-110 MB** |
+| **ml-ready** | `engine-lua`, `engine-py`, `sqlite` | ML 集成 | ~10 min* | ~50 MB |
+| **complete** | 全部 | 完整功能 | ~35 min* | ~120 MB |
+
+*构建时间基准：AMD Ryzen 5 5600X, 32GB RAM, SSD, 首次构建（无 sccache）  
+**二进制大小（release, stripped）：Linux ~100 MB, macOS ~105 MB, Windows ~110 MB
 
 ### 3.2 特性依赖关系
 
@@ -249,10 +262,10 @@ full
 
 | 资源 | 默认策略 | 可配置 |
 |------|----------|--------|
-| 文件系统 | 允许列表只读 | ✅ 可添加读写目录 |
-| 网络 | 域名/端口允许列表 | ✅ 可添加端点 |
-| 子进程 | 完全禁止 | ❌ 不可配置 |
-| 系统调用 | 过滤危险调用 | ✅ 可自定义策略 |
+| 文件系统 | 允许列表只读 | Yes 可添加读写目录 |
+| 网络 | 域名/端口允许列表 | Yes 可添加端点 |
+| 子进程 | 完全禁止 | No 不可配置 |
+| 系统调用 | 过滤危险调用 | Yes 可自定义策略 |
 
 ### 5.2 Power Mode
 
@@ -274,7 +287,8 @@ Safe Mode ──► Power Mode
 ```
 
 **Power Key 机制：**
-- 最小长度：8 位字符
+- 最小长度：12 位字符（2026年安全标准）
+- 复杂度要求：至少包含大写字母、小写字母、数字中的两种
 - 激活方式：
   1. 命令行参数：`--power-mode --power-key <key>`
   2. 环境变量：`CLAW_KERNEL_POWER_KEY=<key>`

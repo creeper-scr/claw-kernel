@@ -1,3 +1,14 @@
+---
+title: Getting Started with claw-kernel
+description: Build your first agent using claw-kernel
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+language: bilingual
+---
+
+> **Project Status**: Design/Planning Phase — This guide shows target API design, not working code.
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>
@@ -8,7 +19,7 @@ This guide will help you build your first agent using claw-kernel.
 
 claw-kernel is a lightweight framework for building LLM-powered agents. It provides core components like provider interfaces, tool systems, and agent loops at Layer 1-3.
 
-> ⚠️ **Note**: This guide shows the **target API design**. The `claw-kernel` crate is not yet implemented. See [BUILD_PLAN.md](../../BUILD_PLAN.md) for the implementation roadmap.
+> [Warning]  **Note**: This guide shows the **target API design**. The `claw-kernel` crate is not yet implemented. See [BUILD_PLAN.md](../../BUILD_PLAN.md) for the implementation roadmap.
 
 ---
 
@@ -210,7 +221,7 @@ async fn main() -> anyhow::Result<()> {
         
         // Print any tool calls that were made
         for call in &response.tool_calls {
-            println!("  [Used tool: {}]", call.tool_name);
+            println!("  [Used tool: {}]", call.name);
         }
     }
     
@@ -459,7 +470,7 @@ async fn main() -> anyhow::Result<()> {
         
         // 打印使用的工具调用
         for call in &response.tool_calls {
-            println!("  [使用工具: {}]", call.tool_name);
+            println!("  [使用工具: {}]", call.name);
         }
     }
     

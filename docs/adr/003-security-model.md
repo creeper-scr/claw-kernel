@@ -1,3 +1,10 @@
+---
+title: "ADR-003: Dual-Mode Security"
+type: adr
+status: accepted
+date: "2026-02-28"
+---
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>
@@ -368,13 +375,13 @@ impl PowerKey {
 ```bash
 # 用户设置自己的 power key
 claw-kernel --set-power-key
-Enter new power key（最少 8 位字符）: ********
+Enter new power key（最少 12 位字符）: ********
 Confirm power key: ********
 Power key set successfully.
 ```
 
 **要求**：
-- 最小长度：**8 位字符**
+- 最小长度：**12 位字符**（2026年安全标准）
 - 用户自定义（非系统生成）
 - 以 Argon2 哈希存储（非明文）
 

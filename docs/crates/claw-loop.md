@@ -1,3 +1,11 @@
+---
+title: claw-loop
+description: "Agent loop engine, history management, stop conditions"
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+---
+
 # claw-loop
 
 > **Layer 2: Agent Kernel Protocol** — Agent loop engine for multi-turn conversations  

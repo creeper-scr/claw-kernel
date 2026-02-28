@@ -1,3 +1,11 @@
+---
+title: claw-tools
+description: "Tool registry, hot-loading, schema generation"
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+---
+
 # claw-tools
 
 > **Layer 2: Agent Kernel Protocol** — Tool registry and hot-loading  

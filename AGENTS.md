@@ -1,10 +1,19 @@
+---
+title: claw-kernel Project Guide for AI Agents
+description: Comprehensive guide for AI coding agents working on claw-kernel
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+language: en
+---
+
 # claw-kernel Project Guide for AI Agents
 
 > The shared foundation for the Claw ecosystem — a cross-platform Agent Kernel built in Rust with embedded scripting and hot-loading capabilities.
 
 **Language:** English (primary), Chinese (secondary in documentation)  
 **License:** MIT OR Apache-2.0  
-**Status:** Design/Planning Stage — `crates/` directory is empty, no implementation started yet
+**Status:** Design/Planning Phase — `crates/` directory is empty, no implementation started yet
 
 ---
 
@@ -37,7 +46,7 @@ claw-kernel is a shared infrastructure library for the Claw ecosystem — a coll
 
 ### Optional Dependencies (Feature-gated)
 
-- **Deno/V8 engine (`engine-v8`):** Node.js ≥ 20, adds ~100MB to binary
+- **Deno/V8 engine (`engine-v8`):** Node.js ≥ 20, adds ~100MB to binary (measured on Linux x86_64 release build; actual size depends on platform and build options)
   - *术语说明："Deno/V8" 用于用户文档表示 Deno 项目基于 V8 引擎；`engine-v8` 用于 Cargo 特性标志*
 - **Python engine (`engine-py`):** Python ≥ 3.10, for ML ecosystem integration
 
@@ -77,9 +86,9 @@ The project follows a 5-layer architecture:
 
 | Platform | Sandbox Backend | Status |
 |----------|-----------------|--------|
-| Linux | seccomp-bpf + Namespaces | Strongest isolation (最强隔离) |
-| macOS | sandbox(7) profile (Seatbelt) | Medium isolation (中等隔离) |
-| Windows | AppContainer + Job Objects | Medium isolation (中等隔离) |
+| Linux | seccomp-bpf + Namespaces | 最强隔离 (Strongest) |
+| macOS | sandbox(7) profile (Seatbelt) | 中等隔离 (Medium) |
+| Windows | AppContainer + Job Objects | 中等隔离 (Medium) |
 
 ---
 
@@ -109,7 +118,7 @@ claw-kernel/
 │   ├── guides/           # User-facing how-to guides
 │   │   ├── getting-started.md
 │   │   ├── writing-tools.md
-│   │   ├── extension.md
+│   │   ├── extension-capabilities.md
 │   │   ├── safe-mode.md
 │   │   └── power-mode.md
 │   ├── crates/           # Per-crate documentation
@@ -218,7 +227,7 @@ sudo pacman -S libseccomp
 # Default build (Lua engine only, zero extra dependencies)
 cargo build
 
-# With Deno/V8 engine (downloads precompiled V8, may take a few minutes)
+# With Deno/V8 engine (downloads precompiled V8, typically 5-15 min depending on network)
 cargo build --features engine-v8
 
 # With Python engine
@@ -292,12 +301,12 @@ cargo audit
 
 | Crate | Unit Tests | Integration | Platform Tests |
 |-------|:----------:|:-----------:|:--------------:|
-| claw-pal | ✅ | ✅ | Required per-platform |
-| claw-provider | ✅ | ✅ (mock HTTP) | N/A |
-| claw-tools | ✅ | ✅ | N/A |
-| claw-loop | ✅ | ✅ | N/A |
-| claw-runtime | ✅ | ✅ | Required |
-| claw-script | ✅ | ✅ | Required per-engine |
+| claw-pal | Yes | Yes | Must run on Linux, macOS, and Windows separately |
+| claw-provider | Yes | Yes (mock HTTP) | N/A |
+| claw-tools | Yes | Yes | N/A |
+| claw-loop | Yes | Yes | N/A |
+| claw-runtime | Yes | Yes | Required |
+| claw-script | Yes | Yes | Must run on Linux, macOS, and Windows separately |
 
 ---
 
@@ -310,7 +319,7 @@ cargo audit
 | File System | Allowlist read-only | Full access |
 | Network | Domain/port rules | Unrestricted |
 | Subprocess | Blocked | Allowed |
-| Script Self-Mod | Allowed (sandboxed) | Allowed (global) [^1] |
+| Script Self-Mod | Allowed (sandboxed) | Allowed (unrestricted: scripts can modify any accessible file system location) [^1] |
 | Kernel Access | Blocked | Blocked (hard constraint) |
 
 [^1]: *脚本自修改指脚本代码动态生成和加载新工具，不涉及修改运行时引擎*
@@ -336,7 +345,7 @@ Power Key 由用户自定义设置，用于从 Safe Mode 切换到 Power Mode。
 ```bash
 # 设置 Power Key（首次使用或重置）
 claw-kernel --set-power-key
-Enter new power key (min 8 chars): ********
+Enter new power key (min 12 chars): ********
 Confirm power key: ********
 Power key set successfully.
 
@@ -352,8 +361,10 @@ claw-kernel --power-mode
 ```
 
 **要求**：
-- Power Key 最小长度：**8 位字符**
-- 实际安全性依赖用户选择的密码复杂度
+- Power Key 最小长度：**12 位字符**（2026年安全标准）
+- 复杂度要求：至少包含大写字母、小写字母、数字中的两种
+- 安全建议：使用 16+ 位随机生成密码或密码管理器
+- 安全依据：基于现代离线暴力破解能力（~10^14 次/秒），12位混合密码提供 ~80位熵
 - 遗忘 Power Key 后，只能通过 `--reset-power-key` 重置，这将丢失 Power Mode 的访问权限
 
 ### Security Guarantees (Safe Mode)
@@ -375,7 +386,7 @@ claw-kernel --power-mode
 
 日志位置：`~/.local/share/claw-kernel/logs/audit.log`
 保留策略：按时间限制（默认 **30 天**，可通过配置调整）
-日志级别：minimal（仅关键事件）、verbose（完整参数）
+日志级别：minimal（仅记录：模式切换、权限变更、安全事件）、verbose（额外记录：工具调用参数、网络请求详情、文件访问路径）
 
 ```rust
 // 配置审计日志保留时间
@@ -433,7 +444,7 @@ Extensibility Cycle (Application Layer):
 - Hot-loading of tool scripts without restart
 - Dynamic tool registration via ToolRegistry
 - Script runtime environment (Lua/V8/Python)
-- File watching for automatic reload
+- File watching for automatic reload (based on file content change detection, 50ms debounce by default)
 - Sandboxed execution environment
 
 **Implemented by Applications:**
@@ -506,11 +517,13 @@ ADR format: **Context → Decision → Consequences**
 | [Crate Map](docs/architecture/crate-map.md) | Dependency graph of all crates |
 | [Getting Started](docs/guides/getting-started.md) | Build your first agent |
 | [Writing Tools](docs/guides/writing-tools.md) | Create custom tools with scripts |
-| [Extension Capabilities](docs/guides/extension-capabilities.md) | Application extensibility guide |
+| [Extension Capabilities](docs/guides/extension-capabilities.md) | Extension points and runtime evolution |
 | [Safe Mode](docs/guides/safe-mode.md) | Secure your agent |
 | [Power Mode](docs/guides/power-mode.md) | Full system access guide |
 | [Contributing](CONTRIBUTING.md) | Contribution guidelines |
 | [Build Plan](BUILD_PLAN.md) | Detailed Chinese build roadmap |
+| [Agent Loop State Machine](docs/design/agent-loop-state-machine.md) | Agent loop execution algorithm and state transitions |
+| [Channel Message Protocol](docs/design/channel-message-protocol.md) | ChannelMessage type definition and platform mappings |
 
 ---
 
@@ -530,14 +543,15 @@ ADR format: **Context → Decision → Consequences**
 
 7. **Testing:** Every crate must have both unit tests and integration tests. Platform-specific code in `claw-pal` requires tests on all three platforms.
 
-8. **Build Order:** Follow the build plan order:
+8. **Build Order:** Follow the build plan order (8 phases):
    - Phase 1: claw-pal (Layer 0.5)
    - Phase 2: claw-runtime (Layer 1)
    - Phase 3: claw-provider + claw-tools (Layer 2, Part 1)
    - Phase 4: claw-loop (Layer 2, Part 2)
    - Phase 5: claw-script (Layer 3)
-   - Phase 6: Examples and application patterns
-   - Phase 7: Meta-crate claw-kernel
+   - Phase 6: claw-channel (Channel Integrations)
+   - Phase 7: Examples and Documentation
+   - Phase 8: Meta-crate claw-kernel
 
 9. **Interface First:** Define traits before implementations. See BUILD_PLAN.md for the detailed trait specifications.
 

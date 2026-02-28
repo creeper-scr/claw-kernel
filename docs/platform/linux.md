@@ -1,3 +1,11 @@
+---
+title: Linux Platform Guide
+description: Linux platform guide (seccomp-bpf + Namespaces)
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+---
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>
@@ -29,7 +37,7 @@ claw-kernel 采用五层架构：
 - **Layer 0.5**: Platform Abstraction Layer (PAL) — 平台特定代码（本文档）
 - **Layer 1-3**: System Runtime / Agent Kernel Protocol / Script Runtime — 平台无关，通过 PAL trait 使用平台功能
 
-> **Zero Platform Assumptions**: Layer 0-3 的所有代码都是平台无关的。只有 PAL (Layer 0.5) 包含平台特定实现。Linux 特定的沙盒、IPC 和配置目录代码都隔离在 `claw-pal` crate 的 Linux 模块中。
+> **Zero Platform Assumptions**: Layer 0-3 的所有代码都是平台无关的。只有 PAL (Layer 0.5) 包含平台特定实现。Linux 特定的沙箱、IPC 和配置目录代码都隔离在 `claw-pal` crate 的 Linux 模块中。
 
 ---
 
@@ -266,7 +274,7 @@ docker run --security-opt seccomp=unconfined my-agent
 <a name="chinese"></a>
 # Linux 平台指南
 
-Linux 通过 seccomp-bpf 和命名空间为 claw-kernel 提供了最强大的沙盒功能。
+Linux 通过 seccomp-bpf 和命名空间为 claw-kernel 提供了最强大的沙箱功能。
 
 ---
 
@@ -293,7 +301,7 @@ sudo pacman -S libseccomp
 
 ---
 
-## 沙盒实现
+## 沙箱实现
 
 Linux 使用 **seccomp-bpf** + **命名空间**：
 
@@ -359,14 +367,14 @@ SandboxConfig::safe_mode()
 # 运行所有测试
 cargo test --workspace
 
-# 沙盒特定测试
+# 沙箱特定测试
 cargo test --features sandbox-tests
 
 # 禁用用户命名空间时测试
 unshare -U cargo test
 ```
 
-### 验证沙盒
+### 验证沙箱
 
 ```bash
 # 检查 seccomp 是否激活
@@ -404,7 +412,7 @@ sudo sysctl kernel.unprivileged_userns_clone=1
 
 ### AppArmor/SELinux 冲突
 
-如果沙盒行为异常：
+如果沙箱行为异常：
 
 ```bash
 # 检查拒绝日志
@@ -424,7 +432,9 @@ Linux 提供最佳性能：
 
 | 指标 | 数值 |
 |-----|------|
-| 沙盒开销 | <1毫秒 |
+| 沙箱开销 | <1ms per syscall* |
+
+*测试条件：Intel i7-1165G7, Ubuntu 22.04, seccomp-bpf 过滤模式
 | IPC 延迟 | ~10微秒（UDS） |
 | 上下文切换 | 最快（原生） |
 

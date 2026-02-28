@@ -1,3 +1,10 @@
+---
+title: "ADR-005: IPC and Multi-Agent"
+type: adr
+status: accepted
+date: "2026-02-28"
+---
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>

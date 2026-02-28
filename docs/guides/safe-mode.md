@@ -1,3 +1,11 @@
+---
+title: Safe Mode Guide
+description: Safe mode configuration and sandboxing guide
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+---
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>
@@ -6,7 +14,7 @@
 
 Safe Mode is the kernel's sandbox feature (Layer 0.5). It provides sandboxed execution suitable for running LLM-generated code safely.
 
-> ⚠️ **Note**: This guide shows the **target API design**. The `claw-kernel` crate is not yet implemented.
+> [Warning]  **Note**: This guide shows the **target API design**. The `claw-kernel` crate is not yet implemented.
 
 ---
 
@@ -48,9 +56,9 @@ Effective Permission = Tool Declaration ∩ Sandbox Configuration
 
 | Scenario | Tool Declaration | Sandbox Config | Result |
 |----------|------------------|----------------|--------|
-| ✓ Consistent | `fs.read` | `/home/user` readable | Works |
-| ✓ Tool more restrictive | `fs.read` (declares only) | `/home/user` readable | Works |
-| ❌ Tool exceeds sandbox | `fs.write` | Read-only | **Static error at registration** |
+| Yes Consistent | `fs.read` | `/home/user` readable | Works |
+| Yes Tool more restrictive | `fs.read` (declares only) | `/home/user` readable | Works |
+| No Tool exceeds sandbox | `fs.write` | Read-only | **Static error at registration** |
 
 ### Tool Registration Time Check
 
@@ -375,7 +383,7 @@ RUST_LOG=claw_pal=debug cargo run
 
 # 安全模式指南
 
-安全模式是内核的沙箱功能（Layer 0.5）。它提供沙盒执行环境，适合安全地运行 LLM 生成的代码。
+安全模式是内核的沙箱功能（Layer 0.5）。它提供沙箱执行环境，适合安全地运行 LLM 生成的代码。
 
 ---
 
@@ -417,9 +425,9 @@ RUST_LOG=claw_pal=debug cargo run
 
 | 场景 | 工具声明 | 沙箱配置 | 结果 |
 |------|----------|----------|------|
-| ✓ 一致 | `fs.read` | `/home/user` 可读 | 正常工作 |
-| ✓ 工具更严格 | `fs.read`（仅声明） | `/home/user` 可读 | 正常工作 |
-| ❌ 工具超出沙箱 | `fs.write` | 只读 | **注册时静态错误** |
+| Yes 一致 | `fs.read` | `/home/user` 可读 | 正常工作 |
+| Yes 工具更严格 | `fs.read`（仅声明） | `/home/user` 可读 | 正常工作 |
+| No 工具超出沙箱 | `fs.write` | 只读 | **注册时静态错误** |
 
 ### 工具注册时检查
 
@@ -526,11 +534,11 @@ ports = [80, 443]
 
 ---
 
-## 平台特定的沙盒
+## 平台特定的沙箱
 
 ### Linux（seccomp + namespaces）
 
-最强的沙盒：
+最强的沙箱：
 
 ```rust
 // 自动使用：
@@ -542,10 +550,10 @@ ports = [80, 443]
 
 ### macOS（sandbox profile）
 
-使用原生 macOS 沙盒：
+使用原生 macOS 沙箱：
 
 ```rust
-// 生成类似以下的沙盒配置文件：
+// 生成类似以下的沙箱配置文件：
 // (version 1)
 // (allow default)
 // (deny network-outbound)
@@ -574,7 +582,7 @@ ports = [80, 443]
 ```lua
 -- test_restrictions.lua
 -- @name test_restrictions
--- @description 测试沙盒限制
+-- @description 测试沙箱限制
 -- @permissions fs.read, net.http
 
 function M.execute(params)
@@ -736,4 +744,4 @@ RUST_LOG=claw_pal=debug cargo run
 
 - [强力模式指南](power-mode.md) — 获取完全系统访问权限
 - [安全策略](../../SECURITY.md) — 安全模型详情
-- [平台特定指南](../platform/) — 操作系统特定的沙盒行为
+- [平台特定指南](../platform/) — 操作系统特定的沙箱行为

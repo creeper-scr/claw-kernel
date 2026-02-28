@@ -1,3 +1,11 @@
+---
+title: claw-kernel Terminology Reference
+description: English-Chinese terminology reference for consistent documentation
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+---
+
 # claw-kernel 术语对照表 / Terminology Reference
 
 > 本文档提供 claw-kernel 项目中英文术语对照，确保文档一致性。
@@ -85,11 +93,11 @@
 
 ## 禁止的用法 / Avoid These
 
-| ❌ 避免 | ✅ 使用 |
+| No 避免 | Yes 使用 |
 |---------|---------|
 | Six-Layer Architecture | Five-Layer Architecture |
 | 六层架构 | 五层架构 |
 | engine_lua | engine-lua |
 | hot reload | hot-loading |
-| 沙盒 | 沙箱 (Sandbox) |
+| 沙盒 | 沙箱 (Sandbox) | 避免使用，统一使用"沙箱"
 | 中 (隔离级别) | 中等 (Medium) |

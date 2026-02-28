@@ -1,3 +1,11 @@
+---
+title: claw-runtime
+description: "Event bus, async runtime, multi-agent orchestration"
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+---
+
 # claw-runtime
 
 > **Layer 1: System Runtime** — Event bus, process management, and multi-agent orchestration  

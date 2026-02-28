@@ -1,3 +1,11 @@
+---
+title: Power Mode Guide
+description: Power mode activation and security guide
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+---
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>
@@ -6,7 +14,7 @@
 
 Power Mode grants agents full system access. Use it when you need agents to perform unrestricted automation tasks.
 
-> ⚠️ **Note**: This guide shows the **target API design**. The `claw-kernel` crate is not yet implemented.
+> [Warning]  **Note**: This guide shows the **target API design**. The `claw-kernel` crate is not yet implemented.
 
 ---
 
@@ -333,7 +341,7 @@ docker run --cap-add=ALL claw-agent --power-mode
 | **网络** | 仅允许域名 | 无限制 |
 | **子进程** | 被阻止 | 允许 |
 | **系统调用** | 被过滤 | 无限制 |
-| **可扩展性** | 沙盒限制 | 完整能力 |
+| **可扩展性** | 沙箱 (Sandbox)限制 | 完整能力 |
 
 **使用场景：**
 - 系统管理自动化

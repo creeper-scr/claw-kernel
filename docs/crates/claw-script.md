@@ -1,3 +1,11 @@
+---
+title: claw-script
+description: "Embedded script engines (Lua default, Deno/V8, PyO3)"
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+---
+
 # claw-script
 
 > **Layer 3: Script Runtime** — Embedded script engines with unified RustBridge API  

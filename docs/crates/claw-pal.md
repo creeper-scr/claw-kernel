@@ -1,3 +1,11 @@
+---
+title: claw-pal
+description: "Platform Abstraction Layer (sandbox, IPC, process)"
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+---
+
 # claw-pal
 
 > **Layer 0 & 0.5: Rust Hard Core + Platform Abstraction Layer (PAL)** — Trust root, cross-platform sandbox, IPC, and process management  
@@ -141,9 +149,9 @@ let cache = dirs::cache_dir();     // ~/.cache/claw-kernel/
 
 | Feature | Linux | macOS | Windows |
 |---------|:-----:|:-----:|:-------:|
-| Sandbox | ✅ Strong | ✅ Medium | ✅ Medium |
-| IPC | ✅ UDS | ✅ UDS | ✅ Named Pipe |
-| Process | ✅ Full | ✅ Full | ✅ Full |
+| Sandbox | Yes Strong | Yes Medium | Yes Medium |
+| IPC | Yes UDS | Yes UDS | Yes Named Pipe |
+| Process | Yes Full | Yes Full | Yes Full |
 
 ---
 
@@ -271,9 +279,9 @@ let cache = dirs::cache_dir();     // ~/.cache/claw-kernel/
 
 | 特性 | Linux | macOS | Windows |
 |---------|:-----:|:-----:|:-------:|
-| 沙箱 | ✅ 强 | ✅ 中等 | ✅ 中等 |
-| IPC | ✅ UDS | ✅ UDS | ✅ 命名管道 |
-| 进程 | ✅ 完整 | ✅ 完整 | ✅ 完整 |
+| 沙箱 | Yes 强 | Yes 中等 | Yes 中等 |
+| IPC | Yes UDS | Yes UDS | Yes 命名管道 |
+| 进程 | Yes 完整 | Yes 完整 | Yes 完整 |
 
 ---
 

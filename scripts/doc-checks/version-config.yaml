@@ -1,0 +1,18 @@
+---
+# 版本号配置
+# 用于版本一致性检查
+
+versions:
+  rust: "1.83"
+  nodejs: "20"
+  python: "3.10"
+  project: "0.1.0"
+
+# 文件特定的版本要求
+file_versions:
+  "rust-toolchain.toml":
+    rust: "1.83"
+  
+  "Cargo.toml":
+    rust: "1.83"
+    edition: "2021"

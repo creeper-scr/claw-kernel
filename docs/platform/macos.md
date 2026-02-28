@@ -1,3 +1,11 @@
+---
+title: macOS Platform Guide
+description: macOS platform guide (sandbox profile)
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+---
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>
@@ -29,7 +37,7 @@ claw-kernel 采用五层架构：
 - **Layer 0.5**: Platform Abstraction Layer (PAL) — 平台特定代码（本文档）
 - **Layer 1-3**: System Runtime / Agent Kernel Protocol / Script Runtime — 平台无关，通过 PAL trait 使用平台功能
 
-> **Zero Platform Assumptions**: Layer 0-3 的所有代码都是平台无关的。只有 PAL (Layer 0.5) 包含平台特定实现。macOS 特定的沙盒、IPC 和配置目录代码都隔离在 `claw-pal` crate 的 macOS 模块中。
+> **Zero Platform Assumptions**: Layer 0-3 的所有代码都是平台无关的。只有 PAL (Layer 0.5) 包含平台特定实现。macOS 特定的沙箱、IPC 和配置目录代码都隔离在 `claw-pal` crate 的 macOS 模块中。
 
 ---
 
@@ -220,7 +228,9 @@ xattr -d com.apple.quarantine target/debug/my-agent
 
 | Metric | Value |
 |--------|-------|
-| Sandbox overhead | ~1-2ms |
+| Sandbox overhead | ~1-2ms per process start* |
+
+*Test conditions: Apple M1, macOS 14, cold start sandbox profile
 | IPC latency | TBD (UDS) |
 | Context switch | Good (native) |
 
@@ -259,7 +269,7 @@ xcrun notarytool submit my-agent.dmg --wait
 <a name="chinese"></a>
 # macOS 平台指南
 
-macOS 通过原生 `sandbox(7)` 系统提供良好的沙盒功能。
+macOS 通过原生 `sandbox(7)` 系统提供良好的沙箱功能。
 
 ---
 
@@ -283,9 +293,9 @@ clang --version
 
 ---
 
-## 沙盒实现
+## 沙箱实现
 
-macOS 使用**沙盒配置文件**：
+macOS 使用**沙箱配置文件**：
 
 ```rust
 // 生成的配置文件示例
@@ -312,7 +322,7 @@ macOS 使用**沙盒配置文件**：
 
 ## 代码签名
 
-要进行完整的沙盒测试，需要为二进制文件签名：
+要进行完整的沙箱测试，需要为二进制文件签名：
 
 ```bash
 # 生成自签名证书（钥匙串访问）
@@ -354,7 +364,7 @@ let data_dir = dirs::data_dir();
 # 运行测试
 cargo test --workspace
 
-# 带沙盒测试（需要已签名的二进制文件）
+# 带沙箱测试（需要已签名的二进制文件）
 codesign -s "claw-kernel-dev" target/debug/deps/*
 cargo test --features sandbox-tests
 ```
@@ -363,7 +373,7 @@ cargo test --features sandbox-tests
 
 ## 故障排除
 
-### "sandbox_init failed"（沙盒初始化失败）
+### "sandbox_init failed"（沙箱初始化失败）
 
 代码签名问题：
 
@@ -402,11 +412,11 @@ xattr -d com.apple.quarantine target/debug/my-agent
 
 | 指标 | 数值 |
 |-----|------|
-| 沙盒开销 | ~1-2毫秒 |
+| 沙箱开销 | ~1-2毫秒 |
 | IPC 延迟 | ~15微秒（UDS） |
 | 上下文切换 | 良好（原生） |
 
-由于沙盒配置文件编译，比 Linux 稍慢。
+由于沙箱配置文件编译，比 Linux 稍慢。
 
 ---
 

@@ -1,3 +1,14 @@
+---
+title: claw-kernel Crate Map
+description: Crate structure, dependencies, and relationships
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+language: bilingual
+---
+
+> **Project Status**: Design/Planning Phase — Crate structure is planned but no code exists yet.
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>
@@ -419,7 +430,7 @@ full = ["openai", "deepseek", "moonshot", "qwen", "grok", "azure",
 
 **Layer**: 2  
 **Purpose**: Define tool-use protocol and hot-loading interface.  
-**⚠️ Note**: Only provides registration protocol and hot-loading mechanism. Specific tool generation logic is implemented at the application layer.
+**[Warning]  Note**: Only provides registration protocol and hot-loading mechanism. Specific tool generation logic is implemented at the application layer.
 
 **Key Types:**
 ```rust
@@ -565,7 +576,7 @@ pub struct LoopState {
 
 **Layer**: 3  
 **Purpose**: Script execution and hot-loading foundation.  
-**⚠️ Note**: This is an **extension base**, not a self-evolving system itself. It provides script execution, hot-loading, and runtime extension capabilities that applications can build upon.
+**[Warning]  Note**: This is an **extension base**, not a self-evolving system itself. It provides script execution, hot-loading, and runtime extension capabilities that applications can build upon.
 
 **Engine Support:**
 ```toml
@@ -756,13 +767,13 @@ This simplifies dependency management for users.
 
 | Crate | Type | Unit Tests | Integration | Platform Tests |
 |-------|------|:----------:|:-----------:|:--------------:|
-| claw-pal | Core | ✅ | ✅ | Required per-platform |
-| claw-provider | Core | ✅ | ✅ (mock HTTP) | N/A |
-| claw-tools | Core | ✅ | ✅ | N/A |
-| claw-loop | Core | ✅ | ✅ | N/A |
-| claw-runtime | Core | ✅ | ✅ | Required |
-| claw-script | Core | ✅ | ✅ | Required per-engine |
-| claw-kernel | Meta | N/A | ✅ | N/A |
+| claw-pal | Core | Yes | Yes | Required per-platform |
+| claw-provider | Core | Yes | Yes (mock HTTP) | N/A |
+| claw-tools | Core | Yes | Yes | N/A |
+| claw-loop | Core | Yes | Yes | N/A |
+| claw-runtime | Core | Yes | Yes | Required |
+| claw-script | Core | Yes | Yes | Required per-engine |
+| claw-kernel | Meta | N/A | Yes | N/A |
 
 ---
 
@@ -1087,7 +1098,7 @@ full = ["openai", "deepseek", "moonshot", "qwen", "grok", "azure",
 
 **层级**: 2  
 **用途**: 定义工具使用协议和热加载接口。  
-**⚠️ 注意**: 仅提供注册协议和热加载机制。具体的工具生成逻辑在应用层实现。
+**[Warning]  注意**: 仅提供注册协议和热加载机制。具体的工具生成逻辑在应用层实现。
 
 **关键类型：**
 ```rust
@@ -1170,7 +1181,7 @@ pub trait HistoryManager: Send + Sync {
 
 **层级**: 3  
 **用途**: 脚本执行和热加载基础。  
-**⚠️ 注意**: 这是**脚本运行时（第 3 层）**，不是自进化系统本身。它提供脚本执行、热加载和运行时扩展能力，应用可以在此基础上构建。
+**[Warning]  注意**: 这是**脚本运行时（第 3 层）**，不是自进化系统本身。它提供脚本执行、热加载和运行时扩展能力，应用可以在此基础上构建。
 
 **引擎支持：**
 ```toml
@@ -1333,10 +1344,10 @@ engine-py = ["claw-script/engine-py"]
 
 | Crate | 类型 | 单元测试 | 集成测试 | 平台测试 |
 |-------|------|:----------:|:-----------:|:--------------:|
-| claw-pal | 核心 | ✅ | ✅ | 每平台必需 |
-| claw-provider | 核心 | ✅ | ✅（模拟 HTTP）| N/A |
-| claw-tools | 核心 | ✅ | ✅ | N/A |
-| claw-loop | 核心 | ✅ | ✅ | N/A |
-| claw-runtime | 核心 | ✅ | ✅ | 必需 |
-| claw-script | 核心 | ✅ | ✅ | 每引擎必需 |
-| claw-kernel | 元 | N/A | ✅ | N/A |
+| claw-pal | 核心 | Yes | Yes | 每平台必需 |
+| claw-provider | 核心 | Yes | Yes（模拟 HTTP）| N/A |
+| claw-tools | 核心 | Yes | Yes | N/A |
+| claw-loop | 核心 | Yes | Yes | N/A |
+| claw-runtime | 核心 | Yes | Yes | 必需 |
+| claw-script | 核心 | Yes | Yes | 每引擎必需 |
+| claw-kernel | 元 | N/A | Yes | N/A |

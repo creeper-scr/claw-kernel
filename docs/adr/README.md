@@ -1,3 +1,12 @@
+---
+title: Architecture Decision Records
+description: ADR index for claw-kernel
+status: active
+version: "0.1.0"
+last_updated: "2026-02-28"
+language: bilingual
+---
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>
@@ -40,6 +49,8 @@ What becomes easier or more difficult to do because of this change?
 | [004](004-hot-loading-mechanism.md) | Tool Hot-Loading as Extension Infrastructure | Accepted |
 | [005](005-ipc-multi-agent.md) | IPC and Multi-Agent Coordination | Accepted |
 | [006](006-message-format-abstraction.md) | Message Format Abstraction for LLM Providers | Accepted |
+| [007](007-eventbus-implementation.md) | EventBus Implementation Strategy | Accepted |
+| [008](008-hot-loading-file-watcher.md) | Hot-Loading File Watcher Strategy | Accepted |
 
 ## Contributing
 
@@ -94,6 +105,8 @@ See [Contributing Guide](../../CONTRIBUTING.md) for more.
 | [004](004-hot-loading-mechanism.md) | 工具热加载作为扩展基础设施 | 已接受 |
 | [005](005-ipc-multi-agent.md) | IPC 和多智能体协调 | 已接受 |
 | [006](006-message-format-abstraction.md) | LLM Provider 消息格式抽象 | 已接受 |
+| [007](007-eventbus-implementation.md) | EventBus 实现策略 | 已接受 |
+| [008](008-hot-loading-file-watcher.md) | 热加载文件监视器策略 | 已接受 |
 
 ## 贡献
 

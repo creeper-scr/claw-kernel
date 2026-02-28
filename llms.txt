@@ -1,0 +1,112 @@
+---
+title: claw-kernel LLM Entry
+description: The shared foundation for the Claw ecosystem — a cross-platform Agent Kernel built in Rust
+version: "0.1.0"
+last_updated: "2026-02-28"
+language: en
+---
+
+# claw-kernel
+
+> The shared foundation for the Claw ecosystem — a cross-platform Agent Kernel built in Rust with embedded scripting and hot-loading capabilities.
+
+## Project Overview
+
+claw-kernel is a shared infrastructure library for AI agent implementations. It extracts common primitives (LLM provider HTTP calls, tool-use protocol, agent loop, memory system) into a well-tested, cross-platform Rust library.
+
+**Status**: Design/Planning Phase (crates/ directory is empty, no implementation started)  
+**License**: MIT OR Apache-2.0  
+**Rust Version**: 1.83+  
+**Repository**: https://github.com/claw-project/claw-kernel
+
+## Key Concepts
+
+- **5-Layer Architecture**: Layer 0 (Rust Hard Core) → Layer 0.5 (PAL) → Layer 1 (Runtime) → Layer 2 (Protocols) → Layer 3 (Scripts)
+- **Dual Execution Modes**: Safe Mode (sandboxed, default) / Power Mode (full access, opt-in with Power Key)
+- **Cross-Platform**: Linux (seccomp-bpf), macOS (sandbox), Windows (AppContainer)
+- **Script Engines**: Lua (default, zero deps), Deno/V8 (optional, ~100MB), Python (optional, ML ecosystem)
+
+## Essential Documentation
+
+| Document | Purpose | Language |
+|----------|---------|----------|
+| [README.md](README.md) | Project overview, quick start | Bilingual |
+| [AGENTS.md](AGENTS.md) | AI agent development guide, security model, Power Key mechanism | English |
+| [BUILD_PLAN.md](BUILD_PLAN.md) | Phase-by-phase implementation roadmap | Chinese |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guidelines, PR checklist | Bilingual |
+| [SECURITY.md](SECURITY.md) | Vulnerability reporting, security model | Bilingual |
+| [docs/architecture/overview.md](docs/architecture/overview.md) | Complete 5-layer architecture | Bilingual |
+| [docs/architecture/crate-map.md](docs/architecture/crate-map.md) | Crate dependency graph | Bilingual |
+| [docs/adr/](docs/adr/) | Architecture Decision Records | Bilingual |
+
+## Crate Structure
+
+| Crate | Layer | Purpose | Dependencies |
+|-------|-------|---------|--------------|
+| claw-pal | 0.5 | Platform Abstraction (sandbox, IPC, process) | None |
+| claw-runtime | 1 | System runtime, event bus, orchestration | claw-pal, tokio |
+| claw-provider | 2 | LLM provider trait + implementations | reqwest, serde |
+| claw-tools | 2 | Tool registry, hot-loading, schema gen | serde_json, schemars |
+| claw-loop | 2 | Agent loop engine, history management | claw-provider, claw-tools |
+| claw-script | 3 | Embedded script engines (Lua/V8/Python) | mlua, deno_core, pyo3 |
+| claw-kernel | Meta | Re-exports all crates | All above |
+
+## Build Configuration
+
+```toml
+[dependencies]
+# Minimal: Lua engine only
+claw-kernel = { version = "0.1", default-features = false, features = ["engine-lua"] }
+
+# Default: Lua + SQLite
+claw-kernel = { version = "0.1", features = ["engine-lua", "sqlite"] }
+
+# Full: All engines (build time ~30 min, binary ~100-110 MB)
+claw-kernel = { version = "0.1", features = ["full"] }
+```
+
+## Important Notes for AI Agents
+
+1. **Design-First Project**: The `crates/` directory is empty — no implementation has started. All API designs are targets, not working code.
+
+2. **Cross-Platform Critical**: Every change must consider Linux, macOS, and Windows. Platform-specific code belongs ONLY in `claw-pal`.
+
+3. **Build Order**: Follow this sequence:
+   - Phase 1: claw-pal (Layer 0.5)
+   - Phase 2: claw-runtime (Layer 1)
+   - Phase 3: claw-provider + claw-tools (Layer 2)
+   - Phase 4: claw-loop (Layer 2)
+   - Phase 5: claw-script (Layer 3)
+   - Phase 6: Examples
+   - Phase 7: Meta-crate claw-kernel
+
+4. **Interface First**: Define traits before implementations. See BUILD_PLAN.md for detailed trait specifications.
+
+5. **Security Model**: Safe Mode (default, sandboxed) vs Power Mode (opt-in with 8+ char Power Key). Never bypass sandbox in Safe Mode.
+
+6. **Feature Flags**: Use liberally for optional functionality. Default build should have minimal dependencies.
+
+## Security
+
+- **Vulnerability Reports**: security@claw-project.dev (not GitHub issues)
+- **Response Time**: Acknowledgment within 48 hours, detailed response within 7 days
+- **Supported Versions**: Latest stable + previous minor (security fixes only)
+
+## Contributing
+
+- **High Priority**: Windows sandbox hardening, new LLM providers, script bridge improvements, documentation
+- **Branch Naming**: `fix/<description>` or `feat/<description>` (lowercase, hyphenated, max 30 chars)
+- **Requirements**: Tests pass, clippy clean, formatted, documented, CHANGELOG updated (user-facing changes), ADR added (significant changes)
+
+## Terminology
+
+| Term | Definition |
+|------|------------|
+| **Safe Mode** | Default sandboxed execution environment |
+| **Power Mode** | Full system access, requires Power Key activation |
+| **Power Key** | User-defined credential (min 12 chars, 2+ char types) for mode switching |
+| **Hot-Loading** | Load/unload tool scripts without restart |
+| **PAL** | Platform Abstraction Layer (Layer 0.5) |
+
+---
+*Last updated: 2026-02-28 | Document version: 0.1.0*

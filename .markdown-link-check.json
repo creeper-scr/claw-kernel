@@ -1,0 +1,23 @@
+{
+  "timeout": "20s",
+  "retryOn429": true,
+  "retryCount": 3,
+  "fallbackRetryDelay": "30s",
+  "aliveStatusCodes": [200, 206],
+  "ignorePatterns": [
+    {
+      "pattern": "^https://github.com/claw-project/claw-kernel/(issues|pull)/"
+    },
+    {
+      "pattern": "^mailto:"
+    }
+  ],
+  "httpHeaders": [
+    {
+      "urls": ["https://github.com", "https://docs.github.com"],
+      "headers": {
+        "User-Agent": "Mozilla/5.0"
+      }
+    }
+  ]
+}

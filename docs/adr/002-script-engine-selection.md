@@ -1,3 +1,10 @@
+---
+title: "ADR-002: Multi-Engine Script Support"
+type: adr
+status: accepted
+date: "2026-02-28"
+---
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>

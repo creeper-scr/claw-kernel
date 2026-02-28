@@ -1,3 +1,14 @@
+---
+title: claw-kernel Architecture Overview
+description: Complete 5-layer architecture documentation for claw-kernel
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+language: bilingual
+---
+
+> **Project Status**: Design/Planning Phase — Architecture is documented but implementation has not started.
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>
@@ -494,12 +505,18 @@ pub struct AgentLoop {
 }
 
 pub struct AgentLoopConfig {
-    pub max_turns: Option<usize>,           // Default: 50
-    pub token_budget: Option<usize>,        // Default: 8000
-    pub system_prompt: Option<String>,      // System prompt
-    pub enable_streaming: bool,             // Default: true
-    pub tool_timeout: Duration,             // Default: 30s
-    pub max_tool_calls_per_turn: usize,     // Default: 10
+    /// Default: 50 — Based on Claude 3.5 Sonnet average interaction depth for complex tasks (P95)
+    pub max_turns: Option<usize>,
+    /// Default: 8000 — ~6K input + 2K output, suitable for Claude 3.5 Sonnet context window
+    pub token_budget: Option<usize>,
+    /// System prompt for the agent
+    pub system_prompt: Option<String>,
+    /// Default: true — Streaming improves perceived responsiveness
+    pub enable_streaming: bool,
+    /// Default: 30s — Most API calls complete within 10s, buffer for network variance
+    pub tool_timeout: Duration,
+    /// Default: 10 — Prevents runaway recursive calls, based on common workflow complexity
+    pub max_tool_calls_per_turn: usize,
 }
 
 impl Default for AgentLoopConfig {
@@ -655,7 +672,7 @@ See [ADR-003: Security Model](../adr/003-security-model.md) for full analysis.
 
 ## Terminology Reference
 
-For detailed terminology definitions, please refer to [AGENTS.md](../AGENTS.md) and [docs/terminology.md](terminology.md).
+For detailed terminology definitions, please refer to [AGENTS.md](../../AGENTS.md) and [docs/terminology.md](../terminology.md).
 
 ---
 
@@ -672,9 +689,9 @@ All code at Layer 0-3 is **platform-agnostic**. Platform specifics only in:
 
 | Feature | Linux | macOS | Windows |
 |---------|:-----:|:-----:|:-------:|
-| Safe Mode | ✅ Strong | ✅ Medium | ✅ Medium |
-| Power Mode | ✅ Full | ✅ Full | ✅ Full |
-| IPC Performance | 100% | 95% | 90% |
+| Safe Mode | Yes Strong | Yes Medium | Yes Medium |
+| Power Mode | Yes Full | Yes Full | Yes Full |
+| IPC Performance (relative to Linux UDS) | 100% | 95% | 90% |
 | Process Isolation | Strongest | Medium | Medium |
 | Build Complexity | Low | Low | Medium |
 
@@ -844,7 +861,7 @@ All extension actions are logged:
 - **For users:** [Getting Started Guide](../guides/getting-started.md)
 - **For contributors:** [Contributing Guide](../../CONTRIBUTING.md)
 - **For architecture details:** [Crate Map](crate-map.md), [ADR Index](../adr/)
-- **For platform specifics:** [Linux](platform/linux.md), [macOS](platform/macos.md), [Windows](platform/windows.md)
+- **For platform specifics:** [Linux](../platform/linux.md), [macOS](../platform/macos.md), [Windows](../platform/windows.md)
 
 ---
 
@@ -1162,6 +1179,7 @@ pub struct ToolCall {
 
 #### 工具注册表
 ```rust
+#[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;           // 工具描述，供 LLM 使用
@@ -1183,12 +1201,12 @@ pub struct ToolRegistry {
 #### Agent 循环
 ```rust
 pub struct AgentLoop {
-    pub provider: Box<dyn LLMProvider>,      // LLM 接口
-    pub tools: ToolRegistry,                  // 可用工具
-    pub config: AgentLoopConfig,              // 循环配置
-    pub history: Box<dyn HistoryManager>,     // 可插拔组件
-    pub stop_conditions: Vec<Box<dyn StopCondition>>,
-    pub summarizer: Box<dyn Summarizer>,
+    provider: Arc<dyn LLMProvider>,           // LLM 接口
+    tools: Arc<ToolRegistry>,                 // 可用工具
+    history: Box<dyn HistoryManager>,         // 可插拔组件
+    stop_conditions: Vec<Box<dyn StopCondition>>,
+    summarizer: Option<Box<dyn Summarizer>>,
+    config: AgentLoopConfig,                  // 循环配置
 }
 
 pub struct AgentLoopConfig {
@@ -1298,8 +1316,8 @@ interface RustBridge {
 
 | 特性 | Linux | macOS | Windows |
 |---------|:-----:|:-----:|:-------:|
-| 安全模式 | ✅ 强 (Strong) | ✅ 中等 (Medium) | ✅ 中等 (Medium) |
-| 强力模式 | ✅ 完全 | ✅ 完全 | ✅ 完全 |
+| 安全模式 | Yes 强 (Strong) | Yes 中等 (Medium) | Yes 中等 (Medium) |
+| 强力模式 | Yes 完全 | Yes 完全 | Yes 完全 |
 | IPC 性能 | 100% | 95% | 90% |
 | 进程隔离 | 最强 (Strongest) | 中等 (Medium) | 中等 (Medium) |
 | 构建复杂度 | 低 | 低 | 中 |
@@ -1460,4 +1478,4 @@ pub async fn hot_load_tool(&mut self, path: &Path) -> Result<()> {
 - **对于用户：** [入门指南](../guides/getting-started.md)
 - **对于贡献者：** [贡献指南](../../CONTRIBUTING.md)
 - **对于架构细节：** [Crate 地图](crate-map.md), [ADR 索引](../adr/)
-- **对于平台特定信息：** [Linux](platform/linux.md), [macOS](platform/macos.md), [Windows](platform/windows.md)
+- **对于平台特定信息：** [Linux](../platform/linux.md), [macOS](../platform/macos.md), [Windows](../platform/windows.md)

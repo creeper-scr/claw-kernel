@@ -459,7 +459,7 @@ pub mod dirs {
 | Filesystem isolation | Strong | Medium | Medium |
 | Network isolation | Strong | Limited | Limited |
 | Syscall filtering | seccomp-bpf | Limited | Limited |
-| **IPC Performance** | 100% | 95% | 90% |
+| **IPC Performance** (relative to Linux UDS baseline) | 100% | 95% | 90% |
 | **Build Complexity** | Low | Low | Medium |
 | MSVC required | No | No | Yes |
 | Sandbox testing | Easy | Medium | Complex |

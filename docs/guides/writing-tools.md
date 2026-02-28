@@ -1,3 +1,11 @@
+---
+title: Writing Custom Tools
+description: Guide for writing custom tools with scripts
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+---
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>
@@ -6,7 +14,7 @@
 
 Tools are the primary way to extend your agent's capabilities at Layer 2 (Agent Kernel Protocol) and Layer 3 (Extension Foundation). This guide covers writing tools in Lua (default), with notes on TypeScript/Deno and Python alternatives.
 
-> ⚠️ **Note**: This guide shows the **target API design**. The `claw-kernel` crate is not yet implemented.
+> [Warning]  **Note**: This guide shows the **target API design**. The `claw-kernel` crate is not yet implemented.
 
 ---
 

@@ -1,3 +1,11 @@
+---
+title: claw-provider
+description: "LLM provider trait + Anthropic/OpenAI/Ollama implementations"
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+---
+
 # claw-provider
 
 > **Layer 2: Agent Kernel Protocol** — LLM Provider abstraction  

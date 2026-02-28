@@ -2,7 +2,7 @@
 
 This directory contains example applications demonstrating claw-kernel capabilities.
 
-> ⚠️ **Note**: These examples are **design targets** - the `claw-kernel` crate is not yet implemented.
+> [Warning]  **Note**: These examples are **design targets** - the `claw-kernel` crate is not yet implemented.
 
 ## Examples
 
@@ -14,7 +14,7 @@ A basic agent with single LLM provider and static tools.
 - Tool registry
 - Provider configuration
 
-Status: 🚧 Skeleton only
+Status: [WIP]  Skeleton only
 
 ### 2. custom-tool
 Shows how to create and register custom tools.
@@ -24,7 +24,7 @@ Shows how to create and register custom tools.
 - Tool schema definition
 - Permission annotations
 
-Status: 🚧 Skeleton only
+Status: [WIP]  Skeleton only
 
 ### 3. self-evolving-agent
 An agent that can generate and load new tools at runtime.
@@ -34,7 +34,7 @@ An agent that can generate and load new tools at runtime.
 - Hot-reload mechanism
 - Version management
 
-Status: 🚧 Skeleton only
+Status: [WIP]  Skeleton only
 
 ## Running Examples
 

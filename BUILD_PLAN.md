@@ -1,14 +1,26 @@
+---
+title: claw-kernel Build Plan
+description: Detailed phase-by-phase build roadmap for claw-kernel implementation
+status: design-phase
+version: "1.0"
+last_updated: "2026-02-28"
+language: zh
+---
+
+> **项目状态**：设计/规划阶段 —— `crates/` 目录为空，尚未开始实现。
+
 # claw-kernel 构建计划
 # Build Plan
 
-> 详细的分阶段构建路线图，指导 claw-kernel 的实现
-> 版本：v1.0 | 日期：2026-02-28
+**目标**：指导 claw-kernel 8 阶段实现（2026-02-28）  
+**读者**：Rust 开发者、核心贡献者  
+**前提**：已阅读 [架构概述](docs/architecture/overview.md)
 
 ---
 
 ## 概述 / Overview
 
-本文档描述 claw-kernel 从设计到实现的详细构建计划。按照 7 个阶段逐步实现，确保架构的稳定性和可测试性。
+本文档描述 claw-kernel 从设计到实现的详细构建计划。按照 8 个阶段逐步实现，确保架构的稳定性和可测试性。
 
 ---
 
@@ -42,6 +54,7 @@ pub trait IpcTransport: Send + Sync {
 // 进程管理
 pub trait ProcessManager: Send + Sync {
     async fn spawn(&self, config: ProcessConfig) -> Result<ProcessHandle, ProcessError>;
+    /// grace_period: time to wait after SIGTERM before sending SIGKILL (auto-forces kill on timeout)
     async fn terminate(&self, handle: ProcessHandle, grace_period: Duration) -> Result<(), ProcessError>;
     async fn kill(&self, handle: ProcessHandle) -> Result<(), ProcessError>;
     async fn wait(&self, handle: ProcessHandle) -> Result<ExitStatus, ProcessError>;
@@ -287,7 +300,7 @@ pub struct AgentLoopConfig {
     pub system_prompt: Option<String>,
     pub enable_streaming: bool,        // Default: true
     pub tool_timeout: Duration,        // Default: 30s
-    pub max_tool_calls_per_turn: usize, // Default: 10
+    pub max_tool_calls_per_turn: usize, // Default: 10; a "turn" = one LLM call + all resulting tool calls (including recursive calls within that turn)
 }
 
 pub struct AgentResult {
@@ -398,6 +411,7 @@ interface RustBridge {
     emit(event: string, data: any): void;
     on(event: string, handler: (data: any) => void): void;
   };
+  // Note: all fs operations respect Safe Mode allowlist; PermissionDenied thrown if path not in allowlist
   fs: {
     read(path: string): Promise<Uint8Array>;
     write(path: string, data: Uint8Array): Promise<void>;
@@ -444,9 +458,25 @@ pub trait Channel: Send + Sync {
 
 ---
 
-### Phase 7: Meta Crate & Integration
+### Phase 7: Examples & Documentation
 
-**目标**：统一的 claw-kernel crate
+**目标**：提供完整的示例和 API 文档
+
+**示例程序**：
+- [ ] simple-agent：基础 Agent 使用示例
+- [ ] custom-tool：自定义工具开发示例
+- [ ] self-evolving-agent：自演化 Agent 模式示例
+
+**文档**：
+- [ ] API 文档（rustdoc）
+- [ ] 架构决策记录更新
+- [ ] 迁移指南
+
+---
+
+### Phase 8: Meta Crate & Integration
+
+**目标**：统一的 claw-kernel crate 和集成测试
 
 ```rust
 // lib.rs
@@ -465,9 +495,9 @@ pub use claw_loop::{AgentLoop, AgentLoopConfig};
 
 **里程碑**：
 - [ ] claw-kernel meta-crate
-- [ ] 集成测试
-- [ ] 示例程序
-- [ ] API 文档
+- [ ] 跨平台集成测试
+- [ ] 性能基准测试
+- [ ] v0.1.0 发布准备
 
 ---
 

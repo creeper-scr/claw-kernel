@@ -1,3 +1,11 @@
+---
+title: Windows Platform Guide
+description: Windows platform guide (AppContainer + Job Objects)
+status: design-phase
+version: "0.1.0"
+last_updated: "2026-02-28"
+---
+
 [English](#english) | [中文](#chinese)
 
 <a name="english"></a>
@@ -29,7 +37,7 @@ claw-kernel 采用五层架构：
 - **Layer 0.5**: Platform Abstraction Layer (PAL) — 平台特定代码（本文档）
 - **Layer 1-3**: System Runtime / Agent Kernel Protocol / Script Runtime — 平台无关，通过 PAL trait 使用平台功能
 
-> **Zero Platform Assumptions**: Layer 0-3 的所有代码都是平台无关的。只有 PAL (Layer 0.5) 包含平台特定实现。Windows 特定的沙盒、IPC 和配置目录代码都隔离在 `claw-pal` crate 的 Windows 模块中。
+> **Zero Platform Assumptions**: Layer 0-3 的所有代码都是平台无关的。只有 PAL (Layer 0.5) 包含平台特定实现。Windows 特定的沙箱、IPC 和配置目录代码都隔离在 `claw-pal` crate 的 Windows 模块中。
 
 ---
 
@@ -268,7 +276,9 @@ Windows 平台采用**功能降级**策略：
 
 | Metric | Value |
 |--------|-------|
-| Sandbox overhead | ~2-3ms |
+| Sandbox overhead | ~2-3ms per process start* |
+
+*Test conditions: Intel i7-1165G7, Windows 11 23H2, cold start AppContainer
 | IPC latency | TBD (Named Pipe) |
 | Context switch | Good |
 
@@ -316,7 +326,7 @@ Add-MpPreference -ExclusionPath "C:\path\to\claw-kernel"
 <a name="chinese"></a>
 # Windows 平台指南
 
-Windows 支持功能完整，包含 AppContainer 沙盒和命名管道 IPC。
+Windows 支持功能完整，包含 AppContainer 沙箱和命名管道 IPC。
 
 ---
 
@@ -351,7 +361,7 @@ rustc --print host-triple
 
 ---
 
-## 沙盒实现
+## 沙箱实现
 
 Windows 使用 **AppContainer** + **作业对象**：
 
@@ -360,7 +370,7 @@ Windows 使用 **AppContainer** + **作业对象**：
 create_app_container()?;    // 低完整性进程
 create_capabilities()?;     // 功能 SID
 apply_job_limits()?;        // 资源限制
-create_process_with_token()?; // 启动沙盒化进程
+create_process_with_token()?; // 启动沙箱化进程
 ```
 
 ### AppContainer
@@ -425,11 +435,11 @@ rustup default stable-x86_64-pc-windows-msvc
 # 运行测试
 cargo test --workspace
 
-# 沙盒测试需要管理员权限
+# 沙箱测试需要管理员权限
 cargo test --features sandbox-tests
 ```
 
-### 沙盒需要管理员权限
+### 沙箱需要管理员权限
 
 创建 AppContainer 需要提升的权限进行测试：
 
@@ -482,7 +492,7 @@ Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name
 
 ---
 
-## 沙盒降级策略
+## 沙箱降级策略
 
 Windows 平台采用**功能降级**策略：
 
@@ -502,7 +512,7 @@ Windows 平台采用**功能降级**策略：
 
 | 指标 | 数值 |
 |-----|------|
-| 沙盒开销 | ~2-3毫秒 |
+| 沙箱开销 | ~2-3毫秒 |
 | IPC 延迟 | ~20微秒（命名管道） |
 | 上下文切换 | 良好 |
 
@@ -526,7 +536,7 @@ Windows 没有 POSIX 信号：
 ## 杀毒软件注意事项
 
 Windows Defender 或其他杀毒软件可能会标记：
-- 进程创建（沙盒测试）
+- 进程创建（沙箱测试）
 - 命名管道创建
 - AppContainer 操作
 
