@@ -22,6 +22,7 @@ language: bilingual
 
 - [Design Philosophy](#design-philosophy)
 - [The 5-Layer Architecture](#the-5-layer-architecture)
+- [Memory System Architecture (3-Tier Model)](#memory-system-architecture)
 - [Key Architectural Decisions](#key-architectural-decisions)
 - [Cross-Platform Strategy](#cross-platform-strategy)
 - [Extensibility Architecture](#extensibility-architecture)
@@ -90,6 +91,7 @@ Script Layer = Userland programs (hot-swappable, extensible)
 │  ┌─────────────────────────────────────────────────────┐│
 │  │  Layer 2: Agent Kernel Protocol                     ││
 │  │  Provider Trait · ToolRegistry · AgentLoop · History││
+│  │  claw-memory (LTM: Working / Episodic / Semantic)   ││
 │  └─────────────────────────────────────────────────────┘│
 │  ┌─────────────────────────────────────────────────────┐│
 │  │  Layer 1: System Runtime                            ││
@@ -586,12 +588,90 @@ impl From<&str> for ConversationContext {
 }
 ```
 
-### Layer 3: Extension Foundation
+#### Long-Term Memory (`claw-memory`)
 
-**Extensibility Boundary Notice:**
-- **CANNOT BE MODIFIED**: The Script Engine Runtime (Layer 3) itself cannot be hot-patched
-- **CAN HOT-LOAD**: Scripts/tool code running on top of the engine can be dynamically loaded, updated, and unloaded
-- This design ensures kernel stability while allowing the application layer to achieve self-evolution through scripts
+> **Design Principle — Mechanism vs. Policy Separation**
+> The Rust kernel (Layer 2) is responsible only for *how* to store and retrieve memories safely and efficiently (Mechanism). All lifecycle rules, summarization algorithms, and retrieval prompts are defined in Layer 3 scripts (Policy), enabling Agent self-evolution without kernel changes.
+
+`claw-memory` exposes a core trait `MemoryStore` with four capabilities:
+
+```rust
+/// Core trait for the long-term memory subsystem (Layer 2)
+#[async_trait]
+pub trait MemoryStore: Send + Sync {
+    /// Compute embedding via claw-provider and persist to vector store
+    async fn insert_semantic(
+        &self,
+        content: &str,
+        metadata: serde_json::Value,
+    ) -> Result<MemoryId, MemoryError>;
+
+    /// Vector similarity search (top-k)
+    async fn search_semantic(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<MemoryItem>, MemoryError>;
+
+    /// Append a timestamped episodic log entry
+    async fn insert_episodic(
+        &self,
+        entry: EpisodicEntry,
+    ) -> Result<EpisodeId, MemoryError>;
+
+    /// Query episodic log by time range or tag filter
+    async fn query_episodic(
+        &self,
+        filter: EpisodicFilter,
+    ) -> Result<Vec<EpisodicEntry>, MemoryError>;
+}
+
+pub struct MemoryItem {
+    pub id: MemoryId,
+    pub content: String,
+    pub score: f32,                         // Cosine similarity
+    pub metadata: serde_json::Value,
+    pub created_at: SystemTime,
+}
+
+pub struct EpisodicEntry {
+    pub kind: EpisodeKind,                  // ToolCall | LLMResponse | Error | Custom
+    pub content: serde_json::Value,
+    pub tags: Vec<String>,
+    pub timestamp: SystemTime,
+}
+
+pub struct EpisodicFilter {
+    pub since: Option<SystemTime>,
+    pub until: Option<SystemTime>,
+    pub tags: Vec<String>,
+    pub limit: Option<usize>,
+}
+
+pub enum EpisodeKind {
+    ToolCall,
+    LLMResponse,
+    Error,
+    Custom(String),
+}
+```
+
+**Dependencies:**
+- `claw-provider` — Embedding computation (`EmbeddingProvider::embed`)
+- `claw-pal` — Sandboxed filesystem access (database path enforcement)
+- Works closely with `claw-loop` — Working Memory overflow triggers persistence via EventBus
+
+**Feature Flags:**
+```toml
+[features]
+default = ["sqlite-vec"]          # Zero-dependency vector store
+sqlite-vec = ["rusqlite"]         # Default: SQLite + sqlite-vec extension
+qdrant = ["qdrant-client"]        # ml-ready: external Qdrant cluster
+```
+
+---
+
+### Layer 3: Extension Foundation
 
 Multi-engine support with unified interface. This layer provides the **foundation for extensibility** — hot-loading (热加载), script execution, and dynamic registration capabilities that enable upper layers to evolve.
 
@@ -606,29 +686,119 @@ Multi-engine support with unified interface. This layer provides the **foundatio
 - **Permission Bridge**: Enforce security boundaries for scripts
 - **Type Safety Layer**: TypeScript-style interfaces over Rust
 
-**RustBridge:**
+**RustBridge (Script Layer API — `claw.*` namespace):**
 ```typescript
-// Exposed to scripts
+// Exposed to scripts via claw.* namespace (Layer 3 → Layer 2 bridge)
 interface RustBridge {
-  llm: { 
+  llm: {
     complete(messages: Message[]): Promise<Response>;
     stream(messages: Message[]): AsyncIterable<Delta>;
   };
-  tools: { 
+  tools: {
     register(def: ToolDef): void;
     call(name: string, params: any): Promise<any>;
     list(): ToolMeta[];
   };
-  memory: { 
-    get(key: string): Promise<any>;
-    set(key: string, value: any): Promise<void>;
+  // claw.memory.* — Policy defined in scripts, Mechanism provided by claw-memory (Layer 2)
+  // Agent decides WHAT to memorize and WHEN; the kernel handles HOW.
+  //
+  // Typical usage pattern:
+  //   on_think:   relevant = await claw.memory.search(current_topic, 5)
+  //   on_observe: if valuable, await claw.memory.memorize({ content, space: "knowledge" })
+  memory: {
+    // Semantic memory (RAG) — cross-session, de-temporalized knowledge
     search(query: string, topK: number): Promise<MemoryItem[]>;
+    memorize(item: { content: string; metadata?: any; space?: string }): Promise<string>;
+    // Episodic memory — time-series action log (tool calls, errors, reflections)
+    logEpisode(entry: { kind: string; content: any; tags?: string[] }): Promise<string>;
+    queryEpisodes(filter: { since?: Date; until?: Date; tags?: string[]; limit?: number }): Promise<EpisodicEntry[]>;
   };
   events: { emit(event: string, data: any): void; on(event: string, handler: Function): void };
   fs: { read(path: string): Promise<Buffer>; write(path: string, data: Buffer): Promise<void> };
   agent: { spawn(config: AgentConfig): Promise<AgentHandle>; kill(handle: AgentHandle): Promise<void> };
 }
 ```
+
+---
+
+<a name="memory-system-architecture"></a>
+## Memory System Architecture (The 3-Tier Model)
+
+> **Mechanism vs. Policy**: Layer 2 (`claw-memory`) provides the storage *mechanism*. Layer 3 scripts define the *policy* — when to persist, how to summarize, which retrieval prompts to use. This separation enables Agent self-evolution without recompiling the kernel.
+
+The memory system is organized into three tiers, each managed by a different component:
+
+### Tier 1 — Working Memory (WM)
+
+| Property | Value |
+|----------|-------|
+| **Location** | `claw-loop` — the `History` object |
+| **Storage** | In-process heap (Vec\<Message\>) |
+| **Capacity** | Token-budget bounded (FIFO eviction) |
+| **Eviction** | Oldest messages dropped when token limit is exceeded |
+| **Persistence** | None (volatile; survives only within the session) |
+
+When Working Memory overflows, `claw-loop` emits a `MemoryPressure` event on the EventBus. A script listener (or the default kernel handler) can then call `claw.memory.logEpisode()` / `claw.memory.memorize()` to promote important context into the lower tiers.
+
+```
+Working Memory overflow  ──EventBus──►  claw-memory (EM / SM persistence)
+         (claw-loop)                          (claw-memory)
+```
+
+### Tier 2 — Episodic Memory (EM)
+
+| Property | Value |
+|----------|-------|
+| **Location** | `claw-memory` crate |
+| **Storage** | SQLite (time-series log table) |
+| **Scope** | Per-Agent, persists across sessions |
+| **Purpose** | Records agent behavior trace: tool calls, LLM responses, errors |
+| **Use Case** | Reflection, post-mortem analysis, self-evolution audit trail |
+
+Episodic Memory is a **chronological journal** of what the Agent did. It answers: *"What did I try last time this happened?"* Scripts query it in `on_think` to avoid repeating past mistakes.
+
+### Tier 3 — Semantic Memory (SM)
+
+| Property | Value |
+|----------|-------|
+| **Location** | `claw-memory` crate |
+| **Storage** | `sqlite-vec` (default) · `qdrant-client` (feature `qdrant`, ml-ready) |
+| **Scope** | Configurable: per-Agent or shared knowledge space |
+| **Purpose** | De-temporalized, factual knowledge for cross-session RAG |
+| **Use Case** | Domain knowledge, learned procedures, distilled insights |
+
+Semantic Memory is a **knowledge graph without timestamps**. It answers: *"What do I know about X?"* The Agent autonomously decides — via script policy — which observations are worth memorizing as reusable knowledge.
+
+### 3-Tier Interaction Diagram
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    Agent Execution Loop                       │
+│                       (claw-loop)                            │
+│                                                              │
+│  on_think ──► search WM ──► search SM (claw.memory.search)   │
+│                                   │                          │
+│                            inject top-k results              │
+│                            into LLM context                  │
+│                                                              │
+│  on_observe ──► evaluate value ──► if worthy:               │
+│                                      claw.memory.memorize()  │
+│                                      claw.memory.logEpisode()│
+│                                                              │
+│  WM overflow ──► EventBus ──► auto-persist to EM            │
+└──────────────────────────────────────────────────────────────┘
+         │                              │
+         ▼                              ▼
+  ┌─────────────┐               ┌─────────────────┐
+  │  Episodic   │               │    Semantic      │
+  │  Memory     │               │    Memory        │
+  │  (SQLite)   │               │  (sqlite-vec /   │
+  │  time-log   │               │   qdrant)        │
+  └─────────────┘               └─────────────────┘
+         both managed by claw-memory (Layer 2)
+```
+
+---
 
 ## Key Architectural Decisions
 
@@ -823,6 +993,7 @@ See [Extension Capabilities Guide](../guides/extension-capabilities.md) for usag
 | Subprocess | Blocked | Allowed |
 | Script Extension | Allowed (sandboxed) | Allowed (global) |
 | Kernel Access | Blocked | Blocked (hard constraint) |
+| Memory Isolation | DB locked to `/sandbox/agent_{id}/memory.db`; A2A memory access strictly forbidden; disk quota enforced | Cross-path reads allowed; shared memory spaces permitted; Shell-level access to external/enterprise database clusters |
 
 ### Mode Switching
 
@@ -876,6 +1047,7 @@ All extension actions are logged:
 
 - [设计哲学](#design-philosophy-cn)
 - [五层架构](#the-5-layer-architecture-cn)
+- [记忆系统架构（三级模型）](#memory-system-architecture-cn)
 - [关键架构决策](#key-architectural-decisions-cn)
 - [跨平台策略](#cross-platform-strategy-cn)
 - [可扩展性架构](#extensibility-architecture-cn)

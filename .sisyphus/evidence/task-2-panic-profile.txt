@@ -1,3 +1,3 @@
-/Users/ygz/apps/claw-kernel/Cargo.toml:panic = "unwind"
-/Users/ygz/apps/claw-kernel/Cargo.toml:panic = "unwind"
-/Users/ygz/apps/claw-kernel/Cargo.toml:panic = "unwind"
+panic = "unwind"
+panic = "unwind"
+panic = "unwind"
