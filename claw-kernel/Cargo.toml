@@ -1,0 +1,22 @@
+[package]
+name = "claw-kernel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+claw-pal = { path = "../crates/claw-pal" }
+claw-runtime = { path = "../crates/claw-runtime" }
+claw-provider = { path = "../crates/claw-provider" }
+claw-tools = { path = "../crates/claw-tools" }
+claw-loop = { path = "../crates/claw-loop" }
+claw-memory = { path = "../crates/claw-memory" }
+claw-channel = { path = "../crates/claw-channel" }
+claw-script = { path = "../crates/claw-script" }
+
+
+[features]
+default = ["engine-lua"]
+engine-lua = ["claw-script/engine-lua"]

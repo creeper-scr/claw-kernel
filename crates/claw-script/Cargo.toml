@@ -1,0 +1,21 @@
+[package]
+name = "claw-script"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+claw-tools = { path = "../claw-tools" }
+claw-pal = { path = "../claw-pal" }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+mlua = { workspace = true, optional = true }
+
+[features]
+default = ["engine-lua"]
+engine-lua = ["dep:mlua"]

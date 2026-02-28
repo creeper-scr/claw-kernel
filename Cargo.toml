@@ -31,8 +31,12 @@ repository = "https://github.com/claw-project/claw-kernel"
 tokio = { version = "1.35.0", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
 async-trait = "0.1.77"
 
+# 并发数据结构 (Concurrent Data Structures)
+dashmap = "5.5.3"
+futures = "0.3"
+
 # HTTP 客户端 (HTTP Client) - 兼容 Tokio 1.35+
-reqwest = { version = "0.11.23", features = ["json", "stream"] }
+reqwest = { version = "0.11.23", features = ["json", "stream", "rustls-tls"], default-features = false }
 
 # 序列化 (Serialization)
 serde = { version = "1.0.195", features = ["derive"] }
@@ -46,6 +50,7 @@ anyhow = "1.0.79"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
+
 # ============================================
 # PAL 层依赖 (Platform Abstraction)
 # ============================================
@@ -56,21 +61,22 @@ interprocess = { version = "1.2.1", features = ["tokio"] }
 dirs = "5.0.1"
 
 # Linux 沙箱
-[target.'cfg(target_os = "linux")'.dependencies]
 libseccomp = "0.3.0"
 nix = { version = "0.27.1", features = ["process", "sched"] }
+
+
 
 # ============================================
 # 脚本引擎 (Script Engines)
 # ============================================
 # Lua 引擎 - 默认，零额外依赖，兼容 Rust 1.83+
-mlua = { version = "0.9.4", features = ["lua54", "async", "send", "serde"], optional = true }
+mlua = { version = "0.9.4", features = ["lua54", "async", "send", "serde"] }
 
 # Deno/V8 引擎 - 需要 Node.js ≥ 20
-deno_core = { version = "0.245.0", optional = true }
+deno_core = { version = "0.245.0" }
 
 # Python 引擎 - 需要 Rust 1.83+, Python ≥ 3.10
-pyo3 = { version = "0.28.0", features = ["auto-initialize"], optional = true }
+pyo3 = { version = "0.28.0", features = ["auto-initialize"] }
 
 # ============================================
 # 工具与扩展 (Tools & Extensions)
@@ -79,51 +85,37 @@ pyo3 = { version = "0.28.0", features = ["auto-initialize"], optional = true }
 schemars = "0.8.16"
 
 # 文件监视 (热加载)
-notify = { version = "6.1.1", features = ["tokio"] }
+notify = "6.1.1"
 
 # SQLite 后端
-rusqlite = { version = "0.30.0", features = ["bundled", "chrono"], optional = true }
+rusqlite = { version = "0.30.0", features = ["bundled", "chrono"] }
 
 # ============================================
 # Channel 层依赖
 # ============================================
 # Discord 集成
-twilight-gateway = { version = "0.15.4", optional = true }
-twilight-model = { version = "0.15.4", optional = true }
+twilight-gateway = { version = "0.15.4" }
+twilight-model = { version = "0.15.4" }
 
 # HTTP Webhook
-axum = { version = "0.7.4", optional = true }
-tower = { version = "0.4.13", optional = true }
+axum = { version = "0.7.4" }
+tower = { version = "0.4.13" }
+
+
+
 
 # ============================================
-# 测试依赖
+# 编译配置 (Build Profiles)
 # ============================================
-[dev-dependencies]
-tokio-test = "0.4.3"
-mockall = "0.12.1"
-wiremock = "0.6.0"
+[profile.dev]
+panic = "unwind"
 
-# ============================================
-# 特性配置 (Feature Flags)
-# ============================================
-[features]
-default = [
-    "engine-lua",
-    "in-memory",
-]
+[profile.release]
+panic = "unwind"
 
-# 脚本引擎特性
-engine-lua = ["dep:mlua"]
-engine-v8 = ["dep:deno_core"]      # 需要 Node.js ≥ 20, 增加 ~100MB
-engine-py = ["dep:pyo3"]           # 需要 Python ≥ 3.10
+[profile.test]
+panic = "unwind"
 
-# 存储后端特性
-in-memory = []
-sqlite = ["dep:rusqlite"]
-
-# Channel 特性
-discord = ["dep:twilight-gateway", "dep:twilight-model"]
-http = ["dep:axum", "dep:tower"]
 
 # ============================================
 # 兼容性说明
