@@ -91,7 +91,13 @@ schemars = "0.8.16"
 notify = "6.1.1"
 
 # SQLite 后端
-rusqlite = { version = "0.30.0", features = ["bundled", "chrono"] }
+rusqlite = { version = "0.32.0", features = ["bundled", "chrono"] }
+
+# sqlite-vec 向量搜索扩展
+sqlite-vec = "0.1.6"
+
+# 零拷贝字节转换（Vec<f32> → &[u8]）
+zerocopy = { version = "0.8", features = ["derive"] }
 
 # ============================================
 # Channel 层依赖

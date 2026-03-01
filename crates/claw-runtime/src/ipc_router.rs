@@ -1,10 +1,6 @@
 use std::sync::Arc;
 
-use crate::{
-    agent_types::A2AMessage,
-    error::RuntimeError,
-    event_bus::EventBus,
-};
+use crate::{agent_types::A2AMessage, error::RuntimeError, event_bus::EventBus};
 
 // ─── IpcRouter ────────────────────────────────────────────────────────────────
 
@@ -32,16 +28,13 @@ impl IpcRouter {
     /// Serialize an `A2AMessage` to JSON bytes suitable for an IPC frame
     /// payload.
     pub fn encode_message(msg: &A2AMessage) -> Result<Vec<u8>, RuntimeError> {
-        serde_json::to_vec(msg).map_err(|e| {
-            RuntimeError::IpcError(format!("encode failed: {}", e))
-        })
+        serde_json::to_vec(msg).map_err(|e| RuntimeError::IpcError(format!("encode failed: {}", e)))
     }
 
     /// Deserialize an IPC frame payload back into an `A2AMessage`.
     pub fn decode_message(bytes: &[u8]) -> Result<A2AMessage, RuntimeError> {
-        serde_json::from_slice(bytes).map_err(|e| {
-            RuntimeError::IpcError(format!("decode failed: {}", e))
-        })
+        serde_json::from_slice(bytes)
+            .map_err(|e| RuntimeError::IpcError(format!("decode failed: {}", e)))
     }
 
     /// Return the IPC endpoint this router is associated with.
@@ -100,7 +93,11 @@ mod tests {
         let result = IpcRouter::decode_message(b"not valid json {{{");
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("IPC error"), "expected IPC error, got: {}", msg);
+        assert!(
+            msg.contains("IPC error"),
+            "expected IPC error, got: {}",
+            msg
+        );
     }
 
     // ── test_ipc_router_encode_empty_payload ─────────────────────────────────

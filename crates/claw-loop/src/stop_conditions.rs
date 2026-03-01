@@ -57,7 +57,11 @@ mod tests {
     fn state_with(turn: u32, total_tokens: u64) -> LoopState {
         LoopState {
             turn,
-            usage: TokenUsage { prompt_tokens: 0, completion_tokens: 0, total_tokens },
+            usage: TokenUsage {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens,
+            },
             history_len: 0,
         }
     }
@@ -69,7 +73,10 @@ mod tests {
         let cond = MaxTurns(5);
         // Turns 0..=4 must not trigger stop.
         for t in 0..5u32 {
-            assert!(!cond.should_stop(&state_with(t, 0)), "should not stop at turn {t}");
+            assert!(
+                !cond.should_stop(&state_with(t, 0)),
+                "should not stop at turn {t}"
+            );
         }
     }
 

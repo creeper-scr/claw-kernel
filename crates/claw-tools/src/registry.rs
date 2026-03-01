@@ -18,7 +18,10 @@ pub struct ToolRegistry {
 impl ToolRegistry {
     /// Create a new empty registry.
     pub fn new() -> Self {
-        Self { tools: DashMap::new(), audit_log: DashMap::new() }
+        Self {
+            tools: DashMap::new(),
+            audit_log: DashMap::new(),
+        }
     }
 
     /// Register a tool. Returns `RegistryError::AlreadyExists` if already registered.
@@ -304,7 +307,10 @@ mod tests {
         let reg = ToolRegistry::new();
         reg.register(make_echo_tool()).unwrap();
         let args = serde_json::json!({"msg": "hello"});
-        let result = reg.execute("echo", args.clone(), default_ctx()).await.unwrap();
+        let result = reg
+            .execute("echo", args.clone(), default_ctx())
+            .await
+            .unwrap();
         assert!(result.success);
         assert_eq!(result.output.as_ref().unwrap(), &args);
     }
@@ -312,7 +318,10 @@ mod tests {
     #[tokio::test]
     async fn test_registry_execute_nonexistent_tool_fails() {
         let reg = ToolRegistry::new();
-        let err = reg.execute("ghost", serde_json::json!({}), default_ctx()).await.unwrap_err();
+        let err = reg
+            .execute("ghost", serde_json::json!({}), default_ctx())
+            .await
+            .unwrap_err();
         assert!(matches!(err, RegistryError::ToolNotFound(_)));
     }
 
@@ -320,7 +329,10 @@ mod tests {
     async fn test_registry_execute_timeout() {
         let reg = ToolRegistry::new();
         reg.register(make_slow_tool()).unwrap();
-        let result = reg.execute("slow", serde_json::json!({}), default_ctx()).await.unwrap();
+        let result = reg
+            .execute("slow", serde_json::json!({}), default_ctx())
+            .await
+            .unwrap();
         // Should return a ToolResult with Timeout error (not a RegistryError)
         assert!(!result.success);
         let err = result.error.as_ref().expect("should have error");

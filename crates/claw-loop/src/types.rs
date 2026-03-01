@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use claw_provider::types::{Message, TokenUsage};
+use serde::{Deserialize, Serialize};
 
 /// Configuration for an agent loop execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]

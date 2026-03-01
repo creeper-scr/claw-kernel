@@ -52,7 +52,11 @@ impl ScriptEngine for LuaEngine {
         "lua"
     }
 
-    async fn execute(&self, script: &Script, ctx: &ScriptContext) -> Result<ScriptValue, ScriptError> {
+    async fn execute(
+        &self,
+        script: &Script,
+        ctx: &ScriptContext,
+    ) -> Result<ScriptValue, ScriptError> {
         let source = script.source.clone();
         let agent_id = ctx.agent_id.clone();
         let globals_map = ctx.globals.clone();
@@ -67,8 +71,8 @@ impl ScriptEngine for LuaEngine {
 
             // Inject caller-supplied globals
             for (key, val) in &globals_map {
-                let lua_val = json_to_lua(&lua, val)
-                    .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+                let lua_val =
+                    json_to_lua(&lua, val).map_err(|e| ScriptError::Runtime(e.to_string()))?;
                 lua.globals()
                     .set(key.as_str(), lua_val)
                     .map_err(|e| ScriptError::Runtime(e.to_string()))?;

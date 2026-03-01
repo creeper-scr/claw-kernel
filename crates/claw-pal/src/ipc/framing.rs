@@ -118,7 +118,9 @@ mod tests {
         }
         let mut cursor = Cursor::new(buf);
         for expected in messages {
-            let got = read_frame(&mut cursor).await.expect("frame read should succeed");
+            let got = read_frame(&mut cursor)
+                .await
+                .expect("frame read should succeed");
             assert_eq!(&got, expected);
         }
     }

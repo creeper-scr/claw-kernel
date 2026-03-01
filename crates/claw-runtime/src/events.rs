@@ -1,16 +1,24 @@
-use serde::{Deserialize, Serialize};
 use crate::agent_types::AgentId;
+use serde::{Deserialize, Serialize};
 
 /// System-wide lifecycle events broadcast over the EventBus.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Event {
     // ── Agent lifecycle ──────────────────────────────────────────────────────
-    AgentStarted { agent_id: AgentId },
-    AgentStopped { agent_id: AgentId, reason: String },
+    AgentStarted {
+        agent_id: AgentId,
+    },
+    AgentStopped {
+        agent_id: AgentId,
+        reason: String,
+    },
 
     // ── LLM interaction ──────────────────────────────────────────────────────
-    LlmRequestStarted { agent_id: AgentId, provider: String },
+    LlmRequestStarted {
+        agent_id: AgentId,
+        provider: String,
+    },
     LlmRequestCompleted {
         agent_id: AgentId,
         prompt_tokens: u64,
@@ -45,7 +53,10 @@ pub enum Event {
     },
 
     // ── Security ─────────────────────────────────────────────────────────────
-    ModeChanged { agent_id: AgentId, to_power_mode: bool },
+    ModeChanged {
+        agent_id: AgentId,
+        to_power_mode: bool,
+    },
 
     // ── System ───────────────────────────────────────────────────────────────
     Shutdown,

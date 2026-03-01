@@ -21,10 +21,7 @@ pub trait MessageFormat: Send + Sync {
     ) -> Result<serde_json::Value, ProviderError>;
 
     /// Parse a non-streaming JSON response body.
-    fn parse_response(
-        &self,
-        raw: serde_json::Value,
-    ) -> Result<CompletionResponse, ProviderError>;
+    fn parse_response(&self, raw: serde_json::Value) -> Result<CompletionResponse, ProviderError>;
 
     /// Parse one SSE/NDJSON chunk from a streaming response.
     /// Returns `None` if the chunk signals stream end (e.g., `[DONE]`).
@@ -131,10 +128,8 @@ mod tests {
             &self,
             _messages: Vec<Message>,
             _opts: Options,
-        ) -> Result<
-            Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>,
-            ProviderError,
-        > {
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError>
+        {
             use futures::stream;
             Ok(Box::pin(stream::empty()))
         }
@@ -145,7 +140,10 @@ mod tests {
         let provider = MockProvider;
         let messages = vec![Message::user("hello")];
         let opts = Options::new("mock-v1");
-        let resp = provider.complete(messages, opts).await.expect("complete failed");
+        let resp = provider
+            .complete(messages, opts)
+            .await
+            .expect("complete failed");
         assert_eq!(resp.id, "mock-id");
         assert_eq!(resp.model, "mock-v1");
         assert_eq!(resp.message.content, "mock response");

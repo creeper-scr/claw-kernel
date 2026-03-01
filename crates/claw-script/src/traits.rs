@@ -12,7 +12,11 @@ pub trait ScriptEngine: Send + Sync {
     fn engine_type(&self) -> &str;
 
     /// Execute a script and return the last expression value.
-    async fn execute(&self, script: &Script, ctx: &ScriptContext) -> Result<ScriptValue, ScriptError>;
+    async fn execute(
+        &self,
+        script: &Script,
+        ctx: &ScriptContext,
+    ) -> Result<ScriptValue, ScriptError>;
 
     /// Check if a script compiles (no execution).
     fn validate(&self, script: &Script) -> Result<(), ScriptError>;
@@ -27,7 +31,7 @@ mod tests {
     #[cfg(feature = "engine-lua")]
     #[tokio::test]
     async fn test_script_engine_trait_object() {
-        use crate::{LuaEngine, types::Script};
+        use crate::{types::Script, LuaEngine};
 
         // Verify that LuaEngine can be used as a Box<dyn ScriptEngine>
         let engine: Box<dyn ScriptEngine> = Box::new(LuaEngine);

@@ -42,14 +42,16 @@ impl OpenAIProvider {
     pub fn from_env() -> Result<Self, ProviderError> {
         let api_key = std::env::var("OPENAI_API_KEY")
             .map_err(|_| ProviderError::Auth("OPENAI_API_KEY not set".into()))?;
-        let model =
-            std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+        let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
         Ok(Self::new(api_key, model))
     }
 
     fn build_headers(&self) -> Vec<(String, String)> {
         vec![
-            ("Authorization".to_string(), format!("Bearer {}", self.api_key)),
+            (
+                "Authorization".to_string(),
+                format!("Bearer {}", self.api_key),
+            ),
             ("Content-Type".to_string(), "application/json".to_string()),
         ]
     }
@@ -73,8 +75,10 @@ impl LLMProvider for OpenAIProvider {
         let body = self.format.format_request(&messages, &options)?;
         let url = format!("{}/chat/completions", self.base_url);
         let headers_owned = self.build_headers();
-        let headers: Vec<(&str, &str)> =
-            headers_owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let headers: Vec<(&str, &str)> = headers_owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         let raw = self.transport.post_json(&url, &headers, &body).await?;
         self.format.parse_response(raw)
     }
@@ -85,38 +89,42 @@ impl LLMProvider for OpenAIProvider {
         options: Options,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError>
     {
-        let stream_opts = Options { stream: true, ..options };
+        let stream_opts = Options {
+            stream: true,
+            ..options
+        };
         let body = self.format.format_request(&messages, &stream_opts)?;
         let url = format!("{}/chat/completions", self.base_url);
         let headers_owned = self.build_headers();
-        let headers: Vec<(&str, &str)> =
-            headers_owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let headers: Vec<(&str, &str)> = headers_owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         let byte_stream = self.transport.post_stream(&url, &headers, &body).await?;
 
         let format = OpenAIFormat::new();
-        let delta_stream = byte_stream
-            .flat_map(move |chunk_result| {
-                let deltas: Vec<Result<Delta, ProviderError>> = match chunk_result {
-                    Err(e) => vec![Err(e)],
-                    Ok(bytes) => {
-                        let text = String::from_utf8_lossy(&bytes);
-                        text.lines()
-                            .filter_map(|line| {
-                                let trimmed = line.trim();
-                                if trimmed.is_empty() {
-                                    return None;
-                                }
-                                match format.parse_stream_chunk(trimmed) {
-                                    Ok(Some(delta)) => Some(Ok(delta)),
-                                    Ok(None) => None,
-                                    Err(e) => Some(Err(e)),
-                                }
-                            })
-                            .collect()
-                    }
-                };
-                futures::stream::iter(deltas)
-            });
+        let delta_stream = byte_stream.flat_map(move |chunk_result| {
+            let deltas: Vec<Result<Delta, ProviderError>> = match chunk_result {
+                Err(e) => vec![Err(e)],
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    text.lines()
+                        .filter_map(|line| {
+                            let trimmed = line.trim();
+                            if trimmed.is_empty() {
+                                return None;
+                            }
+                            match format.parse_stream_chunk(trimmed) {
+                                Ok(Some(delta)) => Some(Ok(delta)),
+                                Ok(None) => None,
+                                Err(e) => Some(Err(e)),
+                            }
+                        })
+                        .collect()
+                }
+            };
+            futures::stream::iter(deltas)
+        });
 
         Ok(Box::pin(delta_stream))
     }

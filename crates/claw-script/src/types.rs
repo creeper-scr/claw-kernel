@@ -17,7 +17,11 @@ pub struct Script {
 
 impl Script {
     pub fn lua(name: impl Into<String>, source: impl Into<String>) -> Self {
-        Self { name: name.into(), source: source.into(), engine: EngineType::Lua }
+        Self {
+            name: name.into(),
+            source: source.into(),
+            engine: EngineType::Lua,
+        }
     }
 }
 
@@ -32,7 +36,10 @@ pub struct ScriptContext {
 
 impl ScriptContext {
     pub fn new(agent_id: impl Into<String>) -> Self {
-        Self { agent_id: agent_id.into(), globals: Default::default() }
+        Self {
+            agent_id: agent_id.into(),
+            globals: Default::default(),
+        }
     }
 
     pub fn with_global(mut self, key: impl Into<String>, val: serde_json::Value) -> Self {

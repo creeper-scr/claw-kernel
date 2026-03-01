@@ -22,8 +22,7 @@ pub struct SqliteMemoryStore {
 impl SqliteMemoryStore {
     /// Open (or create) a database at the given path.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, MemoryError> {
-        let conn =
-            Connection::open(path).map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let conn = Connection::open(path).map_err(|e| MemoryError::Storage(e.to_string()))?;
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
         };
@@ -33,8 +32,7 @@ impl SqliteMemoryStore {
 
     /// In-memory database – useful for tests.
     pub fn in_memory() -> Result<Self, MemoryError> {
-        let conn = Connection::open_in_memory()
-            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let conn = Connection::open_in_memory().map_err(|e| MemoryError::Storage(e.to_string()))?;
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
         };
@@ -114,8 +112,7 @@ impl MemoryStore for SqliteMemoryStore {
             .embedding
             .as_ref()
             .map(|e| serde_json::to_string(e).unwrap_or_default());
-        let tags_json =
-            serde_json::to_string(&item.tags).unwrap_or_else(|_| "[]".to_string());
+        let tags_json = serde_json::to_string(&item.tags).unwrap_or_else(|_| "[]".to_string());
 
         conn.execute(
             "INSERT OR REPLACE INTO memory_items
@@ -350,11 +347,9 @@ fn row_to_memory_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryItem> {
     let accessed_at_ms: i64 = row.get(6)?;
     let importance: f32 = row.get(7)?;
 
-    let embedding: Option<Vec<f32>> = embedding_json.and_then(|json| {
-        serde_json::from_str(&json).ok()
-    });
-    let tags: Vec<String> =
-        serde_json::from_str(&tags_json).unwrap_or_default();
+    let embedding: Option<Vec<f32>> =
+        embedding_json.and_then(|json| serde_json::from_str(&json).ok());
+    let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
 
     Ok(MemoryItem {
         id: MemoryId::new(id_str),
@@ -450,16 +445,33 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_store_clear_namespace() {
         let store = SqliteMemoryStore::in_memory().unwrap();
-        store.store(make_item_with_id("ns-a", "item 1", "a1")).await.unwrap();
-        store.store(make_item_with_id("ns-a", "item 2", "a2")).await.unwrap();
-        store.store(make_item_with_id("ns-b", "item 3", "b1")).await.unwrap();
+        store
+            .store(make_item_with_id("ns-a", "item 1", "a1"))
+            .await
+            .unwrap();
+        store
+            .store(make_item_with_id("ns-a", "item 2", "a2"))
+            .await
+            .unwrap();
+        store
+            .store(make_item_with_id("ns-b", "item 3", "b1"))
+            .await
+            .unwrap();
 
         let deleted = store.clear_namespace("ns-a").await.unwrap();
         assert_eq!(deleted, 2);
 
         // ns-b item still exists
-        assert!(store.retrieve(&MemoryId::new("b1")).await.unwrap().is_some());
-        assert!(store.retrieve(&MemoryId::new("a1")).await.unwrap().is_none());
+        assert!(store
+            .retrieve(&MemoryId::new("b1"))
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .retrieve(&MemoryId::new("a1"))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -491,8 +503,8 @@ mod tests {
     async fn test_sqlite_store_store_with_embedding() {
         let store = SqliteMemoryStore::in_memory().unwrap();
         let embedding = vec![0.1f32, 0.2, 0.3, 0.4];
-        let item = make_item_with_id("ns1", "embedded item", "emb-1")
-            .with_embedding(embedding.clone());
+        let item =
+            make_item_with_id("ns1", "embedded item", "emb-1").with_embedding(embedding.clone());
 
         store.store(item).await.unwrap();
 
@@ -513,8 +525,7 @@ mod tests {
         let store = SqliteMemoryStore::in_memory().unwrap();
 
         let emb = vec![1.0f32, 0.0, 0.0, 0.0];
-        let item = make_item_with_id("ns1", "relevant item", "sem-1")
-            .with_embedding(emb.clone());
+        let item = make_item_with_id("ns1", "relevant item", "sem-1").with_embedding(emb.clone());
         store.store(item).await.unwrap();
 
         let results = store.semantic_search(&emb, 5).await.unwrap();
@@ -530,11 +541,10 @@ mod tests {
         let query = vec![1.0f32, 0.0, 0.0];
 
         // close match
-        let close = make_item_with_id("ns1", "close", "close-1")
-            .with_embedding(vec![0.9f32, 0.1, 0.0]);
+        let close =
+            make_item_with_id("ns1", "close", "close-1").with_embedding(vec![0.9f32, 0.1, 0.0]);
         // far match
-        let far = make_item_with_id("ns1", "far", "far-1")
-            .with_embedding(vec![0.0f32, 0.0, 1.0]);
+        let far = make_item_with_id("ns1", "far", "far-1").with_embedding(vec![0.0f32, 0.0, 1.0]);
 
         store.store(close).await.unwrap();
         store.store(far).await.unwrap();

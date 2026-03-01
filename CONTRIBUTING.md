@@ -1,9 +1,9 @@
 ---
 title: Contributing to claw-kernel
-description: Contribution guidelines for claw-kernel project
-status: design-phase
+description: Contribution guidelines, dependency versions, and feature matrix for claw-kernel
+status: v0.1.0
 version: "0.1.0"
-last_updated: "2026-02-28"
+last_updated: "2026-03-01"
 language: bilingual
 ---
 
@@ -15,7 +15,7 @@ language: bilingual
 
 claw-kernel is the shared foundation of the Claw ecosystem. We hold contributions to a high standard, but the bar for getting started is intentionally low. Every bug report, doc fix, and test improvement matters.
 
-> **Project Status**: Design/Planning Phase. The `crates/` directory is empty. This is a great time to contribute to architecture and documentation.
+> **Project Status**: v0.1.0 released. 9 crates implemented, 389 tests passing. Great time to contribute new providers, sandbox hardening, or test coverage.
 
 ## Code of Conduct
 
@@ -158,16 +158,17 @@ ADR format: **Context -> Decision -> Consequences**.
 
 ## High-Priority Areas
 
-- **Windows sandbox hardening** — AppContainer/Job Object coverage is the weakest link
 - **New LLM providers** — Gemini, Mistral, local GGUF models (llama.cpp-compatible)
-- **Script bridge improvements** — Lua to Rust FFI performance, Deno/V8 embedding stability
-- **Platform-specific test coverage** — especially Windows CI edge cases
-- **Documentation** — architecture explanations, guide corrections, translation
+- **Windows sandbox hardening** — AppContainer/Job Object implementation is not yet complete
+- **Deno/V8 engine bridge** — `engine-v8` feature using `deno_core`
+- **Python engine bridge** — `engine-py` feature using PyO3
+- **Integration test expansion** — cross-platform CI coverage, sandbox-tests
+- **Documentation** — guide corrections, rustdoc examples, translation
 
 ## Development FAQ
 
-**Q: `crates/` is empty. Where do I start?**
-Read `docs/architecture/overview.md` and `BUILD_PLAN.md`. Phase 1 is `claw-pal`.
+**Q: Where do I start?**
+Run `cargo test --workspace` to get your bearings. Then read `docs/architecture/overview.md` to understand the layer structure. Pick a High-Priority Area above.
 
 **Q: Do I need to test on all three platforms?**
 Test on your local platform. CI covers the others. Note which platform you tested in the PR.
@@ -177,6 +178,74 @@ Open a discussion. We can add targeted `#[allow(...)]` with a comment, but we do
 
 **Q: Does my change need an ADR?**
 If it changes a public interface, adds a dependency, or affects the security model, probably yes. When in doubt, ask in a GitHub Discussion.
+
+## Dependency Versions
+
+> Actual pinned versions are in `Cargo.toml`. Below is the authoritative reference.
+
+### Core Runtime
+
+```toml
+tokio = { version = "1.35.0", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+async-trait = "0.1.77"
+reqwest = { version = "0.11.23", features = ["json", "stream"] }
+serde = { version = "1.0.195", features = ["derive"] }
+serde_json = "1.0.111"
+thiserror = "1.0.56"
+anyhow = "1.0.79"
+tracing = "0.1.40"
+```
+
+### PAL Layer
+
+```toml
+interprocess = { version = "1.2.1", features = ["tokio_support"] }
+dirs = "5.0.1"
+# Linux only:
+libseccomp = "0.3.0"
+nix = { version = "0.27.1", features = ["process", "sched"] }
+```
+
+### Script Engines & Optional
+
+```toml
+mlua = { version = "0.9.4", features = ["lua54", "async", "send", "serde"], optional = true }
+deno_core = { version = "0.245.0", optional = true }       # engine-v8; needs Node.js >= 20
+pyo3 = { version = "0.28.0", features = ["auto-initialize"], optional = true }  # engine-py; needs Python >= 3.10
+schemars = "0.8.16"
+notify = { version = "6.1.1", features = ["tokio"] }
+rusqlite = { version = "0.30.0", features = ["bundled", "chrono"], optional = true }
+```
+
+## Feature Matrix
+
+| Config | Features | Use Case | Approx Build Time | Binary Size |
+|--------|----------|----------|-------------------|-------------|
+| minimal | `engine-lua` | Prototyping | < 2 min | ~5 MB |
+| **default** | `engine-lua`, `sqlite` | Production | < 3 min | ~8 MB |
+| full-js | + `engine-v8` | JS/TS ecosystem | ~30 min | ~100 MB |
+| ml-ready | + `engine-py` | ML integration | ~10 min | ~50 MB |
+| complete | all | Everything | ~35 min | ~120 MB |
+
+*Build times: AMD Ryzen 5 5600X, 32 GB RAM, SSD, first build, no sccache. Binary sizes: release+stripped, Linux.*
+
+**Known constraints:**
+- `engine-py` requires Rust **1.83+** (PyO3 0.28+ hard requirement) and Python ≥ 3.10; GIL conflicts with async — run Python code in a separate thread or use `pyo3-async-runtimes`
+- `engine-v8` first build ~30 min; mitigate with `sccache` or CI cache
+- Windows sandbox (AppContainer) requires admin for testing; WSL2 recommended for development
+
+## Adding claw-kernel as a Dependency
+
+```toml
+# Minimal
+claw-kernel = { version = "0.1", default-features = false, features = ["engine-lua"] }
+
+# Recommended (with persistence)
+claw-kernel = { version = "0.1", features = ["engine-lua", "sqlite"] }
+
+# Full
+claw-kernel = { version = "0.1", features = ["full"] }
+```
 
 ## Recognition
 
@@ -192,7 +261,7 @@ Questions? [GitHub Discussions](https://github.com/claw-project/claw-kernel/disc
 
 claw-kernel 是 Claw 生态系统的共享基础。我们对贡献有较高的标准，但开始参与的门槛被有意设置得很低。
 
-> **项目状态**：设计/规划阶段。`crates/` 目录为空，现在是参与架构和文档贡献的好时机。
+> **项目状态**：v0.1.0 已发布。9 个 crate 已实现，389 个测试通过。现在是参与新 Provider、沙箱加固或测试覆盖的好时机。
 
 ## 行为准则
 
@@ -298,15 +367,16 @@ ADR 格式：**背景 -> 决策 -> 后果**。
 
 ## 高优先级领域
 
-- **Windows 沙箱加固** — AppContainer/Job Object 覆盖是最薄弱的环节
-- **新的 LLM 提供商实现** — Gemini、Mistral、本地 GGUF 模型（llama.cpp 兼容）
-- **脚本桥接改进** — Lua 到 Rust FFI 性能、Deno/V8 嵌入稳定性
-- **平台特定测试覆盖** — 特别是 Windows CI 边缘情况
-- **文档** — 架构说明、指南修正、翻译改进
+- **新的 LLM Provider 实现** — Gemini、Mistral、本地 GGUF 模型（llama.cpp 兼容）
+- **Windows 沙箱加固** — AppContainer/Job Object 实现尚不完整
+- **Deno/V8 引擎桥接** — 使用 `deno_core` 实现 `engine-v8` feature
+- **Python 引擎桥接** — 使用 PyO3 实现 `engine-py` feature
+- **集成测试扩展** — 跨平台 CI 覆盖、sandbox-tests
+- **文档** — 指南修正、rustdoc 示例、翻译改进
 
 ## 开发常见问题
 
-**Q：`crates/` 为空，从哪里开始？** 阅读 `docs/architecture/overview.md` 和 `BUILD_PLAN.md`，第一阶段是 `claw-pal`。
+**Q：从哪里开始？** 运行 `cargo test --workspace` 熟悉代码库，然后阅读 `docs/architecture/overview.md` 了解层次架构，再从上方高优先级领域中选择一个切入点。
 
 **Q：需要在所有三个平台上测试吗？** 在本地平台测试即可，CI 覆盖其他平台，在 PR 中注明测试平台。
 
@@ -319,3 +389,7 @@ ADR 格式：**背景 -> 决策 -> 后果**。
 所有贡献者都会在发布说明和 GitHub 贡献者图表中获得致谢。提交 PR 即表示您同意贡献在 MIT OR Apache-2.0 双重许可证下授权。
 
 有问题？[GitHub Discussions](https://github.com/claw-project/claw-kernel/discussions) 用于设计问题，[Issues](https://github.com/claw-project/claw-kernel/issues) 用于 Bug，在 PR 中标记 `@claw-project/maintainers` 获得更快审查。
+
+## 依赖版本与特性矩阵
+
+依赖版本和特性配置矩阵（Feature Matrix）请参阅英文部分的 [Dependency Versions](#dependency-versions) 和 [Feature Matrix](#feature-matrix)，内容与中文说明完全对应，此处不重复。

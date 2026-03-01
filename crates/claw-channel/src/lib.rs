@@ -5,9 +5,9 @@
 //! `Channel` trait.
 
 pub mod error;
-pub mod types;
 pub mod traits;
+pub mod types;
 
 pub use error::ChannelError;
-pub use types::{ChannelId, ChannelMessage, MessageDirection, Platform};
 pub use traits::Channel;
+pub use types::{ChannelId, ChannelMessage, MessageDirection, Platform};

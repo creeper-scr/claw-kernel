@@ -16,4 +16,4 @@ pub use secure::SecureMemoryStore;
 pub use sqlite::SqliteMemoryStore;
 pub use traits::{Embedder, MemoryStore};
 pub use types::{EpisodeId, EpisodicEntry, EpisodicFilter, MemoryId, MemoryItem};
-pub use worker::{MemoryWorker, MemoryWorkerHandle, ArchiveRequest};
+pub use worker::{ArchiveRequest, MemoryWorker, MemoryWorkerHandle};

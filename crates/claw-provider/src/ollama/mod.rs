@@ -37,8 +37,7 @@ impl OllamaProvider {
     }
 
     pub fn from_env() -> Result<Self, ProviderError> {
-        let model =
-            std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3".to_string());
+        let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3".to_string());
         let base_url = std::env::var("OLLAMA_BASE_URL")
             .unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
         Ok(Self::new(model).with_base_url(base_url))
@@ -71,8 +70,10 @@ impl LLMProvider for OllamaProvider {
         let body = self.format.format_request(&messages, &options)?;
         let url = format!("{}/chat/completions", self.base_url);
         let headers_owned = self.build_headers();
-        let headers: Vec<(&str, &str)> =
-            headers_owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let headers: Vec<(&str, &str)> = headers_owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         let raw = self.transport.post_json(&url, &headers, &body).await?;
         self.format.parse_response(raw)
     }
@@ -83,12 +84,17 @@ impl LLMProvider for OllamaProvider {
         options: Options,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError>
     {
-        let stream_opts = Options { stream: true, ..options };
+        let stream_opts = Options {
+            stream: true,
+            ..options
+        };
         let body = self.format.format_request(&messages, &stream_opts)?;
         let url = format!("{}/chat/completions", self.base_url);
         let headers_owned = self.build_headers();
-        let headers: Vec<(&str, &str)> =
-            headers_owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let headers: Vec<(&str, &str)> = headers_owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         let byte_stream = self.transport.post_stream(&url, &headers, &body).await?;
 
         let format = OpenAIFormat::new();

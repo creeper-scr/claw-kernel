@@ -26,16 +26,28 @@ pub struct ToolError {
 
 impl ToolError {
     pub fn invalid_args(msg: impl Into<String>) -> Self {
-        Self { code: ToolErrorCode::InvalidArguments, message: msg.into() }
+        Self {
+            code: ToolErrorCode::InvalidArguments,
+            message: msg.into(),
+        }
     }
     pub fn permission_denied(msg: impl Into<String>) -> Self {
-        Self { code: ToolErrorCode::PermissionDenied, message: msg.into() }
+        Self {
+            code: ToolErrorCode::PermissionDenied,
+            message: msg.into(),
+        }
     }
     pub fn timeout() -> Self {
-        Self { code: ToolErrorCode::Timeout, message: "execution timed out".to_string() }
+        Self {
+            code: ToolErrorCode::Timeout,
+            message: "execution timed out".to_string(),
+        }
     }
     pub fn internal(msg: impl Into<String>) -> Self {
-        Self { code: ToolErrorCode::InternalError, message: msg.into() }
+        Self {
+            code: ToolErrorCode::InternalError,
+            message: msg.into(),
+        }
     }
 }
 
@@ -54,10 +66,20 @@ pub struct ToolResult {
 
 impl ToolResult {
     pub fn ok(output: serde_json::Value, duration_ms: u64) -> Self {
-        Self { success: true, output: Some(output), error: None, duration_ms }
+        Self {
+            success: true,
+            output: Some(output),
+            error: None,
+            duration_ms,
+        }
     }
     pub fn err(error: ToolError, duration_ms: u64) -> Self {
-        Self { success: false, output: None, error: Some(error), duration_ms }
+        Self {
+            success: false,
+            output: None,
+            error: Some(error),
+            duration_ms,
+        }
     }
 }
 
@@ -80,7 +102,11 @@ impl ToolSchema {
         description: impl Into<String>,
         parameters: serde_json::Value,
     ) -> Self {
-        Self { name: name.into(), description: description.into(), parameters }
+        Self {
+            name: name.into(),
+            description: description.into(),
+            parameters,
+        }
     }
 }
 
@@ -95,10 +121,16 @@ pub struct FsPermissions {
 
 impl FsPermissions {
     pub fn none() -> Self {
-        Self { read_paths: HashSet::new(), write_paths: HashSet::new() }
+        Self {
+            read_paths: HashSet::new(),
+            write_paths: HashSet::new(),
+        }
     }
     pub fn read_only(paths: impl IntoIterator<Item = String>) -> Self {
-        Self { read_paths: paths.into_iter().collect(), write_paths: HashSet::new() }
+        Self {
+            read_paths: paths.into_iter().collect(),
+            write_paths: HashSet::new(),
+        }
     }
 }
 
@@ -111,10 +143,14 @@ pub struct NetworkPermissions {
 
 impl NetworkPermissions {
     pub fn none() -> Self {
-        Self { allowed_domains: HashSet::new() }
+        Self {
+            allowed_domains: HashSet::new(),
+        }
     }
     pub fn allow(domains: impl IntoIterator<Item = String>) -> Self {
-        Self { allowed_domains: domains.into_iter().collect() }
+        Self {
+            allowed_domains: domains.into_iter().collect(),
+        }
     }
 }
 
@@ -169,7 +205,10 @@ pub struct ToolContext {
 
 impl ToolContext {
     pub fn new(agent_id: impl Into<String>, permissions: PermissionSet) -> Self {
-        Self { agent_id: agent_id.into(), permissions }
+        Self {
+            agent_id: agent_id.into(),
+            permissions,
+        }
     }
 }
 

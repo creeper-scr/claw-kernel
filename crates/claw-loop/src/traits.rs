@@ -1,6 +1,6 @@
+use crate::{error::AgentError, types::LoopState};
 use async_trait::async_trait;
 use claw_provider::types::Message;
-use crate::{error::AgentError, types::LoopState};
 
 /// Determines whether the agent loop should stop.
 pub trait StopCondition: Send + Sync {
@@ -51,8 +51,8 @@ pub trait Summarizer: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use claw_provider::types::{Message, TokenUsage};
     use crate::types::LoopState;
+    use claw_provider::types::{Message, TokenUsage};
 
     // ---------------------------------------------------------------------------
     // Mock implementations
@@ -77,7 +77,10 @@ mod tests {
 
     impl SimpleHistory {
         fn new() -> Self {
-            Self { msgs: Vec::new(), cb: None }
+            Self {
+                msgs: Vec::new(),
+                cb: None,
+            }
         }
     }
 

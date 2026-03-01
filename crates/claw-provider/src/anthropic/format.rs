@@ -28,15 +28,12 @@ impl MessageFormat for AnthropicFormat {
         options: &Options,
     ) -> Result<Value, ProviderError> {
         // System prompt: top-level field, not inside messages
-        let system_prompt: Option<String> = options
-            .system
-            .clone()
-            .or_else(|| {
-                messages
-                    .iter()
-                    .find(|m| m.role == Role::System)
-                    .map(|m| m.content.clone())
-            });
+        let system_prompt: Option<String> = options.system.clone().or_else(|| {
+            messages
+                .iter()
+                .find(|m| m.role == Role::System)
+                .map(|m| m.content.clone())
+        });
 
         // Filter out system-role messages from the messages array
         let msg_array: Vec<Value> = messages
@@ -228,10 +225,7 @@ mod tests {
     #[test]
     fn test_anthropic_system_not_in_messages() {
         let f = fmt();
-        let messages = vec![
-            Message::system("Be helpful"),
-            Message::user("hello"),
-        ];
+        let messages = vec![Message::system("Be helpful"), Message::user("hello")];
         let opts = Options::new("claude-opus-4-6");
         let body = f.format_request(&messages, &opts).unwrap();
         // system extracted to top-level
@@ -278,7 +272,8 @@ mod tests {
     #[test]
     fn test_anthropic_parse_stream_chunk_text_delta() {
         let f = fmt();
-        let line = r#"data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}"#;
+        let line =
+            r#"data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}"#;
         let delta = f.parse_stream_chunk(line).unwrap();
         assert!(delta.is_some());
         let d = delta.unwrap();

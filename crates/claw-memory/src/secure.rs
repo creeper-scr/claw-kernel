@@ -154,11 +154,7 @@ impl MemoryStore for SecureMemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        config::MemorySecurityConfig,
-        sqlite::SqliteMemoryStore,
-        types::MemoryItem,
-    };
+    use crate::{config::MemorySecurityConfig, sqlite::SqliteMemoryStore, types::MemoryItem};
 
     fn make_item_with_id(ns: &str, content: &str, id: &str) -> MemoryItem {
         let mut item = MemoryItem::new(ns, content);
@@ -170,11 +166,8 @@ mod tests {
     #[tokio::test]
     async fn test_secure_store_safe_mode_namespace_isolation() {
         let inner = Arc::new(SqliteMemoryStore::in_memory().unwrap());
-        let secure = SecureMemoryStore::new(
-            inner.clone(),
-            MemorySecurityConfig::safe_mode(),
-            "agent-A",
-        );
+        let secure =
+            SecureMemoryStore::new(inner.clone(), MemorySecurityConfig::safe_mode(), "agent-A");
 
         // Store item tagged for "agent-B" — should be rewritten to "agent-A"
         let item = make_item_with_id("agent-B", "secret", "iso-1");
@@ -216,17 +209,18 @@ mod tests {
     #[tokio::test]
     async fn test_secure_store_power_mode_no_restriction() {
         let inner = Arc::new(SqliteMemoryStore::in_memory().unwrap());
-        let secure = SecureMemoryStore::new(
-            inner.clone(),
-            MemorySecurityConfig::power_mode(),
-            "agent-A",
-        );
+        let secure =
+            SecureMemoryStore::new(inner.clone(), MemorySecurityConfig::power_mode(), "agent-A");
 
         // Namespace is NOT rewritten in Power Mode.
         let item = make_item_with_id("agent-B", "data", "pow-1");
         secure.store(item).await.unwrap();
 
-        let stored = inner.retrieve(&MemoryId::new("pow-1")).await.unwrap().unwrap();
+        let stored = inner
+            .retrieve(&MemoryId::new("pow-1"))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             stored.namespace, "agent-B",
             "power mode must not rewrite namespace"
@@ -248,11 +242,7 @@ mod tests {
             .await
             .unwrap();
 
-        let secure = SecureMemoryStore::new(
-            inner,
-            MemorySecurityConfig::safe_mode(),
-            "ns-A",
-        );
+        let secure = SecureMemoryStore::new(inner, MemorySecurityConfig::safe_mode(), "ns-A");
 
         // Can retrieve own item
         let mine = secure.retrieve(&MemoryId::new("my-item")).await.unwrap();
@@ -267,11 +257,7 @@ mod tests {
     #[tokio::test]
     async fn test_secure_store_namespace_usage() {
         let inner = Arc::new(SqliteMemoryStore::in_memory().unwrap());
-        let secure = SecureMemoryStore::new(
-            inner,
-            MemorySecurityConfig::safe_mode(),
-            "usage-ns",
-        );
+        let secure = SecureMemoryStore::new(inner, MemorySecurityConfig::safe_mode(), "usage-ns");
 
         let item = make_item_with_id("usage-ns", "content data", "u1");
         secure.store(item).await.unwrap();

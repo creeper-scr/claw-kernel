@@ -3,15 +3,12 @@
 //! MemoryWorker listens on a channel for Vec<MemoryItem> batches,
 //! persists them to the SqliteMemoryStore, and emits MemoryArchiveComplete
 //! events on the EventBus.
+use crate::{
+    error::MemoryError, sqlite::store::SqliteMemoryStore, traits::MemoryStore, types::MemoryItem,
+};
+use claw_runtime::{agent_types::AgentId, event_bus::EventBus, events::Event};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use claw_runtime::{event_bus::EventBus, events::Event, agent_types::AgentId};
-use crate::{
-    error::MemoryError,
-    sqlite::store::SqliteMemoryStore,
-    traits::MemoryStore,
-    types::MemoryItem,
-};
 
 /// Background worker that archives memory items to SQLite.
 ///
@@ -61,7 +58,11 @@ impl MemoryWorker {
         event_bus: Arc<EventBus>,
     ) -> (Self, MemoryWorkerHandle) {
         let (tx, rx) = mpsc::channel(256);
-        let worker = Self { store, event_bus, rx };
+        let worker = Self {
+            store,
+            event_bus,
+            rx,
+        };
         let handle = MemoryWorkerHandle { tx };
         (worker, handle)
     }

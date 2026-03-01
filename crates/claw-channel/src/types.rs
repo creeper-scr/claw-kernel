@@ -5,8 +5,12 @@ use serde::{Deserialize, Serialize};
 pub struct ChannelId(pub String);
 
 impl ChannelId {
-    pub fn new(id: impl Into<String>) -> Self { Self(id.into()) }
-    pub fn as_str(&self) -> &str { &self.0 }
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl std::fmt::Display for ChannelId {
@@ -27,7 +31,7 @@ pub enum MessageDirection {
 pub enum Platform {
     Discord,
     Webhook,
-    Stdin,  // for testing / CLI
+    Stdin, // for testing / CLI
 }
 
 impl std::fmt::Display for Platform {
@@ -58,11 +62,7 @@ pub struct ChannelMessage {
 
 impl ChannelMessage {
     /// Create a new inbound message.
-    pub fn inbound(
-        channel_id: ChannelId,
-        platform: Platform,
-        content: impl Into<String>,
-    ) -> Self {
+    pub fn inbound(channel_id: ChannelId, platform: Platform, content: impl Into<String>) -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -80,11 +80,7 @@ impl ChannelMessage {
     }
 
     /// Create a new outbound message.
-    pub fn outbound(
-        channel_id: ChannelId,
-        platform: Platform,
-        content: impl Into<String>,
-    ) -> Self {
+    pub fn outbound(channel_id: ChannelId, platform: Platform, content: impl Into<String>) -> Self {
         let mut msg = Self::inbound(channel_id, platform, content);
         msg.direction = MessageDirection::Outbound;
         msg
@@ -96,10 +92,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_channel_id_display() { assert_eq!(ChannelId::new("ch-1").to_string(), "ch-1"); }
+    fn test_channel_id_display() {
+        assert_eq!(ChannelId::new("ch-1").to_string(), "ch-1");
+    }
 
     #[test]
-    fn test_platform_display() { assert_eq!(Platform::Discord.to_string(), "discord"); }
+    fn test_platform_display() {
+        assert_eq!(Platform::Discord.to_string(), "discord");
+    }
 
     #[test]
     fn test_inbound_message() {

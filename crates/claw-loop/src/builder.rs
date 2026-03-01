@@ -95,9 +95,9 @@ impl AgentLoopBuilder {
     ///
     /// Returns `Err(AgentError::Context)` if no provider was set.
     pub fn build(mut self) -> Result<AgentLoop, AgentError> {
-        let provider = self.provider.ok_or_else(|| {
-            AgentError::Context("no provider set".to_string())
-        })?;
+        let provider = self
+            .provider
+            .ok_or_else(|| AgentError::Context("no provider set".to_string()))?;
 
         // Auto-wire stop conditions that mirror the scalar config fields.
         self.stop_conditions
@@ -141,8 +141,12 @@ mod tests {
 
     #[async_trait]
     impl LLMProvider for MockProvider {
-        fn provider_id(&self) -> &str { "mock" }
-        fn model_id(&self) -> &str { "mock-v1" }
+        fn provider_id(&self) -> &str {
+            "mock"
+        }
+        fn model_id(&self) -> &str {
+            "mock-v1"
+        }
 
         async fn complete(
             &self,
@@ -154,7 +158,11 @@ mod tests {
                 model: "mock-v1".to_string(),
                 message: Message::assistant("ok"),
                 finish_reason: FinishReason::Stop,
-                usage: TokenUsage { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+                usage: TokenUsage {
+                    prompt_tokens: 5,
+                    completion_tokens: 3,
+                    total_tokens: 8,
+                },
             })
         }
 
@@ -179,15 +187,15 @@ mod tests {
     #[test]
     fn test_builder_requires_provider() {
         let result = AgentLoopBuilder::new().build();
-        assert!(
-            result.is_err(),
-            "build without provider should return Err"
-        );
+        assert!(result.is_err(), "build without provider should return Err");
         // Extract the error without requiring T: Debug on AgentLoop.
         let err = result.err().expect("expected an Err");
         match err {
             AgentError::Context(msg) => {
-                assert!(msg.contains("no provider"), "error message should mention provider, got: {msg}");
+                assert!(
+                    msg.contains("no provider"),
+                    "error message should mention provider, got: {msg}"
+                );
             }
             other => panic!("unexpected error variant: {other:?}"),
         }
@@ -227,6 +235,9 @@ mod tests {
         // Verify the names are present.
         let names: Vec<&str> = agent.stop_conditions.iter().map(|c| c.name()).collect();
         assert!(names.contains(&"max_turns"), "max_turns condition missing");
-        assert!(names.contains(&"token_budget"), "token_budget condition missing");
+        assert!(
+            names.contains(&"token_budget"),
+            "token_budget condition missing"
+        );
     }
 }

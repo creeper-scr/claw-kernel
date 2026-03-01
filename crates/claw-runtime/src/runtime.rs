@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    error::RuntimeError,
-    event_bus::EventBus,
-    events::Event,
-    ipc_router::IpcRouter,
+    error::RuntimeError, event_bus::EventBus, events::Event, ipc_router::IpcRouter,
     orchestrator::AgentOrchestrator,
 };
 

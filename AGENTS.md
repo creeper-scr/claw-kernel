@@ -1,9 +1,9 @@
 ---
 title: claw-kernel Project Guide for AI Agents
 description: Comprehensive guide for AI coding agents working on claw-kernel
-status: design-phase
+status: v0.1.0
 version: "0.1.0"
-last_updated: "2026-02-28"
+last_updated: "2026-03-01"
 language: en
 ---
 
@@ -11,9 +11,7 @@ language: en
 
 > The shared foundation for the Claw ecosystem — a cross-platform Agent Kernel built in Rust with embedded scripting and hot-loading capabilities.
 
-**Language:** English (primary), Chinese (secondary in documentation)  
-**License:** MIT OR Apache-2.0  
-**Status:** Design/Planning Phase — `crates/` directory is empty, no implementation started yet
+**License:** MIT OR Apache-2.0 | **Status:** v0.1.0 — 9 crates implemented, 389 tests passing
 
 ---
 
@@ -35,20 +33,16 @@ claw-kernel is a shared infrastructure library for the Claw ecosystem — a coll
 
 | Component | Technology | Notes |
 |-----------|------------|-------|
-| Core Language | Rust (stable, **1.83+**) | Memory safety, async/await via Tokio。`engine-py` 需要 1.83+ |
+| Core Language | Rust (stable, **1.83+**) | MSRV driven by PyO3 0.28+ |
 | Async Runtime | Tokio | For async I/O and concurrency |
-| Script Engines | Lua (mlua), Deno/V8, PyO3 | Lua is default (zero deps), V8/Py optional<br>`engine-v8` 特性使用 deno_core crate 提供 V8 引擎支持 |
+| Script Engines | Lua (mlua), Deno/V8, PyO3 | Lua is default (zero deps), V8/Py optional |
 | HTTP Client | reqwest | For LLM provider APIs |
 | IPC | Unix Domain Socket / Named Pipe | Cross-platform via `interprocess` crate |
 | Build Tool | Cargo | Standard Rust build system |
 | JSON Schema | schemars | Automatic schema generation |
 | File Watching | notify | For hot-reload functionality |
 
-### Optional Dependencies (Feature-gated)
-
-- **Deno/V8 engine (`engine-v8`):** Node.js ≥ 20, adds ~100MB to binary (measured on Linux x86_64 release build; actual size depends on platform and build options)
-  - *术语说明："Deno/V8" 用于用户文档表示 Deno 项目基于 V8 引擎；`engine-v8` 用于 Cargo 特性标志*
-- **Python engine (`engine-py`):** Python ≥ 3.10, for ML ecosystem integration
+For pinned dependency versions, feature matrix, and build configuration examples, see [CONTRIBUTING.md](CONTRIBUTING.md#dependency-versions).
 
 ---
 
@@ -65,30 +59,23 @@ The project follows a 5-layer architecture:
 │   Provider Trait · ToolRegistry · AgentLoop · History    │
 ├─────────────────────────────────────────────────────────┤
 │              Layer 1: System Runtime                     │
-│   Event Bus · IPC Transport · Process Daemon · Tokio │
+│   Event Bus · IPC Transport · Process Daemon · Tokio     │
 ├═════════════════════════════════════════════════════════╡
 │              Layer 0.5: Platform Abstraction (PAL)       │
-│   Sandbox Backend · IPC Transport Primitives · Config Directories │
+│   Sandbox Backend · IPC Transport Primitives · Config Dirs │
 ├─────────────────────────────────────────────────────────┤
 │              Layer 0: Rust Hard Core                     │
 │   Memory Safety · OS Abstraction · Trust Root            │
 └─────────────────────────────────────────────────────────┘
-
-**分层说明**：
-- Layer 0: Rust Hard Core（Rust硬核心）— 内存安全和操作系统抽象
-- Layer 0.5: Platform Abstraction Layer（平台抽象层）— IPC传输原语和沙箱后端
-- Layer 1: System Runtime（系统运行时）— IPC路由/事件总线和进程守护
-- Layer 2: Agent Kernel Protocol（代理内核协议）— 工具注册、LLM提供者、代理循环
-- Layer 3: Extension Foundation（扩展基础）— 提供脚本运行时和热加载能力
 ```
 
 ### Platform Support
 
-| Platform | Sandbox Backend | Status |
-|----------|-----------------|--------|
-| Linux | seccomp-bpf + Namespaces | 最强隔离 (Strongest) |
-| macOS | sandbox(7) profile (Seatbelt) | 中等隔离 (Medium) |
-| Windows | AppContainer + Job Objects | 中等隔离 (Medium) |
+| Platform | Sandbox Backend | Isolation Level |
+|----------|-----------------|-----------------|
+| Linux | seccomp-bpf + Namespaces | Strongest |
+| macOS | sandbox(7) profile (Seatbelt) | Medium |
+| Windows | AppContainer + Job Objects | Medium |
 
 ---
 
@@ -96,49 +83,32 @@ The project follows a 5-layer architecture:
 
 ```
 claw-kernel/
-├── crates/               # Workspace crates (CURRENTLY EMPTY)
-│   ├── claw-pal/         # Platform Abstraction Layer
-│   ├── claw-provider/    # LLM provider trait + implementations
-│   ├── claw-tools/       # Tool registry and hot-loading
-│   ├── claw-loop/        # Agent loop engine
-│   ├── claw-runtime/     # Event bus and process management
-│   └── claw-script/      # Embedded script engines
+├── crates/
+│   ├── claw-pal/         # Layer 0.5: Platform Abstraction (IPC, sandbox, process)
+│   ├── claw-runtime/     # Layer 1: Event bus, orchestrator, IPC router
+│   ├── claw-provider/    # Layer 2: LLM providers (Anthropic/OpenAI/Ollama/DeepSeek/Moonshot)
+│   ├── claw-tools/       # Layer 2: Tool registry, hot-loading
+│   ├── claw-loop/        # Layer 2: Agent loop engine, history, stop conditions
+│   ├── claw-memory/      # Layer 2: Memory store (SQLite + ngram embedder)
+│   ├── claw-channel/     # Layer 2.5: Channel integrations (Discord/Webhook/Stdin)
+│   ├── claw-script/      # Layer 3: Script engines (Lua via mlua)
+│   └── claw-kernel/      # Meta-crate: re-exports all sub-crates + prelude
 ├── docs/
-│   ├── architecture/     # Layer-by-layer architecture docs
-│   │   ├── overview.md   # Full architecture description
-│   │   ├── crate-map.md  # Dependency graph of all crates
-│   │   └── pal.md        # Platform Abstraction Layer deep dive
-│   ├── adr/              # Architecture Decision Records
-│   │   ├── README.md     # ADR index
-│   │   ├── 001-architecture-layers.md
-│   │   ├── 002-script-engine-selection.md
-│   │   ├── 003-security-model.md
-│   │   ├── 004-hot-loading-mechanism.md
-│   │   └── 005-ipc-multi-agent.md
+│   ├── architecture/     # Layer-by-layer architecture docs + crate map
+│   ├── adr/              # Architecture Decision Records (ADR-001 through ADR-008)
 │   ├── guides/           # User-facing how-to guides
-│   │   ├── getting-started.md
-│   │   ├── writing-tools.md
-│   │   ├── extension-capabilities.md
-│   │   ├── safe-mode.md
-│   │   └── power-mode.md
 │   ├── crates/           # Per-crate documentation
 │   ├── platform/         # Platform-specific notes (linux.md, macos.md, windows.md)
-│   └── rfcs/             # RFCs directory (empty)
-├── examples/             # Runnable example agents (CURRENTLY EMPTY)
-│   ├── simple-agent/
-│   ├── custom-tool/
-│   └── self-evolving-agent/
+│   └── design/           # Deep-dive design docs (agent-loop, channel-protocol)
+├── examples/             # Runnable example agents
 ├── .github/              # CI workflows and issue templates
-│   ├── workflows/        # GitHub Actions (empty)
-│   ├── ISSUE_TEMPLATE/   # Issue templates
-│   └── pull_request_template.md
 ├── README.md             # Project overview (bilingual)
-├── CONTRIBUTING.md       # Contribution guidelines (bilingual)
-├── CHANGELOG.md          # Version history (bilingual)
+├── CONTRIBUTING.md       # Contribution guidelines + dependency versions + feature matrix
+├── CHANGELOG.md          # Version history
+├── ROADMAP.md            # Milestones and future work
+├── SECURITY.md           # Security policy and vulnerability reporting
 ├── CODE_OF_CONDUCT.md    # Contributor Covenant
-├── SECURITY.md           # Security policy (bilingual)
-├── BUILD_PLAN.md         # Detailed Chinese build roadmap
-├── LICENSE-*             # Dual licensing (MIT/Apache-2.0)
+├── llm-index.md          # Machine-readable documentation index
 └── AGENTS.md             # This file
 ```
 
@@ -146,167 +116,36 @@ claw-kernel/
 
 ## Crate Ecosystem
 
-| Crate | Description | Key Dependencies |
-|-------|-------------|------------------|
-| `claw-pal` | Platform Abstraction Layer (sandbox, IPC, process) | None (core only) |
-| `claw-provider` | LLM provider trait + Anthropic/OpenAI/Ollama implementations | reqwest, serde, async-trait |
-| `claw-tools` | Tool-use protocol, registry, schema gen, hot-loading | serde_json, schemars, notify |
-| `claw-loop` | Agent loop engine, history management, stop conditions | claw-provider, claw-tools |
-| `claw-runtime` | Event bus, async runtime, multi-agent orchestration | claw-pal, tokio |
-| `claw-script` | Embedded script engines (Lua default, Deno/V8, PyO3) | mlua, deno_core, pyo3 |
-| `claw-kernel` | Meta-crate, re-exports all above crates | All of the above |
-
-### Dependency Graph
-
-```
-                        ┌─────────────────┐
-                        │  claw-kernel    │  ← Meta-crate
-                        └────────┬────────┘
-                                 │
-        ┌────────────────────────┼────────────────┐
-        │            │           │                │
-        ▼            ▼           ▼                ▼
-┌──────────┐ ┌──────────┐ ┌─────────┐      ┌──────────┐
-│claw-pal  │ │claw-tools│ │claw-loop│      │claw-runtime│
-└────┬─────┘ └────┬─────┘ └────┬────┘      └────┬─────┘
-     │            │            │                │
-     │       ┌────┴────┐       │                │
-     │       ▼         ▼       │                │
-     │  ┌────────┐ ┌────────┐  │                │
-     │  │claw-   │ │claw-   │  │                │
-     │  │provider│ │runtime │  │                │
-     │  └────────┘ └────┬───┘  │                │
-     │                  │      │                │
-     └──────────────────┘      │                │
-                               │                │
-                               ▼                ▼
-                          ┌──────────┐   ┌──────────┐
-                          │  tokio   │   │  serde   │
-                          └──────────┘   └──────────┘
-
-┌──────────┐
-│claw-script│  ← Independent, can depend on others via bridge
-└──────────┘
-```
-
-*注：图中 claw-pal 作为基础依赖被所有其他 crate 间接使用*
+| Crate | Layer | Description |
+|-------|-------|-------------|
+| `claw-pal` | 0.5 | Platform Abstraction: sandbox, IPC (Unix socket, 4-byte LE frame), ProcessManager (DashMap+SIGTERM→SIGKILL) |
+| `claw-runtime` | 1 | EventBus (broadcast cap 1024), AgentOrchestrator (DashMap), IpcRouter |
+| `claw-provider` | 2 | 5 LLM providers + DefaultHttpTransport; 3-layer: MessageFormat → HttpTransport → LLMProvider |
+| `claw-tools` | 2 | ToolRegistry (DashMap, timeout, audit), HotLoader (notify 6.1.1, 50ms debounce) |
+| `claw-loop` | 2 | InMemoryHistory (overflow callback), MaxTurns/TokenBudget/NoToolCall stop conditions, AgentLoop + Builder |
+| `claw-memory` | 2 | NgramEmbedder (64-dim bigram+trigram), SqliteMemoryStore (cosine sim), SecureMemoryStore (50MB quota) |
+| `claw-channel` | 2.5 | Channel trait, ChannelMessage, Platform (Discord/Webhook/Stdin) |
+| `claw-script` | 3 | ScriptEngine trait, LuaEngine (mlua via spawn_blocking), ToolsBridge |
+| `claw-kernel` | meta | Re-exports all sub-crates + prelude module |
 
 ---
 
-## Build and Development Commands
+## Build and Development
 
-### Prerequisites
+For full build/test commands, code quality checks, and contributing workflow, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-| Tool | Version | Notes |
-|------|---------|-------|
-| Rust | stable (**1.83+**) | Via rustup。`engine-py` feature requires 1.83+ |
-| cargo | bundled | — |
-| Node.js | ≥ 20 (optional) | Only for `engine-v8` feature |
-| Python | ≥ 3.10 (optional) | Only for `engine-py` feature |
-
-### Platform-specific Requirements
-
-**Linux:**
-```bash
-# Ubuntu/Debian
-sudo apt-get install libseccomp-dev pkg-config
-
-# Fedora/RHEL
-sudo dnf install libseccomp-devel
-
-# Arch
-sudo pacman -S libseccomp
-```
-
-**Windows:**
-- Use MSVC toolchain: `rustup set default-host x86_64-pc-windows-msvc`
-
-### Build Commands
+**Quick reference:**
 
 ```bash
-# Default build (Lua engine only, zero extra dependencies)
-cargo build
-
-# With Deno/V8 engine (downloads precompiled V8, typically 5-15 min depending on network)
-cargo build --features engine-v8
-
-# With Python engine
-cargo build --features engine-py
-
-# Full build with all features
-cargo build --all-features
-
-# Release build
-cargo build --release
+cargo build                                        # default (Lua only)
+cargo test --workspace                             # all tests
+cargo clippy --workspace -- -D warnings            # lint (same as CI)
+cargo fmt --all                                    # format
 ```
 
-### Testing Commands
-
-```bash
-# Run all tests across all crates
-cargo test --workspace
-
-# Include integration tests
-cargo test --workspace --features integration-tests
-
-# Platform-specific sandbox tests (Linux only)
-cargo test --workspace --features sandbox-tests
-
-# Run tests for specific crate
-cargo test -p claw-pal
-```
-
-### Code Quality Commands
-
-```bash
-# Check for lint warnings
-cargo clippy --workspace
-
-# Check for lint warnings (treat as errors)
-cargo clippy --workspace -- -D warnings
-
-# Format code
-cargo fmt --all
-
-# Check formatting without modifying
-cargo fmt --all -- --check
-
-# Run cargo audit for security
-cargo audit
-```
-
----
-
-## Code Style Guidelines
-
-### General Principles
-
-1. **Cross-platform first** — No Unix-isms, no Windows-isms in core code
-2. **Platform-specific code** — Isolate in `claw-pal` using conditional compilation:
-   ```rust
-   #[cfg(target_os = "linux")]
-   mod linux;
-   #[cfg(target_os = "macos")]
-   mod macos;
-   #[cfg(target_os = "windows")]
-   mod windows;
-   ```
-3. **Feature flags** — Use for:
-   - Platform-specific functionality with heavy deps (e.g., `engine-v8`)
-   - Optional storage backends (e.g., `sqlite`)
-4. **Documentation** — All public APIs must have doc comments
-5. **Error handling** — Use `thiserror` for library errors, `anyhow` for applications
-
-### Testing Strategy by Crate
-
-| Crate | Unit Tests | Integration | Platform Tests |
-|-------|:----------:|:-----------:|:--------------:|
-| claw-pal | Yes | Yes | Must run on Linux, macOS, and Windows separately |
-| claw-provider | Yes | Yes (mock HTTP) | N/A |
-| claw-tools | Yes | Yes | N/A |
-| claw-loop | Yes | Yes | N/A |
-| claw-runtime | Yes | Yes | Required |
-| claw-script | Yes | Yes | Must run on Linux, macOS, and Windows separately |
+**Platform-specific setup:**
+- Linux: `sudo apt-get install libseccomp-dev pkg-config`
+- Windows: `rustup set default-host x86_64-pc-windows-msvc`
 
 ---
 
@@ -319,10 +158,10 @@ cargo audit
 | File System | Allowlist read-only | Full access |
 | Network | Domain/port rules | Unrestricted |
 | Subprocess | Blocked | Allowed |
-| Script Self-Mod | Allowed (sandboxed) | Allowed (unrestricted: scripts can modify any accessible file system location) [^1] |
+| Script Self-Mod | Allowed (sandboxed) | Allowed (unrestricted)[^1] |
 | Kernel Access | Blocked | Blocked (hard constraint) |
 
-[^1]: *脚本自修改指脚本代码动态生成和加载新工具，不涉及修改运行时引擎*
+[^1]: Script self-modification means dynamically generating and loading new tools, not modifying the runtime engine.
 
 ### Mode Switching
 
@@ -336,36 +175,16 @@ cargo audit
        └────────────────────────────────────────────────────┘
 ```
 
-**Important:** Power Mode → Safe Mode requires restart. This is intentional — a compromised Power Mode agent cannot "downgrade" to hide evidence.
+**Important:** Power Mode → Safe Mode requires restart — a compromised agent cannot "downgrade" to hide evidence.
 
 ### Power Mode Activation
 
-Power Key 由用户自定义设置，用于从 Safe Mode 切换到 Power Mode。
-
 ```bash
-# 设置 Power Key（首次使用或重置）
-claw-kernel --set-power-key
-Enter new power key (min 12 chars): ********
-Confirm power key: ********
-Power key set successfully.
-
-# 方式1：命令行参数
-claw-kernel --power-mode --power-key <your-key>
-
-# 方式2：环境变量
-export CLAW_KERNEL_POWER_KEY=<your-key>
-claw-kernel --power-mode
-
-# 方式3：配置文件 (~/.config/claw-kernel/power.key)
-claw-kernel --power-mode
+claw-kernel --set-power-key                        # set key (min 12 chars, 2 character classes)
+claw-kernel --power-mode --power-key <key>         # activate via flag
+export CLAW_KERNEL_POWER_KEY=<key>; claw-kernel --power-mode  # via env var
+# or place key in ~/.config/claw-kernel/power.key
 ```
-
-**要求**：
-- Power Key 最小长度：**12 位字符**（2026年安全标准）
-- 复杂度要求：至少包含大写字母、小写字母、数字中的两种
-- 安全建议：使用 16+ 位随机生成密码或密码管理器
-- 安全依据：基于现代离线暴力破解能力（~10^14 次/秒），12位混合密码提供 ~80位熵
-- 遗忘 Power Key 后，只能通过 `--reset-power-key` 重置，这将丢失 Power Mode 的访问权限
 
 ### Security Guarantees (Safe Mode)
 
@@ -374,185 +193,102 @@ claw-kernel --power-mode
 - Scripts cannot make network requests to non-allowlisted endpoints
 - Scripts cannot escalate to Power Mode without the correct credential
 - The Rust hard core (Layer 0) cannot be modified by scripts
-- Kernel secret storage is inaccessible to scripts
 
 ### Audit Logging
 
-内核提供简化版审计日志，默认开启，记录内容：
-- 工具调用事件
-- 文件访问事件
-- 模式切换事件
-- 网络请求事件
-
-日志位置：`~/.local/share/claw-kernel/logs/audit.log`
-保留策略：按时间限制（默认 **30 天**，可通过配置调整）
-日志级别：minimal（仅记录：模式切换、权限变更、安全事件）、verbose（额外记录：工具调用参数、网络请求详情、文件访问路径）
-
-```rust
-// 配置审计日志保留时间
-let config = AuditConfig {
-    retention_days: 30,  // 可配置
-    log_level: LogLevel::Minimal,
-};
-```
+Location: `~/.local/share/claw-kernel/logs/audit.log`
+Retention: 30 days (configurable). Levels: `minimal` (mode switches, permission changes, security events) / `verbose` (+ tool call args, network details, file paths).
 
 ---
 
 ## Extensibility Model
 
-> **重要区分**：
-> - **可热加载**：Layer 3 的脚本/工具代码（通过 ToolRegistry）
-> - **不可修改**：Layer 0/0.5/1/2/3 运行时内核（需要重新编译）
-> 
-> Rust 核心代码 "never hot-patched" 指的是后者，与脚本热加载不矛盾。
-
-The kernel provides hot-loading capabilities that enable applications to extend their functionality at runtime. Applications built on claw-kernel can implement self-evolution patterns using these primitives:
+> **Key distinction:** Scripts/tools in Layer 3 are hot-loadable via ToolRegistry. The Rust runtime kernel (Layers 0–3) requires recompilation to change.
 
 ```
-Extensibility Cycle (Application Layer):
-    │
-    ▼
-┌─────────────┐
-│ 1. Detect   │  Agent identifies capability gap
-│    Gap      │
-└──────┬──────┘
-       ▼
-┌─────────────┐
-│ 2. Generate │  LLM generates tool script
-│    Tool     │
-└──────┬──────┘
-       ▼
-┌─────────────┐
-│ 3. Write    │  Script saved to tools directory
-│             │
-└──────┬──────┘
-       ▼
-┌─────────────┐
-│ 4. Hot Load │  ToolRegistry loads without restart (kernel feature)
-│             │
-└──────┬──────┘
-       ▼
-┌─────────────┐
-│ 5. Use      │  Agent immediately uses new capability
-│             │
-└─────────────┘
+Application-level extensibility cycle:
+  Detect gap → LLM generates tool script → Write to tools dir
+  → ToolRegistry hot-loads (no restart) → Agent uses immediately
 ```
 
-### Kernel Capabilities for Extensibility
+**Kernel provides:** hot-loading without restart, dynamic tool registration, script runtime (Lua/V8/Python), file watching (50ms debounce), sandboxed execution.
 
-**Provided by Kernel:**
-- Hot-loading of tool scripts without restart
-- Dynamic tool registration via ToolRegistry
-- Script runtime environment (Lua/V8/Python)
-- File watching for automatic reload (based on file content change detection, 50ms debounce by default)
-- Sandboxed execution environment
+**Applications implement:** self-evolution logic, code generation, tool versioning, custom providers, workflows.
 
-**Implemented by Applications:**
-- Self-evolution logic and decision making
-- Code generation strategies
-- Tool versioning and rollback
-- Custom provider implementations
-- Application-specific workflows
-
-### Extensibility Boundaries
-
-**CAN Extend at Runtime:**
-- Tool scripts
-- Custom providers
-- Memory strategies
-- Stop conditions
-
-**CANNOT Modify:**
-- Rust kernel code
-- Sandbox enforcement
-- Mode switching guards
-- Credential storage
-
----
-
-## Contributing Guidelines
-
-### Pull Request Checklist
-
-- [ ] Tests pass on your local platform (`cargo test --workspace`)
-- [ ] No new `clippy` warnings (`cargo clippy --workspace`)
-- [ ] Code formatted (`cargo fmt --all`)
-- [ ] Documentation updated if behavior changed
-- [ ] PR description explains *why*, not just *what*
-- [ ] Platform impact noted (Linux only? All platforms?)
-- [ ] CHANGELOG.md updated (if user-facing change — e.g., API changes, new features, behavior modifications)
-- [ ] ADR added for significant architectural changes (if applicable — e.g., new public APIs, cross-platform behavior changes, new dependencies)
-
-### Branch Naming
-
-- Bug fixes: `fix/<short-description>`
-- New features: `feat/<short-description>`
-- Documentation: `docs/<short-description>`
-
-### High-Priority Areas
-
-- **Windows sandbox hardening** — AppContainer/Job Object coverage is weakest
-- **New LLM provider implementations** — Gemini, Mistral, local GGUF models (llama.cpp-compatible quantized models)
-- **Script bridge improvements** — Lua ↔ Rust FFI performance, Deno/V8 embedding stability
-- **Platform-specific test coverage** — especially Windows CI edge cases
-- **Documentation** — architecture explanations, guide corrections, translation
-
-### Architecture Decisions
-
-Major decisions are recorded as ADRs in `docs/adr/`. Before proposing significant changes:
-
-1. Read existing ADRs
-2. Open a discussion issue with the `adr` label
-3. If consensus reached, open a PR adding a new ADR
-
-ADR format: **Context → Decision → Consequences**
+**CAN extend at runtime:** tool scripts, custom providers, memory strategies, stop conditions.
+**CANNOT modify:** Rust kernel code, sandbox enforcement, mode-switching guards, credential storage.
 
 ---
 
 ## Key Documentation References
 
+### Root-Level Documents
+
 | Document | Purpose |
 |----------|---------|
-| [Architecture Overview](docs/architecture/overview.md) | Full 5-layer architecture |
-| [Crate Map](docs/architecture/crate-map.md) | Dependency graph of all crates |
-| [Getting Started](docs/guides/getting-started.md) | Build your first agent |
-| [Writing Tools](docs/guides/writing-tools.md) | Create custom tools with scripts |
-| [Extension Capabilities](docs/guides/extension-capabilities.md) | Extension points and runtime evolution |
-| [Safe Mode](docs/guides/safe-mode.md) | Secure your agent |
-| [Power Mode](docs/guides/power-mode.md) | Full system access guide |
-| [Contributing](CONTRIBUTING.md) | Contribution guidelines |
-| [Build Plan](BUILD_PLAN.md) | Detailed Chinese build roadmap |
-| [Agent Loop State Machine](docs/design/agent-loop-state-machine.md) | Agent loop execution algorithm and state transitions |
-| [Channel Message Protocol](docs/design/channel-message-protocol.md) | ChannelMessage type definition and platform mappings |
+| [README.md](README.md) | Project overview and quick start (English) |
+| [docs/README.zh.md](docs/README.zh.md) | 中文项目概览和快速开始 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, build commands, PR process, dependency versions, feature matrix |
+| [SECURITY.md](SECURITY.md) | Vulnerability reporting and disclosure policy |
+| [CHANGELOG.md](CHANGELOG.md) | Version history |
+| [ROADMAP.md](ROADMAP.md) | Milestones and v0.2.0 plans |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor Covenant |
+
+### Architecture & Design
+
+| Document | Purpose |
+|----------|---------|
+| [docs/architecture/overview.md](docs/architecture/overview.md) | Full 5-layer architecture |
+| [docs/architecture/crate-map.md](docs/architecture/crate-map.md) | Dependency graph of all crates |
+| [docs/architecture/pal.md](docs/architecture/pal.md) | Platform Abstraction Layer deep dive |
+| [docs/design/agent-loop-state-machine.md](docs/design/agent-loop-state-machine.md) | Agent loop execution algorithm and state transitions |
+| [docs/design/channel-message-protocol.md](docs/design/channel-message-protocol.md) | ChannelMessage protocol, platform mappings |
+| [docs/adr/](docs/adr/) | ADR-001 through ADR-008 (all Accepted) |
+
+### Guides & Per-Crate Docs
+
+| Document | Purpose |
+|----------|---------|
+| [docs/guides/getting-started.md](docs/guides/getting-started.md) | Build your first agent |
+| [docs/guides/writing-tools.md](docs/guides/writing-tools.md) | Create custom tools with Lua scripts |
+| [docs/guides/safe-mode.md](docs/guides/safe-mode.md) | Safe mode configuration and allowlists |
+| [docs/guides/power-mode.md](docs/guides/power-mode.md) | Power mode activation and Power Key setup |
+| [docs/guides/extension-capabilities.md](docs/guides/extension-capabilities.md) | Runtime extensibility and hot-loading |
+| [docs/crates/](docs/crates/) | Per-crate API docs (claw-pal, -runtime, -provider, -tools, -loop, -script) |
+| [docs/platform/](docs/platform/) | Platform-specific notes (linux.md, macos.md, windows.md) |
+
+### Navigation by Use Case
+
+| Goal | Start Here |
+|------|------------|
+| New user | README.md → docs/guides/getting-started.md |
+| New contributor | CONTRIBUTING.md → AGENTS.md → docs/architecture/overview.md |
+| Security review | SECURITY.md → AGENTS.md (Security Model) → docs/adr/003-security-model.md |
+| Add a provider | docs/architecture/overview.md → docs/crates/claw-provider.md |
+| Platform port | docs/architecture/pal.md → docs/platform/{linux,macos,windows}.md |
+| Understand hot-loading | docs/adr/004-hot-loading-mechanism.md → docs/crates/claw-tools.md |
 
 ---
 
 ## Important Notes for AI Coding Agents
 
-1. **Project Stage:** This is a design-first project. The `crates/` directory is currently empty — no implementation has been started yet. Any implementation work should follow the architecture described in `docs/architecture/` and the build plan in `BUILD_PLAN.md`.
+1. **Project Status:** v0.1.0 is fully implemented. All 9 crates exist in `crates/`. Read the actual source before proposing changes.
 
-2. **Cross-Platform Critical:** Every change must consider Linux, macOS, and Windows. Platform-specific code belongs ONLY in `claw-pal`. Use conditional compilation with `#[cfg(target_os = "...")]`.
+2. **Cross-Platform Critical:** Every change must consider Linux, macOS, and Windows. Platform-specific code belongs ONLY in `claw-pal`. Use `#[cfg(target_os = "...")]`.
 
-3. **Feature Flags:** Use feature flags liberally for optional functionality. The default build should have minimal dependencies. Lua is the only default script engine; V8 and Python are opt-in.
+3. **Critical Implementation Details:**
+   - MSRV: Rust **1.83+**, edition 2021, ALL profiles `panic = "unwind"` (mlua requirement — do not change)
+   - IPC: single reader thread + mpsc dispatch (NO concurrent split I/O — causes macOS panic)
+   - `interprocess` feature name: `tokio_support` (not `tokio`)
+   - mlua sync API must run in `tokio::task::spawn_blocking`
+   - AgentId uses `AtomicU64` counter to prevent duplicates under fast parallel tests
 
-4. **Documentation:** Keep documentation in sync with code. Bilingual documentation (English/Chinese) is preferred for user-facing docs.
+4. **Feature Flags:** Default build has minimal dependencies. Lua is the only default script engine; V8 and Python are opt-in. See [CONTRIBUTING.md](CONTRIBUTING.md#feature-matrix) for the full matrix.
 
-5. **Security First:** The Safe/Power mode distinction is fundamental. Never bypass sandbox restrictions in Safe Mode. Power Mode requires explicit user opt-in with a key.
+5. **Security First:** The Safe/Power mode distinction is fundamental. Never bypass sandbox restrictions in Safe Mode. Power Mode requires explicit user opt-in.
 
-6. **ADR Process:** For architectural changes, follow the ADR process documented in `docs/adr/README.md`. Create a discussion first, then submit an ADR PR if consensus is reached.
+6. **ADR Process:** Significant changes (new public APIs, cross-platform behavior, new dependencies, security model) require an ADR in `docs/adr/`. Open a GitHub Discussion first.
 
-7. **Testing:** Every crate must have both unit tests and integration tests. Platform-specific code in `claw-pal` requires tests on all three platforms.
+7. **Testing:** Every crate needs unit + integration tests. `claw-pal` platform code requires tests on all three platforms. Run `cargo test --workspace` after changes.
 
-8. **Build Order:** Follow the build plan order (8 phases):
-   - Phase 1: claw-pal (Layer 0.5)
-   - Phase 2: claw-runtime (Layer 1)
-   - Phase 3: claw-provider + claw-tools (Layer 2, Part 1)
-   - Phase 4: claw-loop (Layer 2, Part 2)
-   - Phase 5: claw-script (Layer 3)
-   - Phase 6: claw-channel (Channel Integrations)
-   - Phase 7: Examples and Documentation
-   - Phase 8: Meta-crate claw-kernel
-
-9. **Interface First:** Define traits before implementations. See BUILD_PLAN.md for the detailed trait specifications.
-
-10. **No Assumptions:** This project is not a standard Rust project. Do not assume crates exist or that code is already written. Always check if files/directories exist before referencing them.
+8. **Worktrees:** Worktree agents start from the last committed state — commit your work before launching worktree agents.

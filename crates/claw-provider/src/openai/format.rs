@@ -129,8 +129,8 @@ impl MessageFormat for OpenAIFormat {
             return Ok(None);
         }
 
-        let v: Value = serde_json::from_str(line)
-            .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+        let v: Value =
+            serde_json::from_str(line).map_err(|e| ProviderError::Serialization(e.to_string()))?;
 
         let choice = match v["choices"].as_array().and_then(|a| a.first()) {
             Some(c) => c,
@@ -169,7 +169,9 @@ mod tests {
         let fmt = make_format();
         let messages = vec![Message::user("hello")];
         let opts = Options::new("gpt-4o");
-        let body = fmt.format_request(&messages, &opts).expect("format_request failed");
+        let body = fmt
+            .format_request(&messages, &opts)
+            .expect("format_request failed");
 
         assert_eq!(body["model"], "gpt-4o");
         let msgs = body["messages"].as_array().unwrap();

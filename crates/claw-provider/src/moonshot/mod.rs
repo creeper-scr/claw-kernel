@@ -43,7 +43,10 @@ impl MoonshotProvider {
 
     fn build_headers(&self) -> Vec<(String, String)> {
         vec![
-            ("Authorization".to_string(), format!("Bearer {}", self.api_key)),
+            (
+                "Authorization".to_string(),
+                format!("Bearer {}", self.api_key),
+            ),
             ("Content-Type".to_string(), "application/json".to_string()),
         ]
     }
@@ -67,8 +70,10 @@ impl LLMProvider for MoonshotProvider {
         let body = self.format.format_request(&messages, &options)?;
         let url = format!("{}/chat/completions", self.base_url());
         let headers_owned = self.build_headers();
-        let headers: Vec<(&str, &str)> =
-            headers_owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let headers: Vec<(&str, &str)> = headers_owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         let raw = self.transport.post_json(&url, &headers, &body).await?;
         self.format.parse_response(raw)
     }
@@ -79,12 +84,17 @@ impl LLMProvider for MoonshotProvider {
         options: Options,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError>
     {
-        let stream_opts = Options { stream: true, ..options };
+        let stream_opts = Options {
+            stream: true,
+            ..options
+        };
         let body = self.format.format_request(&messages, &stream_opts)?;
         let url = format!("{}/chat/completions", self.base_url());
         let headers_owned = self.build_headers();
-        let headers: Vec<(&str, &str)> =
-            headers_owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let headers: Vec<(&str, &str)> = headers_owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
         let byte_stream = self.transport.post_stream(&url, &headers, &body).await?;
 
         let format = OpenAIFormat::new();

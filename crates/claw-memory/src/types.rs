@@ -184,9 +184,7 @@ mod tests {
         assert!(f.limit.is_none());
 
         // Builder helpers
-        let f2 = EpisodicFilter::new()
-            .for_namespace("agent-1")
-            .limit(10);
+        let f2 = EpisodicFilter::new().for_namespace("agent-1").limit(10);
         assert_eq!(f2.namespace, Some("agent-1".to_string()));
         assert_eq!(f2.limit, Some(10));
     }

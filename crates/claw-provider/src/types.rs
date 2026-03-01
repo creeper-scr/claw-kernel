@@ -221,7 +221,10 @@ mod tests {
         assert_eq!(opts.max_tokens, 8192);
         assert!((opts.temperature - 0.3f32).abs() < 1e-6);
         assert!(opts.stream);
-        assert_eq!(opts.system, Some("You are a helpful assistant.".to_string()));
+        assert_eq!(
+            opts.system,
+            Some("You are a helpful assistant.".to_string())
+        );
     }
 
     #[test]

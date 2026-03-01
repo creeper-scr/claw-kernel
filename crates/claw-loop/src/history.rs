@@ -1,5 +1,5 @@
-use claw_provider::types::Message;
 use crate::traits::HistoryManager;
+use claw_provider::types::Message;
 
 /// In-memory conversation history with optional overflow callback.
 ///

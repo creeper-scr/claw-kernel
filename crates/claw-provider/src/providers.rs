@@ -1,10 +1,6 @@
 use crate::{
-    anthropic::AnthropicProvider,
-    deepseek::DeepSeekProvider,
-    error::ProviderError,
-    moonshot::MoonshotProvider,
-    ollama::OllamaProvider,
-    openai::OpenAIProvider,
+    anthropic::AnthropicProvider, deepseek::DeepSeekProvider, error::ProviderError,
+    moonshot::MoonshotProvider, ollama::OllamaProvider, openai::OpenAIProvider,
     traits::LLMProvider,
 };
 

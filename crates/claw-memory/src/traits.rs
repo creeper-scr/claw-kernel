@@ -1,8 +1,8 @@
-use async_trait::async_trait;
 use crate::{
     error::MemoryError,
     types::{EpisodicEntry, EpisodicFilter, MemoryId, MemoryItem},
 };
+use async_trait::async_trait;
 
 /// Persistent memory storage backend.
 ///

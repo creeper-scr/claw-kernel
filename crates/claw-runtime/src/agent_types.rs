@@ -173,7 +173,10 @@ mod tests {
             .with_meta("region", "us-east");
 
         assert_eq!(config.mode, ExecutionMode::Power);
-        assert_eq!(config.metadata.get("region").map(|s| s.as_str()), Some("us-east"));
+        assert_eq!(
+            config.metadata.get("region").map(|s| s.as_str()),
+            Some("us-east")
+        );
     }
 
     // ── test_agent_id_equality ───────────────────────────────────────────────

@@ -42,7 +42,10 @@ impl HttpTransport for DefaultHttpTransport {
             req = req.header(*k, *v);
         }
 
-        let resp = req.send().await.map_err(|e| ProviderError::Network(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
         let status = resp.status();
 
         if status.is_client_error() {
@@ -80,7 +83,10 @@ impl HttpTransport for DefaultHttpTransport {
             req = req.header(*k, *v);
         }
 
-        let resp = req.send().await.map_err(|e| ProviderError::Network(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
         let status = resp.status();
 
         if status.is_client_error() {

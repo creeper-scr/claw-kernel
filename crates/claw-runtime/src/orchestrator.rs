@@ -46,10 +46,7 @@ impl AgentOrchestrator {
             .unwrap_or_default()
             .as_millis() as u64;
 
-        let info = AgentInfo {
-            config,
-            started_at,
-        };
+        let info = AgentInfo { config, started_at };
 
         self.agents.insert(agent_id.clone(), info);
 
@@ -149,7 +146,10 @@ mod tests {
         };
         let result = orc.register(dup);
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), RuntimeError::AgentAlreadyExists(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            RuntimeError::AgentAlreadyExists(_)
+        ));
     }
 
     // ── test_orchestrator_unregister_agent ────────────────────────────────────
@@ -162,7 +162,8 @@ mod tests {
         orc.register(config).unwrap();
         assert_eq!(orc.agent_count(), 1);
 
-        orc.unregister(&id, "test done").expect("unregister should succeed");
+        orc.unregister(&id, "test done")
+            .expect("unregister should succeed");
         assert_eq!(orc.agent_count(), 0);
         assert!(orc.agent_info(&id).is_none());
     }
@@ -174,7 +175,10 @@ mod tests {
         let id = AgentId::new("ghost-agent");
         let result = orc.unregister(&id, "cleanup");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), RuntimeError::AgentNotFound(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            RuntimeError::AgentNotFound(_)
+        ));
     }
 
     // ── test_orchestrator_agent_count ────────────────────────────────────────

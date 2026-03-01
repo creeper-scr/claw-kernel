@@ -49,7 +49,8 @@ fn send_unix_signal(pid: u32, signal: ProcessSignal) -> Result<(), ProcessError>
         ProcessSignal::Interrupt => Signal::SIGINT,
         ProcessSignal::Kill => Signal::SIGKILL,
     };
-    kill(Pid::from_raw(pid as i32), nix_signal).map_err(|e| ProcessError::SpawnFailed(e.to_string()))
+    kill(Pid::from_raw(pid as i32), nix_signal)
+        .map_err(|e| ProcessError::SpawnFailed(e.to_string()))
 }
 
 /// Signal stub for Windows.
@@ -116,10 +117,7 @@ impl ProcessManager for TokioProcessManager {
 
         // Retrieve the child entry; if it is not found the process was
         // already waited on.
-        let entry = self
-            .children
-            .get(&pid)
-            .ok_or(ProcessError::NotFound(pid))?;
+        let entry = self.children.get(&pid).ok_or(ProcessError::NotFound(pid))?;
 
         let mut child = entry.lock().await;
 
@@ -147,10 +145,7 @@ impl ProcessManager for TokioProcessManager {
     async fn kill(&self, handle: ProcessHandle) -> Result<(), ProcessError> {
         let pid = handle.pid;
 
-        let entry = self
-            .children
-            .get(&pid)
-            .ok_or(ProcessError::NotFound(pid))?;
+        let entry = self.children.get(&pid).ok_or(ProcessError::NotFound(pid))?;
 
         let mut child = entry.lock().await;
         child
@@ -173,10 +168,7 @@ impl ProcessManager for TokioProcessManager {
     async fn wait(&self, handle: ProcessHandle) -> Result<ExitStatus, ProcessError> {
         let pid = handle.pid;
 
-        let entry = self
-            .children
-            .get(&pid)
-            .ok_or(ProcessError::NotFound(pid))?;
+        let entry = self.children.get(&pid).ok_or(ProcessError::NotFound(pid))?;
 
         let mut child = entry.lock().await;
 
@@ -262,11 +254,7 @@ mod tests {
         // Windows equivalent: ping loops with 1-second intervals
         ProcessConfig {
             program: "ping".to_string(),
-            args: vec![
-                "-n".to_string(),
-                secs.to_string(),
-                "127.0.0.1".to_string(),
-            ],
+            args: vec!["-n".to_string(), secs.to_string(), "127.0.0.1".to_string()],
             env: HashMap::new(),
             working_dir: None,
         }
@@ -348,9 +336,7 @@ mod tests {
         let manager = TokioProcessManager::new();
         let handle = manager.spawn(echo_config()).await.unwrap();
         // Give it a generous grace period; echo exits almost instantly.
-        let result = manager
-            .terminate(handle, Duration::from_secs(5))
-            .await;
+        let result = manager.terminate(handle, Duration::from_secs(5)).await;
         assert!(result.is_ok(), "terminate should succeed: {:?}", result);
     }
 
@@ -466,9 +452,7 @@ mod tests {
         let manager = TokioProcessManager::new();
         let handle = manager.spawn(sleep_config(60)).await.unwrap();
         // Use a very short grace period so the SIGKILL path is exercised.
-        let result = manager
-            .terminate(handle, Duration::from_millis(50))
-            .await;
+        let result = manager.terminate(handle, Duration::from_millis(50)).await;
         assert!(
             result.is_ok(),
             "terminate with short grace should force-kill: {:?}",

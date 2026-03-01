@@ -4,8 +4,8 @@
 //! and ProcessManager interactions.
 
 use claw_pal::{
-    ExitStatus, IpcConnection, IpcError, IpcListener, IpcTransport, ProcessConfig,
-    ProcessManager, ProcessSignal, TokioProcessManager,
+    ExitStatus, IpcConnection, IpcError, IpcListener, IpcTransport, ProcessConfig, ProcessManager,
+    ProcessSignal, TokioProcessManager,
 };
 use std::time::Duration;
 
@@ -64,7 +64,10 @@ async fn test_ipc_full_roundtrip() {
     let client = InterprocessTransport::new_client(&sock_path)
         .await
         .expect("client connect failed");
-    client.send(b"hello from client").await.expect("client send failed");
+    client
+        .send(b"hello from client")
+        .await
+        .expect("client send failed");
 
     let received = server_handle.await.expect("server task panicked");
     assert_eq!(received, b"hello from client");
@@ -93,8 +96,11 @@ async fn test_process_manager_kill_process() {
     #[cfg(unix)]
     let config = ProcessConfig::new("sleep".to_string()).with_arg("60".to_string());
     #[cfg(windows)]
-    let config = ProcessConfig::new("ping".to_string())
-        .with_args(vec!["-n".to_string(), "60".to_string(), "127.0.0.1".to_string()]);
+    let config = ProcessConfig::new("ping".to_string()).with_args(vec![
+        "-n".to_string(),
+        "60".to_string(),
+        "127.0.0.1".to_string(),
+    ]);
 
     let handle = manager.spawn(config).await.expect("spawn failed");
     manager.kill(handle).await.expect("kill failed");
@@ -119,8 +125,11 @@ async fn test_process_manager_signal() {
     #[cfg(unix)]
     let config = ProcessConfig::new("sleep".to_string()).with_arg("60".to_string());
     #[cfg(windows)]
-    let config = ProcessConfig::new("ping".to_string())
-        .with_args(vec!["-n".to_string(), "60".to_string(), "127.0.0.1".to_string()]);
+    let config = ProcessConfig::new("ping".to_string()).with_args(vec![
+        "-n".to_string(),
+        "60".to_string(),
+        "127.0.0.1".to_string(),
+    ]);
 
     let handle = manager.spawn(config).await.expect("spawn failed");
     manager

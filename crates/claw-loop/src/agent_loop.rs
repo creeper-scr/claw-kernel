@@ -4,7 +4,10 @@ use claw_provider::{
     traits::LLMProvider,
     types::{Message, Options},
 };
-use claw_tools::{registry::ToolRegistry, types::{PermissionSet, ToolContext}};
+use claw_tools::{
+    registry::ToolRegistry,
+    types::{PermissionSet, ToolContext},
+};
 
 use crate::{
     error::AgentError,
@@ -71,8 +74,7 @@ impl AgentLoop {
             }
 
             // ── Step 3b: token_budget guard ───────────────────────────────────
-            if self.config.token_budget > 0
-                && state.usage.total_tokens >= self.config.token_budget
+            if self.config.token_budget > 0 && state.usage.total_tokens >= self.config.token_budget
             {
                 return Ok(AgentResult {
                     finish_reason: FinishReason::TokenBudget,
@@ -103,8 +105,7 @@ impl AgentLoop {
             state.turn += 1;
 
             // Post-LLM token-budget check (catches the newly added tokens).
-            if self.config.token_budget > 0
-                && state.usage.total_tokens >= self.config.token_budget
+            if self.config.token_budget > 0 && state.usage.total_tokens >= self.config.token_budget
             {
                 return Ok(AgentResult {
                     finish_reason: FinishReason::TokenBudget,
@@ -129,12 +130,10 @@ impl AgentLoop {
                 if let Some(ref registry) = self.tools {
                     let tool_calls = assistant_msg.tool_calls.as_ref().unwrap();
                     for call in tool_calls {
-                        let args: serde_json::Value =
-                            serde_json::from_str(&call.arguments)
-                                .unwrap_or(serde_json::Value::Null);
+                        let args: serde_json::Value = serde_json::from_str(&call.arguments)
+                            .unwrap_or(serde_json::Value::Null);
 
-                        let ctx =
-                            ToolContext::new("agent", PermissionSet::minimal());
+                        let ctx = ToolContext::new("agent", PermissionSet::minimal());
 
                         let result = registry
                             .execute(&call.name, args, ctx)
@@ -144,10 +143,8 @@ impl AgentLoop {
                         let result_content = serde_json::to_string(&result.output)
                             .unwrap_or_else(|_| "null".to_string());
 
-                        self.history.append(Message::tool_result(
-                            call.id.clone(),
-                            result_content,
-                        ));
+                        self.history
+                            .append(Message::tool_result(call.id.clone(), result_content));
                     }
                     state.history_len = self.history.len();
                     continue; // Back to top of loop with tool results in history.
@@ -180,7 +177,10 @@ mod tests {
     use claw_provider::{
         error::ProviderError,
         traits::LLMProvider,
-        types::{CompletionResponse, Delta, FinishReason as ProvFinishReason, Message, Options, TokenUsage},
+        types::{
+            CompletionResponse, Delta, FinishReason as ProvFinishReason, Message, Options,
+            TokenUsage,
+        },
     };
     use futures::stream;
     use std::pin::Pin;
@@ -204,10 +204,7 @@ mod tests {
             messages: Vec<Message>,
             _opts: Options,
         ) -> Result<CompletionResponse, ProviderError> {
-            let last_content = messages
-                .last()
-                .map(|m| m.content.as_str())
-                .unwrap_or("");
+            let last_content = messages.last().map(|m| m.content.as_str()).unwrap_or("");
             Ok(CompletionResponse {
                 id: "mock-resp".to_string(),
                 model: "mock-v1".to_string(),
@@ -248,7 +245,10 @@ mod tests {
             .build()
             .expect("build should succeed");
 
-        let result = agent.run("Hello, agent!").await.expect("run should succeed");
+        let result = agent
+            .run("Hello, agent!")
+            .await
+            .expect("run should succeed");
 
         assert_eq!(result.finish_reason, FinishReason::Stop);
         assert_eq!(result.turns, 1);
@@ -277,7 +277,10 @@ mod tests {
             .build()
             .expect("build should succeed");
 
-        let result = agent.run("trigger max turns").await.expect("run should succeed");
+        let result = agent
+            .run("trigger max turns")
+            .await
+            .expect("run should succeed");
 
         // The builder auto-adds a MaxTurns(0) stop condition; it fires in the
         // custom-condition check loop, which returns StopCondition.

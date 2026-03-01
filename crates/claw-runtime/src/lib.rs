@@ -8,7 +8,7 @@ pub mod ipc_router;
 pub mod orchestrator;
 pub mod runtime;
 
-pub use agent_types::{AgentConfig, AgentHandle, AgentId, AgentInfo, ExecutionMode, A2AMessage};
+pub use agent_types::{A2AMessage, AgentConfig, AgentHandle, AgentId, AgentInfo, ExecutionMode};
 pub use error::RuntimeError;
 pub use event_bus::{EventBus, EventReceiver, FilteredReceiver};
 pub use events::Event;

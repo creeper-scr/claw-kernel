@@ -147,11 +147,10 @@ mod tests {
             name: "test_process".to_string(),
         };
 
-        let result = manager
+        manager
             .terminate(handle, Duration::from_secs(5))
             .await
             .unwrap();
-        assert_eq!(result, ());
     }
 
     #[tokio::test]
@@ -162,8 +161,7 @@ mod tests {
             name: "test_process".to_string(),
         };
 
-        let result = manager.kill(handle).await.unwrap();
-        assert_eq!(result, ());
+        manager.kill(handle).await.unwrap();
     }
 
     #[tokio::test]
@@ -187,8 +185,7 @@ mod tests {
             name: "test_process".to_string(),
         };
 
-        let result = manager.signal(handle, ProcessSignal::Term).await.unwrap();
-        assert_eq!(result, ());
+        manager.signal(handle, ProcessSignal::Term).await.unwrap();
     }
 
     #[tokio::test]
