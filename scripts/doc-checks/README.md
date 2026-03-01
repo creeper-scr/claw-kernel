@@ -217,7 +217,7 @@ on:
 
 ### 1. Python 版本
 
-脚本需要 Python 3.8+：
+脚本需要 Python 3.10+：
 
 ```bash
 python3 --version  # 应 >= 3.8

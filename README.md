@@ -133,8 +133,8 @@ Details: [Safe Mode](docs/guides/safe-mode.md) · [Power Mode](docs/guides/power
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md). Priority areas: new LLM providers (Gemini, Mistral, GGUF) · Windows sandbox hardening · Deno/V8 bridge · integration test coverage.
 
-- **Questions:** [GitHub Discussions](../../discussions)
-- **Bugs:** [GitHub Issues](../../issues)
+- **Questions:** [GitHub Discussions](https://github.com/creeper-scr/claw-kernel/discussions)
+- **Bugs:** [GitHub Issues](https://github.com/creeper-scr/claw-kernel/issues)
 - **Security:** [SECURITY.md](SECURITY.md)
 
 ## License

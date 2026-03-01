@@ -1,5 +1,6 @@
 ---
 title: Channel Message Protocol
+description: "Wire format and framing protocol for claw-channel: message types, serialization, and platform adapters"
 status: accepted
 date: 2026-02-28
 type: design

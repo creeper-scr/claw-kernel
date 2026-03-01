@@ -1,5 +1,6 @@
 ---
-title: ADR 004: 工具热加载作为扩展性基础设施
+title: "ADR 004: 工具热加载作为扩展性基础设施"
+description: "工具热加载机制作为扩展性基础设施"
 status: accepted
 date: 2026-02-28
 type: adr

@@ -32,22 +32,22 @@ class VersionChecker:
     # 版本号出现的位置模式
     VERSION_PATTERNS = {
         "rust": [
-            (r'Rust[^\d]*(\d+\.\d+)', "Rust 版本声明"),
-            (r'rustc[^\d]*(\d+\.\d+)', "rustc 版本"),
+            (r'\bRust\b[^\d\n]{0,20}(\d+\.\d+)', "Rust 版本声明"),
+            (r'\brustc\b[^\d\n]{0,20}(\d+\.\d+)', "rustc 版本"),
             (r'channel\s*=\s*"(\d+\.\d+)"', "rust-toolchain.toml"),
-            (r'MSRV[^\d]*(\d+\.\d+)', "MSRV 声明"),
+            (r'\bMSRV\b[^\d\n]{0,20}(\d+\.\d+)', "MSRV 声明"),
         ],
         "nodejs": [
-            (r'Node\.js[^\d]*(\d+)', "Node.js 版本声明"),
-            (r'node[^\d]*(\d+)', "Node 版本"),
+            (r'Node\.js[^\d\n]{0,10}(\d+)', "Node.js 版本声明"),
+            (r'\bnode\b[^\d\n]{0,10}(\d+)', "Node 版本"),
         ],
         "python": [
-            (r'Python[^\d]*(\d+\.\d+)', "Python 版本声明"),
-            (r'pyo3.*?(\d+\.\d+)', "PyO3 相关版本"),
+            (r'\bPython\b[^\d\n]{0,10}(\d+\.\d+)', "Python 版本声明"),
+            (r'\bpyo3\b[^"\']{0,10}["\'](\d+\.\d+)', "PyO3 依赖版本"),
         ],
         "project": [
-            (r'version:\s*"(\d+\.\d+\.?\d*)"', "YAML 版本字段"),
-            (r'claw-kernel[^\d]*(\d+\.\d+\.?\d*)', "crate 版本引用"),
+            (r'^version:\s*"(\d+\.\d+\.?\d*)"', "YAML 版本字段"),
+            (r'claw-kernel[^\d\n]{0,10}(\d+\.\d+\.?\d*)', "crate 版本引用"),
         ],
     }
     

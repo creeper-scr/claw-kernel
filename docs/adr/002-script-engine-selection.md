@@ -1,5 +1,6 @@
 ---
-title: ADR-002: Multi-Engine Script Support
+title: "ADR-002: Multi-Engine Script Support"
+description: "Multi-engine script support design with Lua as default engine"
 status: accepted
 date: 2026-02-28
 type: adr

@@ -1,5 +1,6 @@
 ---
-title: ADR-004: Tool Hot-Loading
+title: "ADR-004: Tool Hot-Loading"
+description: "Tool hot-loading mechanism as extension infrastructure"
 status: accepted
 date: 2026-02-28
 type: adr

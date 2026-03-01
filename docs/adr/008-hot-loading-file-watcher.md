@@ -1,5 +1,6 @@
 ---
-title: ADR-008: Hot-Loading File Watcher Implementation
+title: "ADR-008: Hot-Loading File Watcher Implementation"
+description: "Hot-loading file watcher implementation using notify crate"
 status: accepted
 date: 2026-02-28
 type: adr
@@ -350,6 +351,6 @@ ADR-004 and ADR-008 are complementary. ADR-004 is the contract; ADR-008 is the i
 - [notify-debouncer-mini crate docs](https://docs.rs/notify-debouncer-mini)
 - [claw-script crate docs](../crates/claw-script.md)
 - [Writing Tools Guide](../guides/writing-tools.md)
-- [BUILD_PLAN.md Phase 5](../../BUILD_PLAN.md)
+- [ROADMAP.md](../../ROADMAP.md)
 
 ---

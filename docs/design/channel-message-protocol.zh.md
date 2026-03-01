@@ -1,5 +1,6 @@
 ---
 title: 渠道消息协议
+description: "claw-channel 的消息协议：消息类型、序列化格式与平台适配器"
 status: accepted
 date: 2026-02-28
 type: design

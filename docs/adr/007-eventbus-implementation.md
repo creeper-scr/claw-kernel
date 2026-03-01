@@ -1,5 +1,6 @@
 ---
-title: ADR-007: EventBus Implementation Strategy
+title: "ADR-007: EventBus Implementation Strategy"
+description: "EventBus implementation strategy for agent runtime"
 status: accepted
 date: 2026-02-28
 type: adr

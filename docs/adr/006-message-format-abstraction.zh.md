@@ -1,5 +1,6 @@
 ---
-title: ADR 006: LLM Provider 消息格式抽象
+title: "ADR 006: LLM Provider 消息格式抽象"
+description: "LLM 提供商消息格式抽象"
 status: accepted
 date: 2026-02-28
 type: adr

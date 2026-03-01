@@ -1,5 +1,6 @@
 ---
-title: ADR 002: 多引擎脚本支持（Lua 默认）
+title: "ADR 002: 多引擎脚本支持（Lua 默认）"
+description: "多引擎脚本支持设计，Lua 作为默认引擎"
 status: accepted
 date: 2026-02-28
 type: adr

@@ -1,5 +1,6 @@
 ---
-title: ADR 003: 双模式安全（安全/强力）
+title: "ADR 003: 双模式安全（安全/强力）"
+description: "双模式安全设计（安全模式与强力模式）"
 status: accepted
 date: 2026-02-28
 type: adr

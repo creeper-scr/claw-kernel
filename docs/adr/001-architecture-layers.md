@@ -1,5 +1,6 @@
 ---
-title: ADR-001: Five-Layer Architecture with PAL
+title: "ADR-001: Five-Layer Architecture with PAL"
+description: "Five-layer architecture with Platform Abstraction Layer (PAL) design decision"
 status: accepted
 date: 2026-02-28
 type: adr

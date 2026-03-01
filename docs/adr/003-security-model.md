@@ -1,5 +1,6 @@
 ---
-title: ADR-003: Dual-Mode Security
+title: "ADR-003: Dual-Mode Security"
+description: "Dual-mode security design (Safe Mode and Power Mode)"
 status: accepted
 date: 2026-02-28
 type: adr

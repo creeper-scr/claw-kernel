@@ -2,6 +2,7 @@
 title: Architecture Decision Records
 description: ADR index for claw-kernel
 status: active
+date: 2026-02-28
 version: "0.1.0"
 last_updated: "2026-03-01"
 language: en

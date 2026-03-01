@@ -1,5 +1,6 @@
 ---
-title: ADR-005: IPC and Multi-Agent
+title: "ADR-005: IPC and Multi-Agent"
+description: "Inter-process communication and multi-agent coordination"
 status: accepted
 date: 2026-02-28
 type: adr

@@ -1,5 +1,6 @@
 ---
-title: ADR 008: 热加载文件监听器实现
+title: "ADR 008: 热加载文件监听器实现"
+description: "使用 notify crate 实现热加载文件监听器"
 status: accepted
 date: 2026-02-28
 type: adr
@@ -350,4 +351,4 @@ ADR-004 和 ADR-008 互为补充。ADR-004 是契约；ADR-008 是实现。
 - [notify-debouncer-mini crate 文档](https://docs.rs/notify-debouncer-mini)
 - [claw-script crate 文档](../crates/claw-script.md)
 - [编写工具指南](../guides/writing-tools.md)
-- [BUILD_PLAN.md 第 5 阶段](../../BUILD_PLAN.md)
+- [ROADMAP.md](../../ROADMAP.md)

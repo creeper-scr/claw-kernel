@@ -1,5 +1,6 @@
 ---
-title: ADR 007: EventBus 实现策略
+title: "ADR 007: EventBus 实现策略"
+description: "Agent 运行时 EventBus 实现策略"
 status: accepted
 date: 2026-02-28
 type: adr

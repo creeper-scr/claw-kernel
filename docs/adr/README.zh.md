@@ -2,6 +2,7 @@
 title: 架构决策记录（ADR 索引）
 description: claw-kernel ADR 索引
 status: active
+date: 2026-02-28
 version: "0.1.0"
 last_updated: "2026-03-01"
 language: zh

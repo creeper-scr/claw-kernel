@@ -134,7 +134,13 @@ class MetadataChecker:
         # 检查是否有 YAML Front Matter
         if metadata is None:
             # 某些文件可以豁免（如 CHANGELOG, LICENSE）
-            if file_path.name in ["CHANGELOG.md", "LICENSE-MIT", "LICENSE-APACHE"]:
+            # 豁免列表：展示文档或辅助文件
+            exempt_files = {"CHANGELOG.md", "LICENSE-MIT", "LICENSE-APACHE",
+                           "README.md", "SECURITY.md", "CODE_OF_CONDUCT.md", "CONTRIBUTING.md"}
+            exempt_dirs = {Path("examples"), Path("scripts")}
+            
+            rel_path = file_path.relative_to(self.root_dir)
+            if file_path.name in exempt_files or any(part in exempt_dirs for part in rel_path.parents) or rel_path.parts[0] in ["examples", "scripts"]:
                 self.stats["skipped"] += 1
                 result["passed"] = True
                 result["warnings"].append("文件被豁免元数据检查")

@@ -1,5 +1,6 @@
 ---
-title: ADR 001: 五层架构与 PAL
+title: "ADR 001: 五层架构与 PAL"
+description: "五层架构与平台抽象层 (PAL) 设计决策"
 status: accepted
 date: 2026-02-28
 type: adr

@@ -17,13 +17,12 @@ language: zh
 
 ## 目录
 
-- [设计哲学](#design-philosophy-cn)
-- [五层架构](#the-5-layer-architecture-cn)
-- [记忆系统架构（三级模型）](#memory-system-architecture-cn)
-- [关键架构决策](#key-architectural-decisions-cn)
-- [跨平台策略](#cross-platform-strategy-cn)
-- [可扩展性架构](#extensibility-architecture-cn)
-- [安全模型](#security-model-cn)
+- [设计哲学](#设计哲学)
+- [五层架构](#五层架构)
+- [关键架构决策](#关键架构决策)
+- [跨平台策略](#跨平台策略)
+- [可扩展性架构](#可扩展性架构)
+- [安全模型](#安全模型)
 
 ---
 

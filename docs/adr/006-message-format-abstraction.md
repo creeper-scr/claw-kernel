@@ -1,5 +1,6 @@
 ---
-title: ADR-006: Message Format Abstraction
+title: "ADR-006: Message Format Abstraction"
+description: "Message format abstraction for LLM providers"
 status: accepted
 date: 2026-02-28
 type: adr

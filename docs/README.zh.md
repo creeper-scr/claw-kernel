@@ -1,4 +1,11 @@
-# claw-kernel（爪核）
+---
+title: claw-kernel（爪核）
+description: Claw Agent 生态系统的共享 Rust 基础库
+status: active
+version: "0.1.0"
+last_updated: "2026-03-01"
+language: zh
+---
 
 [English →](../README.md)
 
@@ -56,8 +63,8 @@ async fn main() {
 | [`claw-provider`](crates/claw-provider.zh.md) | 2 | LLM Provider：Anthropic、OpenAI、Ollama、DeepSeek、Moonshot |
 | [`claw-tools`](crates/claw-tools.zh.md) | 2 | 工具注册表、JSON Schema 生成、热加载（50ms 防抖） |
 | [`claw-loop`](crates/claw-loop.zh.md) | 2 | Agent 循环引擎、历史管理、停止条件 |
-| [`claw-memory`](crates/claw-memory.md) | 2 | Ngram 嵌入、SQLite 存储、安全记忆（50 MB 配额） |
-| [`claw-channel`](crates/claw-channel.md) | 2.5 | Channel trait：Discord、HTTP Webhook、Stdin |
+| [`claw-memory`](crates/claw-memory.zh.md) | 2 | Ngram 嵌入、SQLite 存储、安全记忆（50 MB 配额） |
+| [`claw-channel`](crates/claw-channel.zh.md) | 2.5 | Channel trait：Discord、HTTP Webhook、Stdin |
 | [`claw-script`](crates/claw-script.zh.md) | 3 | 脚本引擎：Lua（默认）、Deno/V8、PyO3 |
 | `claw-kernel` | meta | 重导出所有子 crate + prelude 模块 |
 

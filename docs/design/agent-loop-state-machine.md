@@ -1,6 +1,6 @@
 ---
 title: Agent Loop State Machine Design
-description: Detailed design for the claw-loop crate: state machine, turn lifecycle, tool execution, history truncation, and streaming
+description: "Detailed design for the claw-loop crate: state machine, turn lifecycle, tool execution, history truncation, and streaming"
 status: design-phase
 version: "0.1.0"
 last_updated: "2026-03-01"

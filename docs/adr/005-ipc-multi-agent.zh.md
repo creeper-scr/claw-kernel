@@ -1,5 +1,6 @@
 ---
-title: ADR 005: IPC 和多智能体协调
+title: "ADR 005: IPC 和多智能体协调"
+description: "进程间通信与多智能体协调设计"
 status: accepted
 date: 2026-02-28
 type: adr

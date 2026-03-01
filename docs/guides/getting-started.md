@@ -16,7 +16,7 @@ This guide will help you build your first agent using claw-kernel.
 
 claw-kernel is a lightweight framework for building LLM-powered agents. It provides core components like provider interfaces, tool systems, and agent loops at Layer 1-3.
 
-> [Warning]  **Note**: This guide shows the **target API design**. The `claw-kernel` crate is not yet implemented. See [BUILD_PLAN.md](../../BUILD_PLAN.md) for the implementation roadmap.
+> [Warning]  **Note**: This guide shows the **target API design**. The `claw-kernel` crate is now implemented. See [ROADMAP.md](../../ROADMAP.md) for future plans.
 
 ---
 

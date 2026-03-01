@@ -2,7 +2,8 @@
 title: Code of Conduct
 description: Contributor Covenant Code of Conduct for claw-kernel
 status: active
-version: "2.0"
+version: "0.1.0"
+covenant_version: "2.0"
 last_updated: "2026-02-28"
 language: bilingual
 ---
