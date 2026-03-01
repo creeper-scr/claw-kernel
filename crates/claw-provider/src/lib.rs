@@ -1,11 +1,25 @@
 //! LLM provider traits and implementations.
 
+pub mod anthropic;
+pub mod deepseek;
 pub mod error;
+pub mod moonshot;
+pub mod ollama;
+pub mod openai;
+pub mod providers;
 pub mod traits;
+pub mod transport;
 pub mod types;
 
+pub use anthropic::AnthropicProvider;
+pub use deepseek::DeepSeekProvider;
 pub use error::ProviderError;
+pub use moonshot::MoonshotProvider;
+pub use ollama::OllamaProvider;
+pub use openai::OpenAIProvider;
+pub use providers::provider_from_env;
 pub use traits::{EmbeddingProvider, HttpTransport, LLMProvider, MessageFormat};
+pub use transport::DefaultHttpTransport;
 pub use types::{
     CompletionResponse, Delta, Embedding, FinishReason, Message, Options, Role, ToolCall,
     ToolCallResult, TokenUsage,

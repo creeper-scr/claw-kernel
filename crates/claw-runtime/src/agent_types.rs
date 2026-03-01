@@ -33,16 +33,20 @@ impl std::fmt::Display for AgentId {
 }
 
 /// Simple non-cryptographic hex token derived from the current nanosecond
-/// timestamp.  Sufficient for generating unique-enough agent IDs within a
-/// single process lifetime.
+/// timestamp plus an atomic counter.  Guarantees uniqueness within a single
+/// process lifetime even on very fast hardware where nanos may repeat.
 fn rand_hex(n: usize) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
-    // Mix nanos + sub-nanos to reduce collisions on fast hardware.
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+
     let t = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    let raw = t.as_nanos() ^ ((t.subsec_nanos() as u128).wrapping_mul(0x9e37_79b9_7f4a_7c15));
-    // Take the lowest `n` hex digits.
+    // Mix nanos with the atomic sequence number to eliminate collisions.
+    let raw = t.as_nanos() ^ ((seq as u128).wrapping_mul(0x9e37_79b9_7f4a_7c15));
     format!("{:0>width$x}", raw & ((1u128 << (n * 4)) - 1), width = n)
 }
 
