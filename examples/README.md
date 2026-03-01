@@ -2,43 +2,24 @@
 
 This directory contains example applications demonstrating claw-kernel capabilities.
 
-> [Warning]  **Note**: These examples are **design targets** - the `claw-kernel` crate is not yet implemented.
-
 ## Examples
 
-### 1. simple-agent
-A basic agent with single LLM provider and static tools.
+### simple-agent
+A basic agent with a single LLM provider and static tools.
 
-**Demonstrates**:
-- Basic `AgentLoop` setup
-- Tool registry
-- Provider configuration
+**Demonstrates:** `AgentLoop` setup, tool registry, provider configuration.
 
-Status: [WIP]  Skeleton only
+### custom-tool
+Shows how to create and register custom tools using Lua scripts.
 
-### 2. custom-tool
-Shows how to create and register custom tools.
+**Demonstrates:** Lua tool scripts, tool schema definition, permission annotations.
 
-**Demonstrates**:
-- Lua tool script
-- Tool schema definition
-- Permission annotations
+### self-evolving-agent
+An agent that generates and loads new tools at runtime.
 
-Status: [WIP]  Skeleton only
+**Demonstrates:** Tool generation via LLM, hot-reload mechanism, version management.
 
-### 3. self-evolving-agent
-An agent that can generate and load new tools at runtime.
-
-**Demonstrates**:
-- Tool generation via LLM
-- Hot-reload mechanism
-- Version management
-
-Status: [WIP]  Skeleton only
-
-## Running Examples
-
-Once `claw-kernel` is implemented:
+## Running
 
 ```bash
 cd examples/simple-agent

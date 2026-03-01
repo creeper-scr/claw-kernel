@@ -1,9 +1,9 @@
 ---
 title: claw-kernel Terminology Reference
 description: English-Chinese terminology reference for consistent documentation
-status: design-phase
+status: v0.1.0
 version: "0.1.0"
-last_updated: "2026-02-28"
+last_updated: "2026-03-01"
 ---
 
 # claw-kernel 术语对照表 / Terminology Reference
