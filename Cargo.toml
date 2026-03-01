@@ -28,7 +28,7 @@ repository = "https://github.com/claw-project/claw-kernel"
 # ============================================
 [workspace.dependencies]
 # 异步运行时 (Async Runtime) - 兼容 Rust 1.83+
-tokio = { version = "1.35.0", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+tokio = { version = "1.35.0", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "io-util"] }
 async-trait = "0.1.77"
 
 # 并发数据结构 (Concurrent Data Structures)
@@ -55,7 +55,7 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 # PAL 层依赖 (Platform Abstraction)
 # ============================================
 # IPC - 跨平台进程间通信
-interprocess = { version = "1.2.1", features = ["tokio"] }
+interprocess = { version = "1.2.1", features = ["tokio_support"] }
 
 # 配置目录 - 跨平台标准目录
 dirs = "5.0.1"

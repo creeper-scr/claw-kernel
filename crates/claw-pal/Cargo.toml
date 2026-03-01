@@ -15,7 +15,12 @@ tokio = { workspace = true }
 interprocess = { workspace = true }
 dirs = { workspace = true }
 rust-argon2 = { workspace = true }
+dashmap = { workspace = true }
+futures = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libseccomp = { workspace = true }
-nix = { workspace = true }
+nix = { workspace = true, features = ["resource"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.27.1", features = ["process", "sched", "signal"] }
