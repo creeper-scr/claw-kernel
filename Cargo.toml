@@ -64,6 +64,9 @@ dirs = "5.0.1"
 libseccomp = "0.3.0"
 nix = { version = "0.27.1", features = ["process", "sched"] }
 
+# 安全 (Security)
+rust-argon2 = "0.8"
+
 
 
 # ============================================
