@@ -71,6 +71,7 @@ pub mod prelude {
         agent_loop::AgentLoop,
         builder::AgentLoopBuilder,
         error::AgentError,
+        summarizer::SimpleSummarizer,
         traits::{HistoryManager, StopCondition, Summarizer},
         types::FinishReason as LoopFinishReason,
         types::{AgentLoopConfig, AgentResult, LoopState},

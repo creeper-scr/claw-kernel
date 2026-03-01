@@ -2,33 +2,48 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use futures::Stream;
+use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
     error::ProviderError,
     types::{CompletionResponse, Delta, Embedding, Message, Options},
 };
 
-/// Provider-specific HTTP serialization/deserialization.
+/// Provider-specific HTTP serialization/deserialization (Level 1: Protocol Abstraction).
 ///
-/// Converts between the canonical message types and the wire format
-/// required by each provider API.
+/// Abstracts the message format differences between LLM providers.
+/// OpenAI-compatible providers share the same format, Anthropic uses a different format.
 pub trait MessageFormat: Send + Sync {
-    /// Serialize messages + options to provider-specific JSON request body.
-    fn format_request(
-        &self,
-        messages: &[Message],
-        options: &Options,
-    ) -> Result<serde_json::Value, ProviderError>;
+    /// Request type for this format.
+    type Request: Serialize;
+    /// Response type for this format.
+    type Response: DeserializeOwned;
+    /// Stream chunk type for this format.
+    type StreamChunk: DeserializeOwned;
+    /// Error type for parsing failures.
+    type Error: std::error::Error + 'static;
 
-    /// Parse a non-streaming JSON response body.
-    fn parse_response(&self, raw: serde_json::Value) -> Result<CompletionResponse, ProviderError>;
+    /// Build request from canonical messages and options.
+    fn build_request(messages: &[Message], opts: &Options) -> Self::Request;
 
-    /// Parse one SSE/NDJSON chunk from a streaming response.
-    /// Returns `None` if the chunk signals stream end (e.g., `[DONE]`).
-    fn parse_stream_chunk(&self, raw: &str) -> Result<Option<Delta>, ProviderError>;
+    /// Parse response to canonical format.
+    fn parse_response(raw: Self::Response) -> Result<CompletionResponse, Self::Error>;
+
+    /// Parse one SSE/NDJSON chunk.
+    /// Returns `None` if the chunk signals stream end (e.g. `[DONE]`).
+    fn parse_stream_chunk(chunk: &[u8]) -> Result<Option<Delta>, Self::Error>;
+
+    /// Token count estimate for this format.
+    fn token_count(messages: &[Message]) -> usize;
+
+    /// API endpoint path for this format.
+    fn endpoint() -> &'static str;
 }
 
-/// Low-level HTTP transport for provider API calls.
+/// Low-level HTTP transport for provider API calls (Level 2: Reusable Transport).
+///
+/// Implements generic HTTP logic reused by all providers.
+/// This trait is object-safe and can be used with `dyn HttpTransport`.
 #[async_trait]
 pub trait HttpTransport: Send + Sync {
     /// POST JSON and return the full response body.
@@ -51,7 +66,60 @@ pub trait HttpTransport: Send + Sync {
     >;
 }
 
-/// High-level LLM provider interface.
+/// Extension trait for HttpTransport providing generic request methods.
+///
+/// This trait uses generic methods and cannot be made into a trait object.
+/// Use `HttpTransport` for trait objects, and this trait for generic operations.
+pub trait HttpTransportExt: HttpTransport {
+    /// Base URL for the provider API.
+    fn base_url(&self) -> &str;
+
+    /// Authentication headers for the provider.
+    fn auth_headers(&self) -> reqwest::header::HeaderMap;
+
+    /// HTTP client reference.
+    fn http_client(&self) -> &reqwest::Client;
+
+    /// Generic request using MessageFormat — reused by ALL providers.
+    fn request<F: MessageFormat>(
+        &self,
+        messages: &[Message],
+        opts: &Options,
+    ) -> impl std::future::Future<Output = Result<CompletionResponse, ProviderError>> + Send 
+    where
+        <F as MessageFormat>::Request: Send,
+    {
+        async move {
+            let req = F::build_request(messages, opts);
+            let url = format!("{}{}", self.base_url(), F::endpoint());
+            
+            let body = serde_json::to_value(&req).map_err(|e| {
+                ProviderError::Serialization(format!("Failed to serialize request: {}", e))
+            })?;
+            
+            let response = self.post_json(&url, &[], &body).await?;
+            
+            let raw: F::Response = serde_json::from_value(response).map_err(|e| {
+                ProviderError::Serialization(format!("Failed to parse response: {}", e))
+            })?;
+            
+            F::parse_response(raw).map_err(|e| ProviderError::Other(e.to_string()))
+        }
+    }
+
+    /// Generic streaming request.
+    fn stream_request<F: MessageFormat>(
+        &self,
+        _messages: &[Message],
+        _opts: &Options,
+    ) -> impl std::future::Future<Output = Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError>> + Send {
+        async move {
+            todo!("Streaming request requires SSE parsing implementation")
+        }
+    }
+}
+
+/// High-level LLM provider interface (Level 3: User-facing).
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
     /// Short identifier for this provider (e.g., "anthropic", "openai").
@@ -174,13 +242,13 @@ mod tests {
         let json = serde_json::to_string(&reason).expect("serialize failed");
         assert_eq!(json, "\"stop\"");
 
-        let tool_use = FinishReason::ToolUse;
-        let json2 = serde_json::to_string(&tool_use).expect("serialize failed");
-        assert_eq!(json2, "\"tool_use\"");
+        let tool_calls = FinishReason::ToolCalls;
+        let json2 = serde_json::to_string(&tool_calls).expect("serialize failed");
+        assert_eq!(json2, "\"tool_calls\"");
 
         let restored: FinishReason =
-            serde_json::from_str("\"max_tokens\"").expect("deserialize failed");
-        assert_eq!(restored, FinishReason::MaxTokens);
+            serde_json::from_str("\"length\"").expect("deserialize failed");
+        assert_eq!(restored, FinishReason::Length);
     }
 
     #[test]

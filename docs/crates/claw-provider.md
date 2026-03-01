@@ -1,7 +1,7 @@
 ---
 title: claw-provider
 description: LLM provider trait + Anthropic/OpenAI/Ollama implementations
-status: design-phase
+status: implemented
 version: "0.1.0"
 last_updated: "2026-03-01"
 language: en

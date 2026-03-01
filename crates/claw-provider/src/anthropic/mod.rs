@@ -19,7 +19,6 @@ pub struct AnthropicProvider {
     api_key: String,
     model: String,
     transport: Arc<dyn HttpTransport>,
-    format: AnthropicFormat,
 }
 
 impl AnthropicProvider {
@@ -27,8 +26,7 @@ impl AnthropicProvider {
         Self {
             api_key: api_key.into(),
             model: model.into(),
-            transport: Arc::new(DefaultHttpTransport::new()),
-            format: AnthropicFormat::new(),
+            transport: Arc::new(DefaultHttpTransport::new("https://api.anthropic.com")),
         }
     }
 
@@ -68,15 +66,20 @@ impl LLMProvider for AnthropicProvider {
         messages: Vec<Message>,
         options: Options,
     ) -> Result<CompletionResponse, ProviderError> {
-        let body = self.format.format_request(&messages, &options)?;
+        let request = AnthropicFormat::build_request(&messages, &options);
+        let body = serde_json::to_value(&request)
+            .map_err(|e| ProviderError::Serialization(e.to_string()))?;
         let url = format!("{}/messages", self.base_url());
         let headers_owned = self.build_headers();
         let headers: Vec<(&str, &str)> = headers_owned
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
-        let raw = self.transport.post_json(&url, &headers, &body).await?;
-        self.format.parse_response(raw)
+        let raw: serde_json::Value = self.transport.post_json(&url, &headers, &body).await?;
+        let response: <AnthropicFormat as MessageFormat>::Response =
+            serde_json::from_value(raw).map_err(|e| ProviderError::Serialization(e.to_string()))?;
+        AnthropicFormat::parse_response(response)
+            .map_err(|e| ProviderError::Other(e.to_string()))
     }
 
     async fn complete_stream(
@@ -89,7 +92,9 @@ impl LLMProvider for AnthropicProvider {
             stream: true,
             ..options
         };
-        let body = self.format.format_request(&messages, &stream_opts)?;
+        let request = AnthropicFormat::build_request(&messages, &stream_opts);
+        let body = serde_json::to_value(&request)
+            .map_err(|e| ProviderError::Serialization(e.to_string()))?;
         let url = format!("{}/messages", self.base_url());
         let headers_owned = self.build_headers();
         let headers: Vec<(&str, &str)> = headers_owned
@@ -98,7 +103,6 @@ impl LLMProvider for AnthropicProvider {
             .collect();
         let byte_stream = self.transport.post_stream(&url, &headers, &body).await?;
 
-        let format = AnthropicFormat::new();
         let delta_stream = byte_stream.flat_map(move |chunk_result| {
             let deltas: Vec<Result<Delta, ProviderError>> = match chunk_result {
                 Err(e) => vec![Err(e)],
@@ -110,10 +114,10 @@ impl LLMProvider for AnthropicProvider {
                             if trimmed.is_empty() {
                                 return None;
                             }
-                            match format.parse_stream_chunk(trimmed) {
+                            match AnthropicFormat::parse_stream_chunk(trimmed.as_bytes()) {
                                 Ok(Some(delta)) => Some(Ok(delta)),
                                 Ok(None) => None,
-                                Err(e) => Some(Err(e)),
+                                Err(e) => Some(Err(ProviderError::Other(e.to_string()))),
                             }
                         })
                         .collect()

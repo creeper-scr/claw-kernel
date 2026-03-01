@@ -1,7 +1,7 @@
 ---
 title: claw-pal
 description: Platform Abstraction Layer (sandbox, IPC, process)
-status: design-phase
+status: implemented
 version: "0.1.0"
 last_updated: "2026-03-01"
 language: en

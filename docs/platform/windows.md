@@ -1,7 +1,7 @@
 ---
 title: Windows Platform Guide
 description: Windows platform guide (AppContainer + Job Objects)
-status: design-phase
+status: partial-implementation
 version: "0.1.0"
 last_updated: "2026-03-01"
 language: en
@@ -11,7 +11,9 @@ language: en
 
 # Windows Platform Guide
 
-Windows support is fully functional with AppContainer sandboxing and Named Pipe IPC.
+> ⚠️ **已知限制 (Known Limitation)**: Windows沙箱目前为 **Stub实现**，仅返回占位符handle，不实际限制进程权限。在Windows上使用Safe Mode时，安全隔离依赖其他机制（如低完整性级别、UAC等）。完整AppContainer实现计划在v0.2.0中提供。
+
+Windows IPC (Named Pipe) 功能完整，但沙箱隔离功能尚未完全实现。
 
 ---
 
@@ -74,15 +76,21 @@ rustc --print host-triple
 
 ## Sandbox Implementation
 
-Windows uses **AppContainer** + **Job Objects**:
+> ⚠️ **当前状态**: Windows沙箱为 **Stub实现**，以下代码仅展示设计意图，实际未执行：
 
 ```rust
-// Internal implementation
-create_app_container()?;    // Low integrity process
-create_capabilities()?;     // Capability SIDs
-apply_job_limits()?;        // Resource restrictions
-create_process_with_token()?; // Launch sandboxed
+// 设计目标 (尚未实现)
+// create_app_container()?;    // ❌ 未实现
+create_capabilities()?;        // ❌ 未实现  
+apply_job_limits()?;           // ⚠️ Stub - 仅存储配置
+create_process_with_token()?;  // ❌ 未实现
 ```
+
+Windows沙箱设计使用 AppContainer + Job Objects，但目前：
+- ✅ Job Objects资源限制：已实现stub，结构就绪
+- ❌ AppContainer隔离：**未实现**（返回空handle）
+- ❌ 文件系统白名单：**未实现**  
+- ❌ 网络规则限制：**未实现**
 
 ### AppContainer
 

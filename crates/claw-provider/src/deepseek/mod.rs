@@ -7,6 +7,7 @@ use futures::{Stream, StreamExt};
 use crate::{
     error::ProviderError,
     openai::format::OpenAIFormat,
+    openai::format::OpenAIResponse,
     traits::{HttpTransport, LLMProvider, MessageFormat},
     transport::DefaultHttpTransport,
     types::{CompletionResponse, Delta, Message, Options},
@@ -16,7 +17,6 @@ pub struct DeepSeekProvider {
     api_key: String,
     model: String,
     transport: Arc<dyn HttpTransport>,
-    format: OpenAIFormat,
 }
 
 impl DeepSeekProvider {
@@ -24,8 +24,7 @@ impl DeepSeekProvider {
         Self {
             api_key: api_key.into(),
             model: model.into(),
-            transport: Arc::new(DefaultHttpTransport::new()),
-            format: OpenAIFormat::new(),
+            transport: Arc::new(DefaultHttpTransport::new("https://api.deepseek.com")),
         }
     }
 
@@ -37,7 +36,7 @@ impl DeepSeekProvider {
     }
 
     fn base_url(&self) -> &str {
-        "https://api.deepseek.com/v1"
+        "https://api.deepseek.com"
     }
 
     fn build_headers(&self) -> Vec<(String, String)> {
@@ -66,7 +65,10 @@ impl LLMProvider for DeepSeekProvider {
         messages: Vec<Message>,
         options: Options,
     ) -> Result<CompletionResponse, ProviderError> {
-        let body = self.format.format_request(&messages, &options)?;
+        let req = OpenAIFormat::build_request(&messages, &options);
+        let body = serde_json::to_value(&req).map_err(|e| {
+            ProviderError::Serialization(format!("Failed to serialize request: {}", e))
+        })?;
         let url = format!("{}/chat/completions", self.base_url());
         let headers_owned = self.build_headers();
         let headers: Vec<(&str, &str)> = headers_owned
@@ -74,7 +76,11 @@ impl LLMProvider for DeepSeekProvider {
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
         let raw = self.transport.post_json(&url, &headers, &body).await?;
-        self.format.parse_response(raw)
+        let parsed_response: OpenAIResponse = serde_json::from_value(raw).map_err(|e| {
+            ProviderError::Serialization(format!("Failed to deserialize response: {}", e))
+        })?;
+        OpenAIFormat::parse_response(parsed_response)
+            .map_err(|e| ProviderError::Other(e.to_string()))
     }
 
     async fn complete_stream(
@@ -87,7 +93,10 @@ impl LLMProvider for DeepSeekProvider {
             stream: true,
             ..options
         };
-        let body = self.format.format_request(&messages, &stream_opts)?;
+        let req = OpenAIFormat::build_request(&messages, &stream_opts);
+        let body = serde_json::to_value(&req).map_err(|e| {
+            ProviderError::Serialization(format!("Failed to serialize request: {}", e))
+        })?;
         let url = format!("{}/chat/completions", self.base_url());
         let headers_owned = self.build_headers();
         let headers: Vec<(&str, &str)> = headers_owned
@@ -96,7 +105,6 @@ impl LLMProvider for DeepSeekProvider {
             .collect();
         let byte_stream = self.transport.post_stream(&url, &headers, &body).await?;
 
-        let format = OpenAIFormat::new();
         let delta_stream = byte_stream.flat_map(move |chunk_result| {
             let deltas: Vec<Result<Delta, ProviderError>> = match chunk_result {
                 Err(e) => vec![Err(e)],
@@ -108,10 +116,10 @@ impl LLMProvider for DeepSeekProvider {
                             if trimmed.is_empty() {
                                 return None;
                             }
-                            match format.parse_stream_chunk(trimmed) {
+                            match OpenAIFormat::parse_stream_chunk(trimmed.as_bytes()) {
                                 Ok(Some(delta)) => Some(Ok(delta)),
                                 Ok(None) => None,
-                                Err(e) => Some(Err(e)),
+                                Err(e) => Some(Err(ProviderError::Other(e.to_string()))),
                             }
                         })
                         .collect()

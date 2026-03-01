@@ -8,13 +8,20 @@ use std::time::Duration;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolErrorCode {
-    InvalidArguments,
-    PermissionDenied,
+    /// Invalid parameters passed to the tool.
+    InvalidParameter,
+    /// Tool execution failed (generic execution error).
+    ExecutionFailed,
+    /// Execution timed out.
     Timeout,
-    NetworkError,
-    FileSystemError,
+    /// Permission denied for the requested operation.
+    PermissionDenied,
+    /// Resource not found.
+    ResourceNotFound,
+    /// Rate limited by external service.
+    RateLimited,
+    /// Internal error.
     InternalError,
-    NotImplemented,
 }
 
 /// Tool execution error with code and message.
@@ -27,7 +34,7 @@ pub struct ToolError {
 impl ToolError {
     pub fn invalid_args(msg: impl Into<String>) -> Self {
         Self {
-            code: ToolErrorCode::InvalidArguments,
+            code: ToolErrorCode::InvalidParameter,
             message: msg.into(),
         }
     }
@@ -280,7 +287,7 @@ mod tests {
     #[test]
     fn test_tool_error_variants() {
         let e1 = ToolError::invalid_args("bad input");
-        assert_eq!(e1.code, ToolErrorCode::InvalidArguments);
+        assert_eq!(e1.code, ToolErrorCode::InvalidParameter);
         assert_eq!(e1.message, "bad input");
 
         let e2 = ToolError::permission_denied("no access");

@@ -1,4 +1,4 @@
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     error::ProviderError,
@@ -6,29 +6,116 @@ use crate::{
     types::{CompletionResponse, Delta, FinishReason, Message, Options, Role, TokenUsage},
 };
 
+/// Anthropic Messages API request.
+#[derive(Serialize, Debug)]
+pub struct AnthropicRequest {
+    pub model: String,
+    pub max_tokens: u32,
+    pub messages: Vec<AnthropicMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    pub stream: bool,
+}
+
+/// Anthropic message format.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct AnthropicMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// Anthropic Messages API response.
+#[derive(Deserialize, Debug)]
+pub struct AnthropicResponse {
+    pub id: String,
+    pub model: String,
+    pub content: Vec<AnthropicContentBlock>,
+    #[serde(rename = "stop_reason")]
+    pub stop_reason: String,
+    pub usage: AnthropicUsage,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct AnthropicContentBlock {
+    #[serde(rename = "type")]
+    pub block_type: String,
+    pub text: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct AnthropicUsage {
+    #[serde(rename = "input_tokens")]
+    pub input_tokens: u64,
+    #[serde(rename = "output_tokens")]
+    pub output_tokens: u64,
+}
+
+/// Anthropic streaming chunk.
+#[derive(Deserialize, Debug)]
+#[serde(tag = "type")]
+pub enum AnthropicStreamChunk {
+    #[serde(rename = "content_block_delta")]
+    ContentBlockDelta { delta: AnthropicTextDelta },
+    #[serde(rename = "message_delta")]
+    MessageDelta {
+        delta: AnthropicMessageDelta,
+        usage: Option<AnthropicStreamUsage>,
+    },
+    #[serde(rename = "message_stop")]
+    MessageStop,
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct AnthropicTextDelta {
+    #[serde(rename = "type")]
+    pub delta_type: String,
+    pub text: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct AnthropicMessageDelta {
+    #[serde(rename = "stop_reason")]
+    pub stop_reason: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct AnthropicStreamUsage {
+    #[serde(rename = "output_tokens")]
+    pub output_tokens: u64,
+}
+
+/// Anthropic format parsing error.
+#[derive(Debug)]
+pub enum AnthropicError {
+    MissingField(&'static str),
+    InvalidFormat(String),
+}
+
+impl std::fmt::Display for AnthropicError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnthropicError::MissingField(field) => write!(f, "Missing field: {}", field),
+            AnthropicError::InvalidFormat(msg) => write!(f, "Invalid format: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for AnthropicError {}
+
 /// Serialization / deserialization for the Anthropic Messages API.
 pub struct AnthropicFormat;
 
-impl AnthropicFormat {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for AnthropicFormat {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl MessageFormat for AnthropicFormat {
-    fn format_request(
-        &self,
-        messages: &[Message],
-        options: &Options,
-    ) -> Result<Value, ProviderError> {
+    type Request = AnthropicRequest;
+    type Response = AnthropicResponse;
+    type StreamChunk = AnthropicStreamChunk;
+    type Error = AnthropicError;
+
+    fn build_request(messages: &[Message], opts: &Options) -> Self::Request {
         // System prompt: top-level field, not inside messages
-        let system_prompt: Option<String> = options.system.clone().or_else(|| {
+        let system_prompt: Option<String> = opts.system.clone().or_else(|| {
             messages
                 .iter()
                 .find(|m| m.role == Role::System)
@@ -36,149 +123,103 @@ impl MessageFormat for AnthropicFormat {
         });
 
         // Filter out system-role messages from the messages array
-        let msg_array: Vec<Value> = messages
+        let msg_array: Vec<AnthropicMessage> = messages
             .iter()
             .filter(|m| m.role != Role::System)
             .map(|m| {
-                let role_str = match m.role {
+                let role = match m.role {
                     Role::User => "user",
                     Role::Assistant => "assistant",
                     Role::Tool => "user", // tool results sent as user in Anthropic
                     Role::System => unreachable!(),
                 };
-                json!({ "role": role_str, "content": m.content })
+                AnthropicMessage {
+                    role: role.to_string(),
+                    content: m.content.clone(),
+                }
             })
             .collect();
 
-        let mut body = json!({
-            "model": options.model,
-            "max_tokens": options.max_tokens,
-            "messages": msg_array,
-        });
-
-        if let Some(sys) = system_prompt {
-            body["system"] = json!(sys);
+        AnthropicRequest {
+            model: opts.model.clone(),
+            max_tokens: opts.max_tokens,
+            messages: msg_array,
+            system: system_prompt,
+            stream: opts.stream,
         }
-
-        if options.stream {
-            body["stream"] = json!(true);
-        }
-
-        Ok(body)
     }
 
-    fn parse_response(&self, raw: Value) -> Result<CompletionResponse, ProviderError> {
-        let id = raw["id"]
-            .as_str()
-            .ok_or_else(|| ProviderError::Serialization("missing 'id' field".into()))?
-            .to_string();
+    fn parse_response(raw: Self::Response) -> Result<CompletionResponse, Self::Error> {
+        let content = raw
+            .content
+            .into_iter()
+            .find(|block| block.block_type == "text")
+            .map(|block| block.text)
+            .unwrap_or_default();
 
-        let model = raw["model"]
-            .as_str()
-            .ok_or_else(|| ProviderError::Serialization("missing 'model' field".into()))?
-            .to_string();
-
-        // content is an array of content blocks
-        let content = raw["content"]
-            .as_array()
-            .and_then(|arr| {
-                arr.iter()
-                    .find(|block| block["type"].as_str() == Some("text"))
-                    .and_then(|block| block["text"].as_str())
-            })
-            .unwrap_or("")
-            .to_string();
-
-        let finish_reason = match raw["stop_reason"].as_str().unwrap_or("end_turn") {
+        let finish_reason = match raw.stop_reason.as_str() {
             "end_turn" => FinishReason::Stop,
-            "max_tokens" => FinishReason::MaxTokens,
-            "tool_use" => FinishReason::ToolUse,
-            _ => FinishReason::Other,
-        };
-
-        let usage = {
-            let u = &raw["usage"];
-            let prompt_tokens = u["input_tokens"].as_u64().unwrap_or(0);
-            let completion_tokens = u["output_tokens"].as_u64().unwrap_or(0);
-            TokenUsage {
-                prompt_tokens,
-                completion_tokens,
-                total_tokens: prompt_tokens + completion_tokens,
-            }
+            "max_tokens" => FinishReason::Length,
+            "tool_use" => FinishReason::ToolCalls,
+            _ => FinishReason::Other("unknown".to_string()),
         };
 
         Ok(CompletionResponse {
-            id,
-            model,
+            id: raw.id,
+            model: raw.model,
             message: Message::assistant(content),
             finish_reason,
-            usage,
+            usage: TokenUsage {
+                prompt_tokens: raw.usage.input_tokens,
+                completion_tokens: raw.usage.output_tokens,
+                total_tokens: raw.usage.input_tokens + raw.usage.output_tokens,
+            },
         })
     }
 
-    fn parse_stream_chunk(&self, raw: &str) -> Result<Option<Delta>, ProviderError> {
-        // Anthropic SSE format:
-        // event: content_block_delta
-        // data: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "..."}}
-        //
-        // Also: event: message_stop → end of stream
+    fn parse_stream_chunk(chunk: &[u8]) -> Result<Option<Delta>, Self::Error> {
+        let line = String::from_utf8_lossy(chunk).trim().to_string();
 
         // Skip event: lines
-        if raw.starts_with("event:") {
+        if line.starts_with("event:") {
             return Ok(None);
         }
 
-        let line = if let Some(stripped) = raw.strip_prefix("data: ") {
+        // Strip "data: " prefix if present
+        let line = if let Some(stripped) = line.strip_prefix("data: ") {
             stripped.trim()
         } else {
-            raw.trim()
+            &line
         };
 
         if line.is_empty() {
             return Ok(None);
         }
 
-        let v: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => return Ok(None),
-        };
+        let chunk: AnthropicStreamChunk =
+            serde_json::from_str(line).map_err(|e| AnthropicError::InvalidFormat(e.to_string()))?;
 
-        match v["type"].as_str() {
-            Some("content_block_delta") => {
-                let delta_type = v["delta"]["type"].as_str().unwrap_or("");
-                if delta_type == "text_delta" {
-                    let text = v["delta"]["text"].as_str().unwrap_or("").to_string();
-                    Ok(Some(Delta {
-                        content: Some(text),
-                        tool_call: None,
-                        finish_reason: None,
-                        usage: None,
-                    }))
-                } else {
-                    Ok(None)
-                }
+        match chunk {
+            AnthropicStreamChunk::ContentBlockDelta { delta } if delta.delta_type == "text_delta" => {
+                Ok(Some(Delta {
+                    content: Some(delta.text),
+                    tool_call: None,
+                    finish_reason: None,
+                    usage: None,
+                }))
             }
-            Some("message_delta") => {
-                // May contain stop_reason and usage
-                let finish_reason = match v["delta"]["stop_reason"].as_str() {
-                    Some("end_turn") => Some(FinishReason::Stop),
-                    Some("max_tokens") => Some(FinishReason::MaxTokens),
-                    Some("tool_use") => Some(FinishReason::ToolUse),
-                    _ => None,
-                };
-                let usage = {
-                    let u = &v["usage"];
-                    if u.is_object() {
-                        let out = u["output_tokens"].as_u64().unwrap_or(0);
-                        Some(TokenUsage {
-                            prompt_tokens: 0,
-                            completion_tokens: out,
-                            total_tokens: out,
-                        })
-                    } else {
-                        None
-                    }
-                };
+            AnthropicStreamChunk::MessageDelta { delta, usage } => {
+                let finish_reason = delta.stop_reason.as_deref().map(|r| match r {
+                    "end_turn" => FinishReason::Stop,
+                    "max_tokens" => FinishReason::Length,
+                    "tool_use" => FinishReason::ToolCalls,
+                    _ => FinishReason::Other("unknown".to_string()),
+                });
+                let usage = usage.map(|u| TokenUsage {
+                    prompt_tokens: 0,
+                    completion_tokens: u.output_tokens,
+                    total_tokens: u.output_tokens,
+                });
                 Ok(Some(Delta {
                     content: None,
                     tool_call: None,
@@ -186,9 +227,19 @@ impl MessageFormat for AnthropicFormat {
                     usage,
                 }))
             }
-            Some("message_stop") => Ok(None),
-            _ => Ok(None),
+            AnthropicStreamChunk::MessageStop => Ok(None),
+            AnthropicStreamChunk::Other => Ok(None),
+            AnthropicStreamChunk::ContentBlockDelta { .. } => Ok(None),
         }
+    }
+
+    fn token_count(messages: &[Message]) -> usize {
+        // Anthropic uses ~4 chars per token on average
+        messages.iter().map(|m| m.content.len() / 4).sum()
+    }
+
+    fn endpoint() -> &'static str {
+        "/v1/messages"
     }
 }
 
@@ -196,57 +247,53 @@ impl MessageFormat for AnthropicFormat {
 mod tests {
     use super::*;
 
-    fn fmt() -> AnthropicFormat {
-        AnthropicFormat::new()
-    }
-
     #[test]
     fn test_anthropic_format_request() {
-        let f = fmt();
         let messages = vec![Message::user("hello")];
         let opts = Options::new("claude-opus-4-6");
-        let body = f.format_request(&messages, &opts).unwrap();
-        assert_eq!(body["model"], "claude-opus-4-6");
-        assert_eq!(body["max_tokens"], 4096);
-        let msgs = body["messages"].as_array().unwrap();
-        assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0]["role"], "user");
+        let req = AnthropicFormat::build_request(&messages, &opts);
+        assert_eq!(req.model, "claude-opus-4-6");
+        assert_eq!(req.max_tokens, 4096);
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].role, "user");
     }
 
     #[test]
     fn test_anthropic_system_at_top_level() {
-        let f = fmt();
         let messages = vec![Message::user("hello")];
         let opts = Options::new("claude-opus-4-6").with_system("Be helpful");
-        let body = f.format_request(&messages, &opts).unwrap();
-        assert_eq!(body["system"], "Be helpful");
+        let req = AnthropicFormat::build_request(&messages, &opts);
+        assert_eq!(req.system, Some("Be helpful".to_string()));
     }
 
     #[test]
     fn test_anthropic_system_not_in_messages() {
-        let f = fmt();
         let messages = vec![Message::system("Be helpful"), Message::user("hello")];
         let opts = Options::new("claude-opus-4-6");
-        let body = f.format_request(&messages, &opts).unwrap();
+        let req = AnthropicFormat::build_request(&messages, &opts);
         // system extracted to top-level
-        assert_eq!(body["system"], "Be helpful");
+        assert_eq!(req.system, Some("Be helpful".to_string()));
         // messages array should only have the user message
-        let msgs = body["messages"].as_array().unwrap();
-        assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].role, "user");
     }
 
     #[test]
     fn test_anthropic_parse_response() {
-        let f = fmt();
-        let raw = serde_json::json!({
-            "id": "msg_abc",
-            "model": "claude-opus-4-6",
-            "content": [{"type": "text", "text": "Hello!"}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 10, "output_tokens": 5}
-        });
-        let resp = f.parse_response(raw).unwrap();
+        let raw = AnthropicResponse {
+            id: "msg_abc".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            content: vec![AnthropicContentBlock {
+                block_type: "text".to_string(),
+                text: "Hello!".to_string(),
+            }],
+            stop_reason: "end_turn".to_string(),
+            usage: AnthropicUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+            },
+        };
+        let resp = AnthropicFormat::parse_response(raw).unwrap();
         assert_eq!(resp.id, "msg_abc");
         assert_eq!(resp.model, "claude-opus-4-6");
         assert_eq!(resp.message.content, "Hello!");
@@ -255,15 +302,20 @@ mod tests {
 
     #[test]
     fn test_anthropic_parse_response_usage() {
-        let f = fmt();
-        let raw = serde_json::json!({
-            "id": "msg_xyz",
-            "model": "claude-opus-4-6",
-            "content": [{"type": "text", "text": "Hi"}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 20, "output_tokens": 10}
-        });
-        let resp = f.parse_response(raw).unwrap();
+        let raw = AnthropicResponse {
+            id: "msg_xyz".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            content: vec![AnthropicContentBlock {
+                block_type: "text".to_string(),
+                text: "Hi".to_string(),
+            }],
+            stop_reason: "end_turn".to_string(),
+            usage: AnthropicUsage {
+                input_tokens: 20,
+                output_tokens: 10,
+            },
+        };
+        let resp = AnthropicFormat::parse_response(raw).unwrap();
         assert_eq!(resp.usage.prompt_tokens, 20);
         assert_eq!(resp.usage.completion_tokens, 10);
         assert_eq!(resp.usage.total_tokens, 30);
@@ -271,10 +323,8 @@ mod tests {
 
     #[test]
     fn test_anthropic_parse_stream_chunk_text_delta() {
-        let f = fmt();
-        let line =
-            r#"data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}"#;
-        let delta = f.parse_stream_chunk(line).unwrap();
+        let line = r#"{"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}"#;
+        let delta = AnthropicFormat::parse_stream_chunk(line.as_bytes()).unwrap();
         assert!(delta.is_some());
         let d = delta.unwrap();
         assert_eq!(d.content, Some("hello".to_string()));
@@ -282,35 +332,56 @@ mod tests {
 
     #[test]
     fn test_anthropic_parse_stream_chunk_done() {
-        let f = fmt();
-        let line = r#"data: {"type":"message_stop"}"#;
-        let result = f.parse_stream_chunk(line).unwrap();
+        let line = r#"{"type":"message_stop"}"#;
+        let result = AnthropicFormat::parse_stream_chunk(line.as_bytes()).unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_anthropic_stop_reason_mapping() {
-        let f = fmt();
         // max_tokens
-        let raw = serde_json::json!({
-            "id": "msg_1",
-            "model": "claude-opus-4-6",
-            "content": [{"type": "text", "text": "..."}],
-            "stop_reason": "max_tokens",
-            "usage": {"input_tokens": 0, "output_tokens": 0}
-        });
-        let resp = f.parse_response(raw).unwrap();
-        assert_eq!(resp.finish_reason, FinishReason::MaxTokens);
+        let raw = AnthropicResponse {
+            id: "msg_1".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            content: vec![AnthropicContentBlock {
+                block_type: "text".to_string(),
+                text: "...".to_string(),
+            }],
+            stop_reason: "max_tokens".to_string(),
+            usage: AnthropicUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+        };
+        let resp = AnthropicFormat::parse_response(raw).unwrap();
+        assert_eq!(resp.finish_reason, FinishReason::Length);
 
         // tool_use
-        let raw2 = serde_json::json!({
-            "id": "msg_2",
-            "model": "claude-opus-4-6",
-            "content": [{"type": "text", "text": ""}],
-            "stop_reason": "tool_use",
-            "usage": {"input_tokens": 0, "output_tokens": 0}
-        });
-        let resp2 = f.parse_response(raw2).unwrap();
-        assert_eq!(resp2.finish_reason, FinishReason::ToolUse);
+        let raw2 = AnthropicResponse {
+            id: "msg_2".to_string(),
+            model: "claude-opus-4-6".to_string(),
+            content: vec![AnthropicContentBlock {
+                block_type: "text".to_string(),
+                text: "".to_string(),
+            }],
+            stop_reason: "tool_use".to_string(),
+            usage: AnthropicUsage {
+                input_tokens: 0,
+                output_tokens: 0,
+            },
+        };
+        let resp2 = AnthropicFormat::parse_response(raw2).unwrap();
+        assert_eq!(resp2.finish_reason, FinishReason::ToolCalls);
+    }
+
+    #[test]
+    fn test_token_count() {
+        let messages = vec![Message::user("hello world")]; // 11 chars
+        assert_eq!(AnthropicFormat::token_count(&messages), 2); // 11 / 4 = 2
+    }
+
+    #[test]
+    fn test_endpoint() {
+        assert_eq!(AnthropicFormat::endpoint(), "/v1/messages");
     }
 }

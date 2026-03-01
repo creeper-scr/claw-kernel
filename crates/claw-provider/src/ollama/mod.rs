@@ -8,7 +8,7 @@ use futures::{Stream, StreamExt};
 
 use crate::{
     error::ProviderError,
-    openai::format::OpenAIFormat,
+    ollama::format::OllamaFormat,
     traits::{HttpTransport, LLMProvider, MessageFormat},
     transport::DefaultHttpTransport,
     types::{CompletionResponse, Delta, Message, Options},
@@ -18,28 +18,29 @@ pub struct OllamaProvider {
     model: String,
     base_url: String,
     transport: Arc<dyn HttpTransport>,
-    format: OpenAIFormat,
 }
 
 impl OllamaProvider {
     pub fn new(model: impl Into<String>) -> Self {
+        let base_url = "http://localhost:11434".to_string();
         Self {
             model: model.into(),
-            base_url: "http://localhost:11434/v1".to_string(),
-            transport: Arc::new(DefaultHttpTransport::new()),
-            format: OpenAIFormat::new(),
+            base_url: base_url.clone(),
+            transport: Arc::new(DefaultHttpTransport::new(base_url)),
         }
     }
 
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
-        self.base_url = url.into();
+        let url_str: String = url.into();
+        // Strip /v1 suffix if present, as we'll add it back in the endpoint
+        self.base_url = url_str.trim_end_matches("/v1").to_string();
         self
     }
 
     pub fn from_env() -> Result<Self, ProviderError> {
         let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3".to_string());
         let base_url = std::env::var("OLLAMA_BASE_URL")
-            .unwrap_or_else(|_| "http://localhost:11434/v1".to_string());
+            .unwrap_or_else(|_| "http://localhost:11434".to_string());
         Ok(Self::new(model).with_base_url(base_url))
     }
 
@@ -67,15 +68,20 @@ impl LLMProvider for OllamaProvider {
         messages: Vec<Message>,
         options: Options,
     ) -> Result<CompletionResponse, ProviderError> {
-        let body = self.format.format_request(&messages, &options)?;
-        let url = format!("{}/chat/completions", self.base_url);
+        let req = OllamaFormat::build_request(&messages, &options);
+        let body = serde_json::to_value(&req).map_err(|e| {
+            ProviderError::Serialization(format!("Failed to serialize request: {}", e))
+        })?;
+        let url = format!("{}/v1/chat/completions", self.base_url);
         let headers_owned = self.build_headers();
         let headers: Vec<(&str, &str)> = headers_owned
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
         let raw = self.transport.post_json(&url, &headers, &body).await?;
-        self.format.parse_response(raw)
+        let response: <OllamaFormat as MessageFormat>::Response = serde_json::from_value(raw)
+            .map_err(|e| ProviderError::Serialization(format!("Failed to parse response: {}", e)))?;
+        OllamaFormat::parse_response(response).map_err(|e| ProviderError::Other(e.to_string()))
     }
 
     async fn complete_stream(
@@ -88,8 +94,11 @@ impl LLMProvider for OllamaProvider {
             stream: true,
             ..options
         };
-        let body = self.format.format_request(&messages, &stream_opts)?;
-        let url = format!("{}/chat/completions", self.base_url);
+        let req = OllamaFormat::build_request(&messages, &stream_opts);
+        let body = serde_json::to_value(&req).map_err(|e| {
+            ProviderError::Serialization(format!("Failed to serialize request: {}", e))
+        })?;
+        let url = format!("{}/v1/chat/completions", self.base_url);
         let headers_owned = self.build_headers();
         let headers: Vec<(&str, &str)> = headers_owned
             .iter()
@@ -97,25 +106,15 @@ impl LLMProvider for OllamaProvider {
             .collect();
         let byte_stream = self.transport.post_stream(&url, &headers, &body).await?;
 
-        let format = OpenAIFormat::new();
         let delta_stream = byte_stream.flat_map(move |chunk_result| {
             let deltas: Vec<Result<Delta, ProviderError>> = match chunk_result {
                 Err(e) => vec![Err(e)],
                 Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    text.lines()
-                        .filter_map(|line| {
-                            let trimmed = line.trim();
-                            if trimmed.is_empty() {
-                                return None;
-                            }
-                            match format.parse_stream_chunk(trimmed) {
-                                Ok(Some(delta)) => Some(Ok(delta)),
-                                Ok(None) => None,
-                                Err(e) => Some(Err(e)),
-                            }
-                        })
-                        .collect()
+                    match OllamaFormat::parse_stream_chunk(&bytes) {
+                        Ok(Some(delta)) => vec![Ok(delta)],
+                        Ok(None) => vec![],
+                        Err(e) => vec![Err(ProviderError::Other(e.to_string()))],
+                    }
                 }
             };
             futures::stream::iter(deltas)
@@ -133,7 +132,7 @@ mod tests {
     fn test_ollama_provider_new() {
         let p = OllamaProvider::new("llama3");
         assert_eq!(p.model, "llama3");
-        assert_eq!(p.base_url, "http://localhost:11434/v1");
+        assert_eq!(p.base_url, "http://localhost:11434");
         assert_eq!(p.provider_id(), "ollama");
         assert_eq!(p.model_id(), "llama3");
     }

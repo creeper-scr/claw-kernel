@@ -1,7 +1,7 @@
 ---
 title: claw-runtime
 description: Event bus, async runtime, multi-agent orchestration
-status: design-phase
+status: implemented
 version: "0.1.0"
 last_updated: "2026-03-01"
 language: en

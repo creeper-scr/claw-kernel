@@ -88,15 +88,28 @@ pub struct TokenUsage {
     pub total_tokens: u64,
 }
 
+impl TokenUsage {
+    pub fn new(prompt: u64, completion: u64) -> Self {
+        Self {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+        }
+    }
+}
+
 /// Reason why the LLM stopped generating.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
     Stop,
-    MaxTokens,
-    ToolUse,
+    /// Generation stopped due to token length limit.
+    Length,
+    /// Generation stopped because the model made tool calls.
+    ToolCalls,
     ContentFilter,
-    Other,
+    /// Other reasons (provider-specific).
+    Other(String),
 }
 
 /// A complete (non-streaming) response from an LLM.
@@ -127,6 +140,17 @@ pub struct Delta {
     pub usage: Option<TokenUsage>,
 }
 
+/// Tool definition for function calling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDef {
+    /// Tool name.
+    pub name: String,
+    /// Tool description.
+    pub description: String,
+    /// JSON Schema for tool parameters.
+    pub parameters: serde_json::Value,
+}
+
 /// Options for LLM completion requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Options {
@@ -141,6 +165,16 @@ pub struct Options {
     /// System prompt (overrides any system message in the message list).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
+    /// Stop sequences to end generation.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stop_sequences: Vec<String>,
+    /// Available tools for function calling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolDef>>,
+    /// Request timeout in seconds.
+    pub timeout_seconds: u64,
+    /// Max retry attempts.
+    pub max_retries: u32,
 }
 
 impl Options {
@@ -151,6 +185,10 @@ impl Options {
             temperature: 0.7,
             stream: false,
             system: None,
+            stop_sequences: Vec::new(),
+            tools: None,
+            timeout_seconds: 60,
+            max_retries: 3,
         }
     }
 
@@ -171,6 +209,26 @@ impl Options {
 
     pub fn with_system(mut self, sys: impl Into<String>) -> Self {
         self.system = Some(sys.into());
+        self
+    }
+
+    pub fn with_stop_sequences(mut self, sequences: Vec<String>) -> Self {
+        self.stop_sequences = sequences;
+        self
+    }
+
+    pub fn with_tools(mut self, tools: Vec<ToolDef>) -> Self {
+        self.tools = Some(tools);
+        self
+    }
+
+    pub fn with_timeout(mut self, timeout_secs: u64) -> Self {
+        self.timeout_seconds = timeout_secs;
+        self
+    }
+
+    pub fn with_max_retries(mut self, retries: u32) -> Self {
+        self.max_retries = retries;
         self
     }
 }

@@ -318,10 +318,10 @@ impl SandboxBackend for LinuxSandbox {
             });
         }
 
-        // Attempt mount namespace isolation (best-effort, non-fatal).
-        // This helps with filesystem isolation when CAP_SYS_ADMIN is available.
+        // Attempt mount namespace isolation (required for filesystem restrictions).
+        // In strict mode, failure to isolate is a security error.
         if !self.filesystem_rules.is_empty() {
-            let _ = Self::try_unshare_mount_ns();
+            Self::try_unshare_mount_ns()?;
         }
 
         // Apply resource limits before seccomp (so limit failures are caught early)
