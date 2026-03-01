@@ -71,7 +71,7 @@ let mut debouncer = new_debouncer(Duration::from_millis(50), move |res: Debounce
 debouncer.watcher().watch(&watch_dir, RecursiveMode::Recursive)?;
 ```
 
-50ms 窗口可通过 `HotLoadingConfig::debounce_ms` 配置。低于 20ms 的值在慢速文件系统上可能产生重复事件；高于 200ms 的值会让开发时的热重载感觉迟钝。
+50ms 窗口可通过 `HotLoadingConfig::debounce_ms` 配置。低于 20ms 的值在慢速文件系统上可能产生重复事件；高于 200ms 的值会让开发时的热加载感觉迟钝。
 
 ### 3. 配置：`HotLoadingConfig`
 
@@ -193,7 +193,7 @@ impl ToolRegistry {
 
 保留窗口到期后，旧版本被释放。每个工具只保留一个旧版本，不支持多级历史。如需更深的历史记录，请使用 ADR-004 中描述的文件系统版本化布局（`v1/`、`v2/`、`current -> v2/`）。
 
-### 8. 完整热重载生命周期
+### 8. 完整热加载生命周期
 
 ```
 文件保存到 watch_dir
@@ -320,7 +320,7 @@ ASCII 时序图：
 
 更长的窗口可以进一步减少重复事件的可能性。
 
-**已拒绝：** 200ms 会让交互式开发中的热重载感觉明显迟缓。50ms 对人类来说几乎无感，足以合并编辑器保存序列。
+**已拒绝：** 200ms 会让交互式开发中的热加载感觉明显迟缓。50ms 对人类来说几乎无感，足以合并编辑器保存序列。
 
 ---
 

@@ -139,6 +139,16 @@ class TerminologyChecker:
                     # 排除代码块和 YAML front matter
                     if self._is_in_code_block(lines, line_num - 1):
                         continue
+                    # 排除术语文件本身的 "禁止的用法" 表格
+                    if "terminology.md" in rel_path and self._is_in_forbidden_table(lines, line_num - 1):
+                        continue
+                    # 排除被反引号包裹的术语（如 `engine_lua`）
+                    escaped_term = re.escape(bad_term)
+                    if re.search(rf'`[^`]*{escaped_term}[^`]*`', line):
+                        continue
+                    # 排除术语对照表中明确标注"避免使用"的行（这是术语定义本身）
+                    if "terminology.md" in rel_path and "避免使用" in line:
+                        continue
                     
                     issues.append({
                         "file": rel_path,
@@ -222,6 +232,28 @@ class TerminologyChecker:
             if line.strip().startswith('```'):
                 in_code_block = not in_code_block
         return in_code_block
+    
+    def _is_in_forbidden_table(self, lines: List[str], line_index: int) -> bool:
+        """检查指定行是否在 '禁止的用法' 表格内"""
+        # 查找 "禁止的用法" 或 "Avoid These" 标题
+        in_forbidden_section = False
+        in_table = False
+        for i, line in enumerate(lines):
+            if i > line_index:
+                break
+            # 检测到禁止用法标题
+            if re.search(r'##\s+(禁止的用法|Avoid These)', line):
+                in_forbidden_section = True
+            # 在禁止用法区域内检测表格
+            if in_forbidden_section:
+                if line.strip().startswith('|') and ('避免' in line or 'No' in line):
+                    in_table = True
+                # 表格结束（空行或新标题）
+                if in_table and (not line.strip() or line.strip().startswith('##')):
+                    in_table = False
+                    if line.strip().startswith('##'):
+                        in_forbidden_section = False
+        return in_table
     
     def check_all(self) -> Dict:
         """检查所有 Markdown 文件"""
