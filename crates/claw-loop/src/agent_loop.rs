@@ -264,11 +264,8 @@ mod tests {
     /// Set max_turns to 0 so the loop immediately hits the turn cap on the
     /// first iteration, before any LLM call is made.
     ///
-    /// When using `AgentLoopBuilder`, a `MaxTurns(0)` stop condition is
-    /// automatically added and fires first (returning `StopCondition`).
-    /// When `max_turns` is enforced by the inline guard in `AgentLoop::run`
-    /// directly, it returns `MaxTurns`.  The builder path fires `StopCondition`
-    /// because the auto-added condition check runs before the inline guard.
+    /// The inline `max_turns` guard in `AgentLoop::run` fires and returns
+    /// `FinishReason::MaxTurns`.
     #[tokio::test]
     async fn test_agent_loop_max_turns_stop() {
         let mut agent = AgentLoopBuilder::new()
@@ -282,16 +279,7 @@ mod tests {
             .await
             .expect("run should succeed");
 
-        // The builder auto-adds a MaxTurns(0) stop condition; it fires in the
-        // custom-condition check loop, which returns StopCondition.
-        assert!(
-            matches!(
-                result.finish_reason,
-                FinishReason::StopCondition | FinishReason::MaxTurns
-            ),
-            "expected StopCondition or MaxTurns, got {:?}",
-            result.finish_reason
-        );
+        assert_eq!(result.finish_reason, FinishReason::MaxTurns);
         assert_eq!(result.turns, 0);
     }
 }

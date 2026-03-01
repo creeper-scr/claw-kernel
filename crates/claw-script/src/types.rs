@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 /// Supported scripting engines.
@@ -26,12 +28,24 @@ impl Script {
 }
 
 /// Execution context passed to scripts.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ScriptContext {
     /// Agent ID executing the script.
     pub agent_id: String,
     /// Script-accessible global variables (JSON values).
     pub globals: std::collections::HashMap<String, serde_json::Value>,
+    /// Maximum execution time for a single script (default 30 s).
+    pub timeout: Duration,
+}
+
+impl Default for ScriptContext {
+    fn default() -> Self {
+        Self {
+            agent_id: String::new(),
+            globals: Default::default(),
+            timeout: Duration::from_secs(30),
+        }
+    }
 }
 
 impl ScriptContext {
@@ -39,11 +53,17 @@ impl ScriptContext {
         Self {
             agent_id: agent_id.into(),
             globals: Default::default(),
+            timeout: Duration::from_secs(30),
         }
     }
 
     pub fn with_global(mut self, key: impl Into<String>, val: serde_json::Value) -> Self {
         self.globals.insert(key.into(), val);
+        self
+    }
+
+    pub fn with_timeout(mut self, d: Duration) -> Self {
+        self.timeout = d;
         self
     }
 }
@@ -96,5 +116,24 @@ mod tests {
         let s2 = s.clone();
         assert_eq!(s2.name, "test");
         assert_eq!(s2.source, "return true");
+    }
+
+    #[test]
+    fn test_script_context_default_timeout() {
+        let ctx = ScriptContext::new("agent-x");
+        assert_eq!(ctx.timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_script_context_with_timeout() {
+        let ctx = ScriptContext::new("agent-x").with_timeout(Duration::from_millis(500));
+        assert_eq!(ctx.timeout, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn test_script_context_default_impl() {
+        let ctx = ScriptContext::default();
+        assert_eq!(ctx.agent_id, "");
+        assert_eq!(ctx.timeout, Duration::from_secs(30));
     }
 }

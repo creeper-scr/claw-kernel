@@ -371,6 +371,7 @@ mod tests {
     use super::*;
     use crate::types::{EpisodeId, EpisodicEntry, EpisodicFilter, MemoryItem};
 
+    #[allow(dead_code)]
     fn make_item(ns: &str, content: &str) -> MemoryItem {
         MemoryItem::new(ns, content)
     }

@@ -55,8 +55,7 @@ async fn test_ipc_full_roundtrip() {
         let server = InterprocessTransport::new_server(&sock_path_clone)
             .await
             .expect("server bind failed");
-        let data = server.recv().await.expect("server recv failed");
-        data
+        server.recv().await.expect("server recv failed")
     });
 
     tokio::time::sleep(Duration::from_millis(50)).await;

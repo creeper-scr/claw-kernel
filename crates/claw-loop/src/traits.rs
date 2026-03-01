@@ -52,7 +52,7 @@ pub trait Summarizer: Send + Sync {
 mod tests {
     use super::*;
     use crate::types::LoopState;
-    use claw_provider::types::{Message, TokenUsage};
+    use claw_provider::types::Message;
 
     // ---------------------------------------------------------------------------
     // Mock implementations

@@ -16,6 +16,9 @@ use crate::{
 pub struct LuaEngine;
 
 /// Convert a mlua `Value` into a `serde_json::Value`.
+///
+/// Tables are introspected: if `raw_len() > 0` and all 1..=n keys are present
+/// the table is treated as a JSON array, otherwise as a JSON object.
 fn lua_to_json(val: LuaValue) -> JsonValue {
     match val {
         LuaValue::Nil => JsonValue::Null,
@@ -23,12 +26,42 @@ fn lua_to_json(val: LuaValue) -> JsonValue {
         LuaValue::Integer(i) => json!(i),
         LuaValue::Number(f) => json!(f),
         LuaValue::String(s) => json!(s.to_str().unwrap_or("")),
+        LuaValue::Table(t) => {
+            // Detect array vs. object: if raw_len > 0 and every index 1..=n
+            // is present, treat as a JSON array.
+            let len = t.raw_len();
+            if len > 0 {
+                let arr: Vec<JsonValue> = (1..=(len as i64))
+                    .filter_map(|i| t.raw_get::<i64, LuaValue>(i).ok())
+                    .map(lua_to_json)
+                    .collect();
+                if arr.len() == len {
+                    return JsonValue::Array(arr);
+                }
+            }
+            // Otherwise treat as an object.
+            let mut map = serde_json::Map::new();
+            for (k, v) in t.pairs::<LuaValue, LuaValue>().flatten() {
+                let key = match k {
+                    LuaValue::String(s) => s.to_str().unwrap_or("").to_string(),
+                    LuaValue::Integer(i) => i.to_string(),
+                    _ => continue,
+                };
+                map.insert(key, lua_to_json(v));
+            }
+            JsonValue::Object(map)
+        }
         _ => JsonValue::Null,
     }
 }
 
 /// Convert a `serde_json::Value` into a mlua `Value`.
-fn json_to_lua<'lua>(lua: &'lua Lua, val: &JsonValue) -> mlua::Result<LuaValue<'lua>> {
+///
+/// Recursion is depth-limited to 32 levels to prevent stack overflows.
+fn json_to_lua<'lua>(lua: &'lua Lua, val: &JsonValue, depth: u32) -> mlua::Result<LuaValue<'lua>> {
+    if depth > 32 {
+        return Ok(LuaValue::Nil);
+    }
     let lval = match val {
         JsonValue::Null => LuaValue::Nil,
         JsonValue::Bool(b) => LuaValue::Boolean(*b),
@@ -40,8 +73,20 @@ fn json_to_lua<'lua>(lua: &'lua Lua, val: &JsonValue) -> mlua::Result<LuaValue<'
             }
         }
         JsonValue::String(s) => LuaValue::String(lua.create_string(s.as_bytes())?),
-        // Tables / arrays are not injected as globals in this implementation
-        _ => LuaValue::Nil,
+        JsonValue::Array(arr) => {
+            let table = lua.create_table()?;
+            for (i, elem) in arr.iter().enumerate() {
+                table.raw_set(i + 1, json_to_lua(lua, elem, depth + 1)?)?;
+            }
+            LuaValue::Table(table)
+        }
+        JsonValue::Object(map) => {
+            let table = lua.create_table()?;
+            for (k, v) in map {
+                table.raw_set(k.as_str(), json_to_lua(lua, v, depth + 1)?)?;
+            }
+            LuaValue::Table(table)
+        }
     };
     Ok(lval)
 }
@@ -60,8 +105,9 @@ impl ScriptEngine for LuaEngine {
         let source = script.source.clone();
         let agent_id = ctx.agent_id.clone();
         let globals_map = ctx.globals.clone();
+        let timeout_dur = ctx.timeout;
 
-        let result = tokio::task::spawn_blocking(move || -> Result<ScriptValue, ScriptError> {
+        let task = tokio::task::spawn_blocking(move || -> Result<ScriptValue, ScriptError> {
             let lua = Lua::new();
 
             // Inject agent_id global
@@ -72,7 +118,7 @@ impl ScriptEngine for LuaEngine {
             // Inject caller-supplied globals
             for (key, val) in &globals_map {
                 let lua_val =
-                    json_to_lua(&lua, val).map_err(|e| ScriptError::Runtime(e.to_string()))?;
+                    json_to_lua(&lua, val, 0).map_err(|e| ScriptError::Runtime(e.to_string()))?;
                 lua.globals()
                     .set(key.as_str(), lua_val)
                     .map_err(|e| ScriptError::Runtime(e.to_string()))?;
@@ -85,11 +131,12 @@ impl ScriptEngine for LuaEngine {
                 .map_err(|e| ScriptError::Runtime(e.to_string()))?;
 
             Ok(lua_to_json(lua_result))
-        })
-        .await
-        .map_err(|e| ScriptError::Runtime(e.to_string()))??;
+        });
 
-        Ok(result)
+        match tokio::time::timeout(timeout_dur, task).await {
+            Ok(join_result) => join_result.map_err(|e| ScriptError::Runtime(e.to_string()))?,
+            Err(_elapsed) => Err(ScriptError::Timeout),
+        }
     }
 
     fn validate(&self, script: &Script) -> Result<(), ScriptError> {
@@ -108,6 +155,7 @@ mod tests {
     use super::*;
     use crate::types::{Script, ScriptContext};
     use serde_json::json;
+    use std::time::Duration;
 
     fn engine() -> LuaEngine {
         LuaEngine
@@ -203,5 +251,55 @@ mod tests {
         if let Err(ScriptError::Runtime(msg)) = result {
             assert!(msg.contains("boom"));
         }
+    }
+
+    // ── 3A: 超时测试 ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_lua_engine_timeout() {
+        let ctx = ScriptContext::new("test-agent").with_timeout(Duration::from_millis(200));
+        let result = engine()
+            .execute(&Script::lua("t", "while true do end"), &ctx)
+            .await;
+        assert!(
+            matches!(result, Err(ScriptError::Timeout)),
+            "expected Timeout, got: {result:?}"
+        );
+    }
+
+    // ── 4A: 嵌套对象/数组注入及 Table 返回 ───────────────────────────────────
+
+    #[tokio::test]
+    async fn test_lua_engine_inject_nested_object() {
+        let ctx = ScriptContext::new("test-agent").with_global("a", json!({"b": 42}));
+        let result = engine()
+            .execute(&Script::lua("t", "return a.b"), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result, json!(42));
+    }
+
+    #[tokio::test]
+    async fn test_lua_engine_inject_array() {
+        let ctx = ScriptContext::new("test-agent").with_global("arr", json!([1, 2, 3]));
+        let result = engine()
+            .execute(&Script::lua("t", "return arr[2]"), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result, json!(2));
+    }
+
+    #[tokio::test]
+    async fn test_lua_engine_return_table_as_object() {
+        let result = engine()
+            .execute(
+                &Script::lua("t", "local t = {}; t.x = 1; t.y = 2; return t"),
+                &default_ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(result.is_object(), "expected JSON object, got: {result}");
+        assert_eq!(result["x"], json!(1));
+        assert_eq!(result["y"], json!(2));
     }
 }

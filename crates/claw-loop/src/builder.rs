@@ -7,7 +7,6 @@ use crate::{
     agent_loop::AgentLoop,
     error::AgentError,
     history::InMemoryHistory,
-    stop_conditions::{MaxTurns, TokenBudget},
     traits::{HistoryManager, StopCondition},
     types::AgentLoopConfig,
 };
@@ -89,23 +88,11 @@ impl AgentLoopBuilder {
 
     /// Build the [`AgentLoop`].
     ///
-    /// Automatically appends:
-    /// - A [`MaxTurns`] stop condition derived from `config.max_turns`.
-    /// - A [`TokenBudget`] stop condition if `config.token_budget > 0`.
-    ///
     /// Returns `Err(AgentError::Context)` if no provider was set.
-    pub fn build(mut self) -> Result<AgentLoop, AgentError> {
+    pub fn build(self) -> Result<AgentLoop, AgentError> {
         let provider = self
             .provider
             .ok_or_else(|| AgentError::Context("no provider set".to_string()))?;
-
-        // Auto-wire stop conditions that mirror the scalar config fields.
-        self.stop_conditions
-            .push(Box::new(MaxTurns(self.config.max_turns)));
-        if self.config.token_budget > 0 {
-            self.stop_conditions
-                .push(Box::new(TokenBudget(self.config.token_budget)));
-        }
 
         Ok(AgentLoop {
             provider,
@@ -225,19 +212,12 @@ mod tests {
             .build()
             .expect("build should succeed");
 
-        // Two auto-added conditions: MaxTurns + TokenBudget
-        assert!(
-            agent.stop_conditions.len() >= 2,
-            "expected at least 2 stop conditions, got {}",
+        // Builder no longer auto-adds stop conditions — default is empty.
+        assert_eq!(
+            agent.stop_conditions.len(),
+            0,
+            "builder should not auto-add any stop conditions by default, got {}",
             agent.stop_conditions.len()
-        );
-
-        // Verify the names are present.
-        let names: Vec<&str> = agent.stop_conditions.iter().map(|c| c.name()).collect();
-        assert!(names.contains(&"max_turns"), "max_turns condition missing");
-        assert!(
-            names.contains(&"token_budget"),
-            "token_budget condition missing"
         );
     }
 }

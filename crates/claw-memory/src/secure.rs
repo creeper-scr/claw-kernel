@@ -45,12 +45,15 @@ impl SecureMemoryStore {
     }
 
     /// Enforce the per-namespace byte quota.
-    async fn check_quota(&self) -> Result<(), MemoryError> {
+    ///
+    /// `estimated_size` is added to the current usage before comparing against
+    /// the quota, so the check acts as a *pre-check* (write-ahead quota guard).
+    async fn check_quota(&self, estimated_size: u64) -> Result<(), MemoryError> {
         if self.config.quota_bytes == u64::MAX {
             return Ok(());
         }
         let used = self.inner.namespace_usage(&self.namespace).await?;
-        if used >= self.config.quota_bytes {
+        if used.saturating_add(estimated_size) > self.config.quota_bytes {
             return Err(MemoryError::QuotaExceeded {
                 namespace: self.namespace.clone(),
                 used,
@@ -67,7 +70,15 @@ impl MemoryStore for SecureMemoryStore {
     // store — quota check + namespace enforcement
     // ------------------------------------------------------------------
     async fn store(&self, item: MemoryItem) -> Result<MemoryId, MemoryError> {
-        self.check_quota().await?;
+        // Estimate the byte footprint of this item before writing.
+        let estimated_size = item.content.len() as u64
+            + item.namespace.len() as u64
+            + item
+                .embedding
+                .as_ref()
+                .map(|e| e.len() as u64 * 4)
+                .unwrap_or(0);
+        self.check_quota(estimated_size).await?;
         let item = self.enforce_namespace(item);
         self.inner.store(item).await
     }
@@ -264,5 +275,29 @@ mod tests {
 
         let usage = secure.namespace_usage("usage-ns").await.unwrap();
         assert!(usage >= "content data".len() as u64);
+    }
+
+    // ------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_secure_store_quota_precheck() {
+        // quota_bytes = 50, item.content = "a" * 100 → estimated_size = 100 + ns.len() > 50
+        // → QuotaExceeded even though used == 0
+        let inner = Arc::new(SqliteMemoryStore::in_memory().unwrap());
+        let config = MemorySecurityConfig {
+            namespace_isolation: true,
+            quota_bytes: 50,
+            max_items: usize::MAX,
+            semantic_search_enabled: true,
+            max_embedding_dims: 64,
+        };
+        let secure = SecureMemoryStore::new(inner, config, "pre-ns");
+
+        let big_content = "a".repeat(100);
+        let item = make_item_with_id("pre-ns", &big_content, "pre-1");
+        let result = secure.store(item).await;
+        assert!(
+            matches!(result, Err(MemoryError::QuotaExceeded { .. })),
+            "expected QuotaExceeded (precheck), got {result:?}"
+        );
     }
 }

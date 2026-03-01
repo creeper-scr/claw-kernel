@@ -14,9 +14,13 @@ pub struct DefaultHttpTransport {
 
 impl DefaultHttpTransport {
     pub fn new() -> Self {
+        Self::with_timeout(std::time::Duration::from_secs(120))
+    }
+
+    pub fn with_timeout(timeout: std::time::Duration) -> Self {
         Self {
             client: Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
+                .timeout(timeout)
                 .build()
                 .unwrap_or_default(),
         }
@@ -131,5 +135,10 @@ mod tests {
     fn test_transport_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<DefaultHttpTransport>();
+    }
+
+    #[test]
+    fn test_default_transport_with_timeout() {
+        let _t = DefaultHttpTransport::with_timeout(std::time::Duration::from_secs(60));
     }
 }

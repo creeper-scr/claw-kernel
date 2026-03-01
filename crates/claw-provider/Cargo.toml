@@ -15,3 +15,4 @@ tokio = { workspace = true }
 reqwest = { workspace = true }
 futures = { workspace = true }
 bytes = "1"
+claw-memory = { path = "../claw-memory" }

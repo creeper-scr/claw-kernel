@@ -2,6 +2,7 @@
 
 pub mod anthropic;
 pub mod deepseek;
+pub mod embedding;
 pub mod error;
 pub mod moonshot;
 pub mod ollama;
@@ -13,6 +14,7 @@ pub mod types;
 
 pub use anthropic::AnthropicProvider;
 pub use deepseek::DeepSeekProvider;
+pub use embedding::NgramEmbeddingProvider;
 pub use error::ProviderError;
 pub use moonshot::MoonshotProvider;
 pub use ollama::OllamaProvider;
