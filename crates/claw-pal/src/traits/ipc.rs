@@ -51,7 +51,9 @@ pub trait IpcTransport: Send + Sync {
 /// without requiring actual IPC infrastructure.
 #[derive(Debug, Clone)]
 pub struct MockIpcTransport {
+    #[allow(dead_code)]
     endpoint: String,
+    #[allow(dead_code)]
     is_listener: bool,
 }
 

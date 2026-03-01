@@ -21,10 +21,10 @@ pub use claw_pal as pal;
 pub use claw_runtime as runtime;
 
 // ── Layer 2: Core subsystems ─────────────────────────────────────────────────
-pub use claw_provider as provider;
-pub use claw_tools as tools;
 pub use claw_loop as agent_loop;
 pub use claw_memory as memory;
+pub use claw_provider as provider;
+pub use claw_tools as tools;
 
 // ── Layer 2.5: Channels ──────────────────────────────────────────────────────
 pub use claw_channel as channel;
@@ -51,17 +51,17 @@ pub mod prelude {
 
     // ── Provider ─────────────────────────────────────────────────────────────
     pub use claw_provider::{
+        error::ProviderError,
         traits::{EmbeddingProvider, LLMProvider},
         types::{CompletionResponse, Message, Options, Role},
-        error::ProviderError,
     };
 
     // ── Tools ─────────────────────────────────────────────────────────────────
     pub use claw_tools::{
+        error::RegistryError,
+        registry::ToolRegistry,
         traits::Tool,
         types::{PermissionSet, ToolContext, ToolResult, ToolSchema},
-        registry::ToolRegistry,
-        error::RegistryError,
     };
 
     // ── Agent loop ───────────────────────────────────────────────────────────
@@ -70,34 +70,34 @@ pub mod prelude {
     pub use claw_loop::{
         agent_loop::AgentLoop,
         builder::AgentLoopBuilder,
-        traits::{HistoryManager, StopCondition, Summarizer},
-        types::{AgentLoopConfig, AgentResult, LoopState},
-        types::FinishReason as LoopFinishReason,
         error::AgentError,
+        traits::{HistoryManager, StopCondition, Summarizer},
+        types::FinishReason as LoopFinishReason,
+        types::{AgentLoopConfig, AgentResult, LoopState},
     };
 
     // ── Memory ───────────────────────────────────────────────────────────────
     pub use claw_memory::{
+        embedding::NgramEmbedder,
+        error::MemoryError,
+        secure::SecureMemoryStore,
+        sqlite::SqliteMemoryStore,
         traits::{Embedder, MemoryStore},
         types::{MemoryId, MemoryItem},
-        error::MemoryError,
-        sqlite::SqliteMemoryStore,
-        secure::SecureMemoryStore,
-        embedding::NgramEmbedder,
     };
 
     // ── Channel ──────────────────────────────────────────────────────────────
     pub use claw_channel::{
+        error::ChannelError,
         traits::Channel,
         types::{ChannelId, ChannelMessage, Platform},
-        error::ChannelError,
     };
 
     // ── Script ───────────────────────────────────────────────────────────────
     pub use claw_script::{
+        error::ScriptError,
         traits::ScriptEngine,
         types::{EngineType, Script, ScriptContext},
-        error::ScriptError,
     };
 
     #[cfg(feature = "engine-lua")]

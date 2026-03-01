@@ -62,7 +62,7 @@ fn hash_ngram(chars: &[u32]) -> u64 {
 }
 
 /// In-place L2 normalisation. No-op when the norm is zero.
-fn l2_normalize(v: &mut Vec<f32>) {
+fn l2_normalize(v: &mut [f32]) {
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
         for x in v.iter_mut() {
@@ -117,6 +117,9 @@ mod tests {
         let v = e.embed("");
         // Must not panic; all values should be 0.0 (zero input → zero vector)
         assert_eq!(v.len(), 64);
-        assert!(v.iter().all(|&x| x == 0.0), "empty string should produce zero vector");
+        assert!(
+            v.iter().all(|&x| x == 0.0),
+            "empty string should produce zero vector"
+        );
     }
 }

@@ -11,6 +11,7 @@ use std::time::Duration;
 ///
 /// Implementations must handle platform-specific process management while providing
 /// a consistent async interface. All methods are async and support cancellation.
+#[allow(async_fn_in_trait)]
 pub trait ProcessManager: Send + Sync {
     /// Spawn a new process with the given configuration.
     ///
@@ -72,8 +73,11 @@ pub trait ProcessManager: Send + Sync {
     ///
     /// # Returns
     /// Ok(()) if the signal was sent, or an error if the operation failed.
-    async fn signal(&self, handle: ProcessHandle, signal: ProcessSignal)
-        -> Result<(), ProcessError>;
+    async fn signal(
+        &self,
+        handle: ProcessHandle,
+        signal: ProcessSignal,
+    ) -> Result<(), ProcessError>;
 }
 
 #[cfg(test)]

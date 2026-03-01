@@ -1,6 +1,6 @@
-use tokio::sync::broadcast;
 use crate::error::RuntimeError;
 use crate::events::Event;
+use tokio::sync::broadcast;
 
 const CHANNEL_CAPACITY: usize = 1024;
 
@@ -75,23 +75,19 @@ impl EventReceiver {
     /// Returns `Err(RuntimeError::EventBusError)` if the channel is closed or
     /// if the receiver has lagged behind (missed events are reported as an error).
     pub async fn recv(&mut self) -> Result<Event, RuntimeError> {
-        loop {
-            match self.rx.recv().await {
-                Ok(event) => return Ok(event),
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    // Receiver was too slow; some messages were dropped.
-                    // Continue from the newest available message.
-                    return Err(RuntimeError::EventBusError(format!(
-                        "receiver lagged, {} messages dropped",
-                        n
-                    )));
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    return Err(RuntimeError::EventBusError(
-                        "event bus channel closed".to_string(),
-                    ));
-                }
+        match self.rx.recv().await {
+            Ok(event) => Ok(event),
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                // Receiver was too slow; some messages were dropped.
+                // Continue from the newest available message.
+                Err(RuntimeError::EventBusError(format!(
+                    "receiver lagged, {} messages dropped",
+                    n
+                )))
             }
+            Err(broadcast::error::RecvError::Closed) => Err(RuntimeError::EventBusError(
+                "event bus channel closed".to_string(),
+            )),
         }
     }
 
@@ -105,17 +101,12 @@ impl EventReceiver {
             Err(broadcast::error::TryRecvError::Empty) => {
                 Err(RuntimeError::EventBusError("empty".to_string()))
             }
-            Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                Err(RuntimeError::EventBusError(format!(
-                    "receiver lagged, {} messages dropped",
-                    n
-                )))
-            }
-            Err(broadcast::error::TryRecvError::Closed) => {
-                Err(RuntimeError::EventBusError(
-                    "event bus channel closed".to_string(),
-                ))
-            }
+            Err(broadcast::error::TryRecvError::Lagged(n)) => Err(RuntimeError::EventBusError(
+                format!("receiver lagged, {} messages dropped", n),
+            )),
+            Err(broadcast::error::TryRecvError::Closed) => Err(RuntimeError::EventBusError(
+                "event bus channel closed".to_string(),
+            )),
         }
     }
 }

@@ -66,20 +66,19 @@ impl HotLoader {
         // Spawn background task: read events, apply debounce, call on_change.
         let debounce_ms = config.debounce_ms;
         tokio::spawn(async move {
-            loop {
-                match event_rx.recv().await {
-                    Some(path) => {
-                        // Coalesce rapid events within the debounce window.
-                        tokio::time::sleep(Duration::from_millis(debounce_ms)).await;
-                        while event_rx.try_recv().is_ok() {}
-                        on_change(path);
-                    }
-                    None => break,
-                }
+            while let Some(path) = event_rx.recv().await {
+                // Coalesce rapid events within the debounce window.
+                tokio::time::sleep(Duration::from_millis(debounce_ms)).await;
+                while event_rx.try_recv().is_ok() {}
+                on_change(path);
             }
         });
 
-        Ok(Self { config, _watcher: watcher, _event_tx: event_tx })
+        Ok(Self {
+            config,
+            _watcher: watcher,
+            _event_tx: event_tx,
+        })
     }
 
     /// Return the watched directory path as configured.

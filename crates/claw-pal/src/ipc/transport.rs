@@ -38,7 +38,8 @@ pub struct InterprocessTransport {
 #[cfg(not(windows))]
 impl std::fmt::Debug for InterprocessTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InterprocessTransport").finish_non_exhaustive()
+        f.debug_struct("InterprocessTransport")
+            .finish_non_exhaustive()
     }
 }
 
@@ -76,14 +77,14 @@ impl InterprocessTransport {
     pub async fn new_client(endpoint: &str) -> Result<Self, IpcError> {
         let stream = LocalSocketStream::connect(endpoint)
             .await
-            .map_err(|e| IpcError::ConnectionRefused)?;
+            .map_err(|_| IpcError::ConnectionRefused)?;
         Ok(Self::from_stream(stream))
     }
 
     /// Bind a listener, accept exactly one incoming connection.
     pub async fn new_server(endpoint: &str) -> Result<Self, IpcError> {
-        let listener = LocalSocketListener::bind(endpoint)
-            .map_err(|_| IpcError::ConnectionRefused)?;
+        let listener =
+            LocalSocketListener::bind(endpoint).map_err(|_| IpcError::ConnectionRefused)?;
         let stream = listener
             .accept()
             .await
