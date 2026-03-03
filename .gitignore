@@ -3,3 +3,7 @@
 AGENTS.md
 Code_Review_Report.md
 CLAUDE.md
+
+# Example build artifacts
+examples/*/target/
+examples/*/Cargo.lock
