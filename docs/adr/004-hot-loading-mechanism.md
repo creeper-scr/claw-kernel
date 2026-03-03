@@ -200,6 +200,27 @@ Tools can be versioned for rollback:
 
 ## Implementation Details
 
+### Hot-Loading Configuration
+
+```rust
+pub struct HotLoadingConfig {
+    /// Directories to watch for tool scripts.
+    pub watch_dirs: Vec<PathBuf>,
+    /// File extensions to load (e.g., ["lua", "js"]).
+    pub extensions: Vec<String>,
+    /// Debounce delay in milliseconds (default 50ms).
+    pub debounce_ms: u64,
+    /// Maximum tool execution timeout (default 30s).
+    pub default_timeout_secs: u64,
+    /// Compilation timeout in seconds (default 10s).
+    pub compile_timeout_secs: u64,
+    /// Seconds to keep previous versions (default 300s = 5min).
+    pub keep_previous_secs: u64,
+    /// Auto-enable newly loaded tools (default true).
+    pub auto_enable: bool,
+}
+```
+
 ### Tool Script Format (Lua Example)
 
 ```lua

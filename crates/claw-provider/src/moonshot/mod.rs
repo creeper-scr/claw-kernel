@@ -7,6 +7,7 @@ use futures::{Stream, StreamExt};
 use crate::{
     error::ProviderError,
     openai::format::OpenAIFormat,
+    retry::RetryConfig,
     traits::{HttpTransport, LLMProvider, MessageFormat},
     transport::DefaultHttpTransport,
     types::{CompletionResponse, Delta, Message, Options},
@@ -16,6 +17,7 @@ pub struct MoonshotProvider {
     api_key: String,
     model: String,
     transport: Arc<dyn HttpTransport>,
+    retry_config: Option<RetryConfig>,
 }
 
 impl MoonshotProvider {
@@ -24,6 +26,7 @@ impl MoonshotProvider {
             api_key: api_key.into(),
             model: model.into(),
             transport: Arc::new(DefaultHttpTransport::new("https://api.moonshot.cn")),
+            retry_config: None,
         }
     }
 
@@ -33,6 +36,20 @@ impl MoonshotProvider {
         let model =
             std::env::var("MOONSHOT_MODEL").unwrap_or_else(|_| "moonshot-v1-8k".to_string());
         Ok(Self::new(api_key, model))
+    }
+
+    /// Set the retry configuration for this provider.
+    pub fn with_retry(mut self, config: RetryConfig) -> Self {
+        self.retry_config = Some(config);
+        // Recreate transport with retry config
+        let transport = DefaultHttpTransport::new("https://api.moonshot.cn").with_retry(config);
+        self.transport = Arc::new(transport);
+        self
+    }
+
+    /// Get the current retry configuration.
+    pub fn retry_config(&self) -> Option<&RetryConfig> {
+        self.retry_config.as_ref()
     }
 
     fn base_url(&self) -> &str {
@@ -66,8 +83,8 @@ impl LLMProvider for MoonshotProvider {
         options: Options,
     ) -> Result<CompletionResponse, ProviderError> {
         let req = OpenAIFormat::build_request(&messages, &options);
-        let body = serde_json::to_value(&req)
-            .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+        let body =
+            serde_json::to_value(&req).map_err(|e| ProviderError::Serialization(e.to_string()))?;
         let url = format!("{}/chat/completions", self.base_url());
         let headers_owned = self.build_headers();
         let headers: Vec<(&str, &str)> = headers_owned
@@ -91,8 +108,8 @@ impl LLMProvider for MoonshotProvider {
             ..options
         };
         let req = OpenAIFormat::build_request(&messages, &stream_opts);
-        let body = serde_json::to_value(&req)
-            .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+        let body =
+            serde_json::to_value(&req).map_err(|e| ProviderError::Serialization(e.to_string()))?;
         let url = format!("{}/chat/completions", self.base_url());
         let headers_owned = self.build_headers();
         let headers: Vec<(&str, &str)> = headers_owned
@@ -131,6 +148,7 @@ impl LLMProvider for MoonshotProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::retry::RetryConfig;
 
     #[test]
     fn test_moonshot_provider_new() {
@@ -139,5 +157,13 @@ mod tests {
         assert_eq!(p.model, "moonshot-v1-8k");
         assert_eq!(p.provider_id(), "moonshot");
         assert_eq!(p.model_id(), "moonshot-v1-8k");
+        assert!(p.retry_config().is_none());
+    }
+
+    #[test]
+    fn test_moonshot_provider_with_retry() {
+        let config = RetryConfig::new().with_max_retries(3);
+        let p = MoonshotProvider::new("ms-key", "moonshot-v1-8k").with_retry(config);
+        assert_eq!(p.retry_config().unwrap().max_retries, 3);
     }
 }

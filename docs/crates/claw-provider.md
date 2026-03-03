@@ -171,35 +171,45 @@ pub trait MessageFormat: Send + Sync {
 ```rust
 #[async_trait]
 pub trait HttpTransport: Send + Sync {
+    /// POST JSON and return the full response body.
+    async fn post_json(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, ProviderError>;
+
+    /// POST and return a raw byte stream (for SSE / NDJSON responses).
+    async fn post_stream(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<bytes::Bytes, ProviderError>> + Send>>,
+        ProviderError,
+    >;
+}
+
+/// Extension trait for HttpTransport providing generic request methods.
+pub trait HttpTransportExt: HttpTransport {
     fn base_url(&self) -> &str;
-    fn auth_headers(&self) -> HeaderMap;
-    fn http_client(&self) -> &Client;
+    fn auth_headers(&self) -> reqwest::header::HeaderMap;
+    fn http_client(&self) -> &reqwest::Client;
     
-    /// Generic request — reused by all providers
-    async fn request<F: MessageFormat>(
+    /// Generic request using MessageFormat — reused by ALL providers.
+    fn request<F: MessageFormat>(
         &self,
         messages: &[Message],
         opts: &Options,
-    ) -> Result<CompletionResponse, ProviderError> {
-        let req = F::build_request(messages, opts);
-        let response = self.http_client()
-            .post(format!("{}{}", self.base_url(), F::endpoint()))
-            .headers(self.auth_headers())
-            .json(&req)
-            .send()
-            .await?
-            .json::<F::Response>()
-            .await?;
-        
-        Ok(F::parse_response(response))
-    }
+    ) -> impl Future<Output = Result<CompletionResponse, ProviderError>> + Send;
     
-    /// Generic streaming request
-    async fn stream_request<F: MessageFormat>(
+    /// Generic streaming request.
+    fn stream_request<F: MessageFormat>(
         &self,
         messages: &[Message],
         opts: &Options,
-    ) -> Result<BoxStream<'static, Result<Delta, ProviderError>>, ProviderError>;
+    ) -> impl Future<Output = Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError>> + Send;
 }
 ```
 
@@ -207,46 +217,56 @@ pub trait HttpTransport: Send + Sync {
 
 ```rust
 pub struct DeepSeekProvider {
-    api_key: String,
+    transport: DefaultHttpTransport,
     model: String,
-    client: Client,
 }
 
 #[async_trait]
 impl LLMProvider for DeepSeekProvider {
-    async fn complete(&self, messages: &[Message], opts: &Options) -> Result<CompletionResponse, ProviderError> {
-        // Simply delegate to HttpTransport with OpenAIFormat
-        self.request::<OpenAIFormat>(messages, opts).await
+    fn provider_id(&self) -> &str { "deepseek" }
+    fn model_id(&self) -> &str { &self.model }
+    
+    async fn complete(
+        &self,
+        messages: Vec<Message>,
+        options: Options,
+    ) -> Result<CompletionResponse, ProviderError> {
+        self.request::<OpenAIFormat>(&messages, &options).await
     }
     
-    async fn stream_complete(&self, messages: &[Message], opts: &Options) 
-        -> Result<BoxStream<'static, Result<Delta, ProviderError>>, ProviderError> {
-        self.stream_request::<OpenAIFormat>(messages, opts).await
-    }
-    
-    async fn embed(&self, texts: &[String]) -> Result<Vec<Embedding>, ProviderError> {
-        // Implementation using OpenAI's embedding API
-        self.request_embedding::<OpenAIFormat>(texts).await
-    }
-    
-    fn token_count(&self, messages: &[Message]) -> usize {
-        OpenAIFormat::token_count(messages)
+    async fn complete_stream(
+        &self,
+        messages: Vec<Message>,
+        options: Options,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError> {
+        self.stream_request::<OpenAIFormat>(&messages, &options).await
     }
 }
 
+impl HttpTransportExt for DeepSeekProvider {
+    fn base_url(&self) -> &str { self.transport.base_url() }
+    fn auth_headers(&self) -> HeaderMap { self.transport.auth_headers() }
+    fn http_client(&self) -> &Client { self.transport.http_client() }
+}
+
 impl HttpTransport for DeepSeekProvider {
-    fn base_url(&self) -> &str { "https://api.deepseek.com/v1" }
-    
-    fn auth_headers(&self) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", self.api_key)).unwrap(),
-        );
-        headers
+    async fn post_json(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, ProviderError> {
+        self.transport.post_json(url, headers, body).await
     }
-    
-    fn http_client(&self) -> &Client { &self.client }
+
+    async fn post_stream(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<bytes::Bytes, ProviderError>> + Send>>, ProviderError> {
+        self.transport.post_stream(url, headers, body).await
+    }
 }
 ```
 
@@ -259,48 +279,60 @@ impl HttpTransport for DeepSeekProvider {
 If your provider uses OpenAI or Anthropic compatible format:
 
 ```rust
-use claw_provider::{OpenAIFormat, HttpTransport, LLMProvider, Message, CompletionResponse};
+use claw_provider::{OpenAIFormat, HttpTransport, HttpTransportExt, LLMProvider, Message, CompletionResponse};
 use async_trait::async_trait;
 
 pub struct MyProvider {
-    api_key: String,
-    base_url: String,
-    client: Client,
+    transport: DefaultHttpTransport,
+    model: String,
 }
 
 #[async_trait]
 impl LLMProvider for MyProvider {
-    async fn complete(&self, messages: &[Message], opts: &Options) -> Result<CompletionResponse, ProviderError> {
-        self.request::<OpenAIFormat>(messages, opts).await
+    fn provider_id(&self) -> &str { "my-provider" }
+    fn model_id(&self) -> &str { &self.model }
+    
+    async fn complete(
+        &self,
+        messages: Vec<Message>,
+        options: Options,
+    ) -> Result<CompletionResponse, ProviderError> {
+        self.request::<OpenAIFormat>(&messages, &options).await
     }
     
-    async fn stream_complete(&self, messages: &[Message], opts: &Options) 
-        -> Result<BoxStream<'static, Result<Delta, ProviderError>>, ProviderError> {
-        self.stream_request::<OpenAIFormat>(messages, opts).await
-    }
-    
-    async fn embed(&self, texts: &[String]) -> Result<Vec<Embedding>, ProviderError> {
-        self.request_embedding::<OpenAIFormat>(texts).await
-    }
-    
-    fn token_count(&self, messages: &[Message]) -> usize {
-        OpenAIFormat::token_count(messages)
+    async fn complete_stream(
+        &self,
+        messages: Vec<Message>,
+        options: Options,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError> {
+        self.stream_request::<OpenAIFormat>(&messages, &options).await
     }
 }
 
+impl HttpTransportExt for MyProvider {
+    fn base_url(&self) -> &str { self.transport.base_url() }
+    fn auth_headers(&self) -> HeaderMap { self.transport.auth_headers() }
+    fn http_client(&self) -> &Client { self.transport.http_client() }
+}
+
 impl HttpTransport for MyProvider {
-    fn base_url(&self) -> &str { &self.base_url }
-    
-    fn auth_headers(&self) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", self.api_key)).unwrap(),
-        );
-        headers
+    async fn post_json(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, ProviderError> {
+        self.transport.post_json(url, headers, body).await
     }
-    
-    fn http_client(&self) -> &Client { &self.client }
+
+    async fn post_stream(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &serde_json::Value,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<bytes::Bytes, ProviderError>> + Send>>, ProviderError> {
+        self.transport.post_stream(url, headers, body).await
+    }
 }
 ```
 

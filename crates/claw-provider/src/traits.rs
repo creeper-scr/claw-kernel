@@ -1,7 +1,7 @@
 use std::pin::Pin;
 
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
@@ -85,36 +85,95 @@ pub trait HttpTransportExt: HttpTransport {
         &self,
         messages: &[Message],
         opts: &Options,
-    ) -> impl std::future::Future<Output = Result<CompletionResponse, ProviderError>> + Send 
+    ) -> impl std::future::Future<Output = Result<CompletionResponse, ProviderError>> + Send
     where
         <F as MessageFormat>::Request: Send,
     {
         async move {
             let req = F::build_request(messages, opts);
             let url = format!("{}{}", self.base_url(), F::endpoint());
-            
+
             let body = serde_json::to_value(&req).map_err(|e| {
                 ProviderError::Serialization(format!("Failed to serialize request: {}", e))
             })?;
-            
+
             let response = self.post_json(&url, &[], &body).await?;
-            
+
             let raw: F::Response = serde_json::from_value(response).map_err(|e| {
                 ProviderError::Serialization(format!("Failed to parse response: {}", e))
             })?;
-            
+
             F::parse_response(raw).map_err(|e| ProviderError::Other(e.to_string()))
         }
     }
 
     /// Generic streaming request.
+    ///
+    /// Sends a streaming request to the provider and returns a stream of `Delta` objects.
+    /// The SSE (Server-Sent Events) response is parsed incrementally using the provided
+    /// `MessageFormat::parse_stream_chunk` method.
+    #[allow(clippy::type_complexity)]
     fn stream_request<F: MessageFormat>(
         &self,
-        _messages: &[Message],
-        _opts: &Options,
-    ) -> impl std::future::Future<Output = Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError>> + Send {
+        messages: &[Message],
+        opts: &Options,
+    ) -> impl std::future::Future<
+        Output = Result<
+            Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>,
+            ProviderError,
+        >,
+    > + Send
+    where
+        <F as MessageFormat>::Request: Send,
+        <F as MessageFormat>::Error: std::error::Error + Send + Sync + 'static,
+    {
         async move {
-            todo!("Streaming request requires SSE parsing implementation")
+            // Build the streaming request with stream enabled
+            let mut stream_opts = opts.clone();
+            stream_opts.stream = true;
+
+            let req = F::build_request(messages, &stream_opts);
+            let url = format!("{}{}", self.base_url(), F::endpoint());
+
+            let body = serde_json::to_value(&req).map_err(|e| {
+                ProviderError::Serialization(format!("Failed to serialize request: {}", e))
+            })?;
+
+            // Get the raw byte stream from the transport
+            let byte_stream = self.post_stream(&url, &[], &body).await?;
+
+            // Convert byte stream to Delta stream by parsing SSE events
+            let delta_stream = byte_stream.flat_map(move |chunk_result| {
+                let deltas: Vec<Result<Delta, ProviderError>> = match chunk_result {
+                    Err(e) => vec![Err(e)],
+                    Ok(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        text.lines()
+                            .filter_map(|line| {
+                                let trimmed = line.trim();
+                                if trimmed.is_empty() {
+                                    return None;
+                                }
+
+                                // Parse the line using the format-specific parser
+                                match F::parse_stream_chunk(trimmed.as_bytes()) {
+                                    Ok(Some(delta)) => Some(Ok(delta)),
+                                    Ok(None) => None, // End of stream marker like [DONE]
+                                    Err(e) => {
+                                        Some(Err(ProviderError::Serialization(e.to_string())))
+                                    }
+                                }
+                            })
+                            .collect()
+                    }
+                };
+                futures::stream::iter(deltas)
+            });
+
+            Ok(Box::pin(delta_stream)
+                as Pin<
+                    Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>,
+                >)
         }
     }
 }
@@ -165,6 +224,127 @@ pub trait EmbeddingProvider: Send + Sync {
 mod tests {
     use super::*;
     use crate::types::{FinishReason, TokenUsage};
+    use futures::stream;
+    use serde::Deserialize;
+
+    /// Mock MessageFormat for testing stream_request
+    struct MockFormat;
+
+    #[derive(Debug)]
+    struct MockFormatError;
+
+    impl std::fmt::Display for MockFormatError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "mock format error")
+        }
+    }
+
+    impl std::error::Error for MockFormatError {}
+
+    #[derive(Serialize, Deserialize)]
+    struct MockRequest {
+        model: String,
+        messages: Vec<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct MockResponse {
+        #[allow(dead_code)]
+        id: String,
+    }
+
+    #[derive(Deserialize)]
+    struct MockStreamChunk;
+
+    impl MessageFormat for MockFormat {
+        type Request = MockRequest;
+        type Response = MockResponse;
+        type StreamChunk = MockStreamChunk;
+        type Error = MockFormatError;
+
+        fn build_request(messages: &[Message], opts: &Options) -> Self::Request {
+            MockRequest {
+                model: opts.model.clone(),
+                messages: messages.iter().map(|m| m.content.clone()).collect(),
+            }
+        }
+
+        fn parse_response(_raw: Self::Response) -> Result<CompletionResponse, Self::Error> {
+            unimplemented!()
+        }
+
+        fn parse_stream_chunk(chunk: &[u8]) -> Result<Option<Delta>, Self::Error> {
+            let text = String::from_utf8_lossy(chunk);
+            if text.contains("[DONE]") {
+                return Ok(None);
+            }
+            if text.starts_with("data: ") {
+                let content = text.strip_prefix("data: ").unwrap_or("").trim();
+                if content == "[DONE]" {
+                    return Ok(None);
+                }
+                return Ok(Some(Delta {
+                    content: Some(content.to_string()),
+                    tool_call: None,
+                    finish_reason: None,
+                    usage: None,
+                }));
+            }
+            Ok(None)
+        }
+
+        fn token_count(_messages: &[Message]) -> usize {
+            0
+        }
+
+        fn endpoint() -> &'static str {
+            "/v1/chat"
+        }
+    }
+
+    /// Mock HttpTransport for testing - successful responses only
+    struct MockHttpTransport {
+        chunks: Vec<bytes::Bytes>,
+    }
+
+    #[async_trait]
+    impl HttpTransport for MockHttpTransport {
+        async fn post_json(
+            &self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &serde_json::Value,
+        ) -> Result<serde_json::Value, ProviderError> {
+            unimplemented!()
+        }
+
+        async fn post_stream(
+            &self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: &serde_json::Value,
+        ) -> Result<
+            Pin<Box<dyn Stream<Item = Result<bytes::Bytes, ProviderError>> + Send>>,
+            ProviderError,
+        > {
+            let chunks: Vec<_> = self.chunks.clone().into_iter().map(Ok).collect();
+            Ok(Box::pin(stream::iter(chunks)))
+        }
+    }
+
+    impl HttpTransportExt for MockHttpTransport {
+        fn base_url(&self) -> &str {
+            "https://api.test.com"
+        }
+
+        fn auth_headers(&self) -> reqwest::header::HeaderMap {
+            reqwest::header::HeaderMap::new()
+        }
+
+        fn http_client(&self) -> &reqwest::Client {
+            unimplemented!()
+        }
+    }
 
     struct MockProvider;
 
@@ -257,5 +437,106 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 0);
         assert_eq!(usage.completion_tokens, 0);
         assert_eq!(usage.total_tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn test_stream_request_single_chunk() {
+        // Test parsing a single SSE chunk
+        let chunks = vec![bytes::Bytes::from("data: hello world\n\n")];
+        let transport = MockHttpTransport { chunks };
+        let messages = vec![Message::user("test")];
+        let opts = Options::new("test-model");
+
+        let stream = transport
+            .stream_request::<MockFormat>(&messages, &opts)
+            .await
+            .unwrap();
+        let deltas: Vec<Result<Delta, ProviderError>> = stream.collect().await;
+
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(
+            deltas[0].as_ref().unwrap().content,
+            Some("hello world".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_request_multiple_chunks() {
+        // Test parsing multiple SSE chunks
+        let chunks = vec![
+            bytes::Bytes::from("data: hello\n\n"),
+            bytes::Bytes::from("data: world\n\n"),
+            bytes::Bytes::from("data: !\n\n"),
+        ];
+        let transport = MockHttpTransport { chunks };
+        let messages = vec![Message::user("test")];
+        let opts = Options::new("test-model");
+
+        let stream = transport
+            .stream_request::<MockFormat>(&messages, &opts)
+            .await
+            .unwrap();
+        let deltas: Vec<Result<Delta, ProviderError>> = stream.collect().await;
+
+        assert_eq!(deltas.len(), 3);
+        assert_eq!(
+            deltas[0].as_ref().unwrap().content,
+            Some("hello".to_string())
+        );
+        assert_eq!(
+            deltas[1].as_ref().unwrap().content,
+            Some("world".to_string())
+        );
+        assert_eq!(deltas[2].as_ref().unwrap().content, Some("!".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_stream_request_with_done_marker() {
+        // Test that [DONE] marker is handled correctly
+        let chunks = vec![
+            bytes::Bytes::from("data: hello\n\n"),
+            bytes::Bytes::from("data: [DONE]\n\n"),
+        ];
+        let transport = MockHttpTransport { chunks };
+        let messages = vec![Message::user("test")];
+        let opts = Options::new("test-model");
+
+        let stream = transport
+            .stream_request::<MockFormat>(&messages, &opts)
+            .await
+            .unwrap();
+        let deltas: Vec<Result<Delta, ProviderError>> = stream.collect().await;
+
+        // [DONE] should produce no delta
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(
+            deltas[0].as_ref().unwrap().content,
+            Some("hello".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_request_empty_lines_filtered() {
+        // Test that empty lines are filtered out
+        let chunks = vec![bytes::Bytes::from("data: hello\n\n\n\ndata: world\n\n")];
+        let transport = MockHttpTransport { chunks };
+        let messages = vec![Message::user("test")];
+        let opts = Options::new("test-model");
+
+        let stream = transport
+            .stream_request::<MockFormat>(&messages, &opts)
+            .await
+            .unwrap();
+        let deltas: Vec<Result<Delta, ProviderError>> = stream.collect().await;
+
+        assert_eq!(deltas.len(), 2);
+        assert_eq!(
+            deltas[0].as_ref().unwrap().content,
+            Some("hello".to_string())
+        );
+        assert_eq!(
+            deltas[1].as_ref().unwrap().content,
+            Some("world".to_string())
+        );
     }
 }

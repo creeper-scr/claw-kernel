@@ -29,6 +29,9 @@ pub enum ProviderError {
     #[error("context length exceeded")]
     ContextLengthExceeded,
 
+    #[error("invalid temperature: {0}. Must be between 0.0 and 2.0")]
+    InvalidTemperature(f32),
+
     #[error("provider error: {0}")]
     Other(String),
 }

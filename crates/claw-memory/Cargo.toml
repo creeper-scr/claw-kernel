@@ -13,5 +13,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 rusqlite = { workspace = true }
+sqlite-vec = { workspace = true }
 claw-runtime = { path = "../claw-runtime" }
 tracing = { workspace = true }

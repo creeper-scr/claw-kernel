@@ -89,6 +89,93 @@ The kernel provides the sandbox mechanism. The application decides which directo
 
 ---
 
+## Permission Inheritance (is_subset)
+
+Safe Mode uses `is_subset` checks to enforce permission inheritance — a tool can only request permissions that are a subset of what the context (execution environment) grants.
+
+### How It Works
+
+The `is_subset` check validates that every permission requested by a tool is contained within the permissions granted by the execution context:
+
+```
+Tool Permitted ⊆ Context Granted → Execution Allowed
+Tool Permitted ⊄ Context Granted → Permission Denied
+```
+
+This is a **set containment check**, not a path prefix check. The tool's permission set must be entirely contained within the context's permission set.
+
+### Example: Filesystem Permissions
+
+```rust
+use claw_tools::types::{PermissionSet, FsPermissions};
+
+// Context grants read access to /data only
+let ctx_permissions = PermissionSet {
+    filesystem: FsPermissions::read_only(vec!["/data".to_string()]),
+    ..PermissionSet::minimal()
+};
+
+// Tool A: Requests access to /data/subdir
+// Result: DENIED — /data/subdir is not in the context's allowed set
+let tool_a_permissions = PermissionSet {
+    filesystem: FsPermissions::read_only(vec!["/data/subdir".to_string()]),
+    ..PermissionSet::minimal()
+};
+
+// Tool B: Requests access to exactly /data
+// Result: ALLOWED — tool's permission set is a subset of context's
+let tool_b_permissions = PermissionSet {
+    filesystem: FsPermissions::read_only(vec!["/data".to_string()]),
+    ..PermissionSet::minimal()
+};
+
+// Tool C: Requests access to /data and /tmp
+// Result: DENIED — /tmp is not in context's allowed set
+let tool_c_permissions = PermissionSet {
+    filesystem: FsPermissions::read_only(vec!["/data".to_string(), "/tmp".to_string()]),
+    ..PermissionSet::minimal()
+};
+```
+
+### Key Points
+
+1. **Exact Match Required**: The context must explicitly list every path the tool wants to access. Subdirectories are **not** automatically allowed just because their parent is allowed.
+
+2. **Set Containment, Not Path Prefix**: 
+   - ❌ `/data` does **not** grant access to `/data/subdir`
+   - ✅ `/data/subdir` must be explicitly added to the context's allowlist
+
+3. **Applies to All Permission Types**: This same `is_subset` logic applies to:
+   - Filesystem read/write paths
+   - Network allowed domains
+   - Subprocess policy
+
+### Permission Resolution Flow
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Tool declares  │────▶│  is_subset check │────▶│  Execute tool   │
+│  permissions    │     │  against context │     │  if passed      │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+                               │
+                               ▼ (if failed)
+                        ┌──────────────────┐
+                        │  PermissionDenied│
+                        │  error returned  │
+                        └──────────────────┘
+```
+
+### Why Subdirectories Are Not Inherited
+
+While path prefix checks might seem intuitive, set-based containment provides:
+
+- **Predictability**: No ambiguity about what is allowed
+- **Explicit security**: Each path must be intentionally granted
+- **Simpler auditing**: The allowed set is exactly what was configured
+- **No symlink traversal issues**: Path prefix checks can be fooled by symlinks
+
+---
+
 ## Default Allowlist
 
 ### File System

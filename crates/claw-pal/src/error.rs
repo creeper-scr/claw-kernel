@@ -2,140 +2,83 @@
 //!
 //! Provides unified error handling across sandbox, IPC, and process management.
 
-use std::fmt;
+use thiserror::Error;
 
 /// Sandbox-related errors.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum SandboxError {
     /// Failed to create sandbox.
+    #[error("sandbox creation failed: {0}")]
     CreationFailed(String),
     /// Failed to apply sandbox restrictions.
+    #[error("sandbox restriction failed: {0}")]
     RestrictFailed(String),
     /// Sandbox restrictions already applied.
+    #[error("sandbox restrictions already applied")]
     AlreadyApplied,
     /// Sandbox feature not supported on this platform.
+    #[error("sandbox not supported on this platform")]
     NotSupported,
 }
 
-impl fmt::Display for SandboxError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SandboxError::CreationFailed(msg) => write!(f, "sandbox creation failed: {}", msg),
-            SandboxError::RestrictFailed(msg) => write!(f, "sandbox restriction failed: {}", msg),
-            SandboxError::AlreadyApplied => write!(f, "sandbox restrictions already applied"),
-            SandboxError::NotSupported => write!(f, "sandbox not supported on this platform"),
-        }
-    }
-}
-
-impl std::error::Error for SandboxError {}
-
 /// IPC-related errors.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum IpcError {
     /// Connection refused.
+    #[error("connection refused")]
     ConnectionRefused,
     /// Operation timed out.
+    #[error("operation timed out")]
     Timeout,
     /// Pipe broken.
+    #[error("broken pipe")]
     BrokenPipe,
     /// Invalid message format.
+    #[error("invalid message format")]
     InvalidMessage,
     /// Permission denied.
+    #[error("permission denied")]
     PermissionDenied,
 }
-
-impl fmt::Display for IpcError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            IpcError::ConnectionRefused => write!(f, "connection refused"),
-            IpcError::Timeout => write!(f, "operation timed out"),
-            IpcError::BrokenPipe => write!(f, "broken pipe"),
-            IpcError::InvalidMessage => write!(f, "invalid message format"),
-            IpcError::PermissionDenied => write!(f, "permission denied"),
-        }
-    }
-}
-
-impl std::error::Error for IpcError {}
 
 /// Process-related errors.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
 pub enum ProcessError {
     /// Failed to spawn process.
+    #[error("process spawn failed: {0}")]
     SpawnFailed(String),
+    /// Failed to send signal to process.
+    #[error("process signal failed: {0}")]
+    SignalFailed(String),
     /// Process not found.
+    #[error("process not found: {0}")]
     NotFound(u32),
     /// Permission denied.
+    #[error("permission denied")]
     PermissionDenied,
     /// Invalid signal.
+    #[error("invalid signal")]
     InvalidSignal,
 }
 
-impl fmt::Display for ProcessError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ProcessError::SpawnFailed(msg) => write!(f, "process spawn failed: {}", msg),
-            ProcessError::NotFound(pid) => write!(f, "process not found: {}", pid),
-            ProcessError::PermissionDenied => write!(f, "permission denied"),
-            ProcessError::InvalidSignal => write!(f, "invalid signal"),
-        }
-    }
-}
-
-impl std::error::Error for ProcessError {}
-
 /// Unified error type for claw-pal operations.
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum PalError {
     /// Sandbox error.
-    Sandbox(SandboxError),
+    #[error("sandbox error: {0}")]
+    Sandbox(#[from] SandboxError),
     /// IPC error.
-    Ipc(IpcError),
+    #[error("IPC error: {0}")]
+    Ipc(#[from] IpcError),
     /// Process error.
-    Process(ProcessError),
+    #[error("process error: {0}")]
+    Process(#[from] ProcessError),
     /// Permission denied.
+    #[error("permission denied: {0}")]
     PermissionDenied(String),
     /// IO error.
-    Io(std::io::Error),
-}
-
-impl fmt::Display for PalError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PalError::Sandbox(e) => write!(f, "sandbox error: {}", e),
-            PalError::Ipc(e) => write!(f, "IPC error: {}", e),
-            PalError::Process(e) => write!(f, "process error: {}", e),
-            PalError::PermissionDenied(msg) => write!(f, "permission denied: {}", msg),
-            PalError::Io(e) => write!(f, "IO error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for PalError {}
-
-impl From<SandboxError> for PalError {
-    fn from(err: SandboxError) -> Self {
-        PalError::Sandbox(err)
-    }
-}
-
-impl From<IpcError> for PalError {
-    fn from(err: IpcError) -> Self {
-        PalError::Ipc(err)
-    }
-}
-
-impl From<ProcessError> for PalError {
-    fn from(err: ProcessError) -> Self {
-        PalError::Process(err)
-    }
-}
-
-impl From<std::io::Error> for PalError {
-    fn from(err: std::io::Error) -> Self {
-        PalError::Io(err)
-    }
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 #[cfg(test)]
@@ -193,6 +136,9 @@ mod tests {
     fn test_process_error_display() {
         let err = ProcessError::SpawnFailed("test".to_string());
         assert_eq!(err.to_string(), "process spawn failed: test");
+
+        let err = ProcessError::SignalFailed("permission denied".to_string());
+        assert_eq!(err.to_string(), "process signal failed: permission denied");
 
         let err = ProcessError::NotFound(1234);
         assert_eq!(err.to_string(), "process not found: 1234");

@@ -21,25 +21,25 @@ This document describes the crate structure of claw-kernel, including dependenci
 ╔══════════════════════════════════════════════════════════════════════╗
 ║                     CORE KERNEL (Minimal & Stable)                    ║
 ╠══════════════════════════════════════════════════════════════════════╣
-║  Layer 0         Layer 0.5      Layer 1        Layer 2               Layer 3           ║
-║                                                                      ║
-║  ┌────┐  ┌─────────┐  ┌──────────┐   ┌───────────┐  ┌───────────┐  ║
-║  │Rust│  │claw-pal │  │claw-     │   │claw-loop  │  │claw-script│  ║
-║  │Hard│  │(Platform│  │runtime  │   │(Agent     │  │(Script    │  ║
-║  │Core│  │Abstr.)  │  │(System  │   │ Loop)     │  │ Runtime)  │  ║
-║  └──┬─┘  └────┬────┘  │ Runtime) │   └─────┬─────┘  └───────────┘  ║
-║       │       └────┬─────┘         │                                ║
-║       │            │          ┌────┴────┐                           ║
-║       │            │          │         │                           ║
-║       │            │       ┌──▼──┐  ┌───▼────┐                      ║
-║       │            │       │claw-│  │claw-   │                      ║
-║       │            │       │tools│  │provider│                      ║
-║       │            │       │(Tool│  │(LLM    │                      ║
-║       │            │       │Proto│  │ Abstr.)│                      ║
-║       │            │       └─────┘  └────────┘                      ║
-║       │            │                                                ║
-║       └────────────┴───────────────────────────────────┐            ║
-║                                                        ▼            ║
+║  Layer 0         Layer 0.5      Layer 1        Layer 2        Layer 2.5    Layer 3    ║
+║                                                                                       ║
+║  ┌────┐  ┌─────────┐  ┌──────────┐   ┌───────────┐  ┌───────────┐  ┌───────────┐     ║
+║  │Rust│  │claw-pal │  │claw-     │   │claw-loop  │  │claw-channel  │claw-script│     ║
+║  │Hard│  │(Platform│  │runtime  │   │(Agent     │  │(Channel   │  │(Script    │     ║
+║  │Core│  │Abstr.)  │  │(System  │   │ Loop)     │  │ Integr.)  │  │ Runtime)  │     ║
+║  └──┬─┘  └────┬────┘  │ Runtime) │   └─────┬─────┘  └───────────┘  └───────────┘     ║
+║       │       └────┬─────┘         │         │                                       ║
+║       │            │          ┌────┴────┐    │                                       ║
+║       │            │          │         │    │                                       ║
+║       │            │       ┌──▼──┐  ┌───▼────┐│                                       ║
+║       │            │       │claw-│  │claw-   ││                                       ║
+║       │            │       │tools│  │provider││                                       ║
+║       │            │       │(Tool│  │(LLM    ││                                       ║
+║       │            │       │Proto│  │ Abstr.)││                                       ║
+║       │            │       └─────┘  └────────┘│                                       ║
+║       │            │                         │                                       ║
+║       └────────────┴─────────────────────────┴──────────┐                            ║
+║                                                         ▼                            ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║                         Meta-crate: claw-kernel                       ║
 ╚══════════════════════════════════════════════════════════════════════╝
@@ -139,14 +139,11 @@ pub enum AgentStatus {
 
 pub struct A2AMessage {
     pub from: AgentId,
-    pub to: Option<AgentId>,         // None = broadcast
-    pub message_type: A2AMessageType,
-    pub payload: Payload,            // Serialized message payload
-    pub correlation_id: Option<Uuid>,// For request-response correlation
-    pub timeout: Option<Duration>,   // Message timeout
-    pub priority: MessagePriority,   // Message priority
-    pub timestamp: SystemTime,       // Message creation time
+    pub to: AgentId,                 // Required: target agent ID
+    pub correlation_id: String,      // For request-response correlation
+    pub payload: serde_json::Value,  // Serialized message payload
 }
+// 注意: 当前代码缺少 message_type, timeout, priority, timestamp 字段
 
 pub enum Payload {
     Json(serde_json::Value),
@@ -201,18 +198,14 @@ pub enum EventType {
 **Architecture (Three-Layer Design):**
 
 ```
-Level 3: Provider Configuration (User-facing)
-    LLMProvider trait - complete(), stream_complete()
-    EmbeddingProvider trait - embed() (for providers that support it)
+Level 3: LLMProvider trait - User-facing interface
+    complete(), stream_complete()
     
-Level 2: HttpTransport (Reusable)
-    Generic request/stream logic
-    Rate limiting, retry, connection pooling
+Level 2: HttpTransport trait - Reusable HTTP logic
+    request(), stream_request()
     
-Level 1: MessageFormat (Protocol Abstraction)
-    OpenAIFormat - Used by 50+ providers
-    AnthropicFormat - Used by Claude & Bedrock
-    OllamaFormat - Local model variant
+Level 1: MessageFormat trait - Protocol abstraction
+    OpenAIFormat, AnthropicFormat, OllamaFormat
 ```
 
 **Key Types:**
@@ -318,7 +311,8 @@ pub trait LLMProvider: Send + Sync {
 // Separate trait for embedding capability (not all providers support this)
 #[async_trait]
 pub trait EmbeddingProvider: Send + Sync {
-    async fn embed(&self, texts: &[String]) -> Result<Vec<Embedding>, ProviderError>;
+    async fn embed(&self, text: &str) -> Result<Embedding, ProviderError>;
+    async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Embedding>, ProviderError>;
 }
 ```
 
@@ -479,7 +473,7 @@ pub enum FsPermissions {
 }
 
 pub struct NetworkPermissions {
-    pub allowed_domains: Vec<String>,
+    pub allowed_domains: HashSet<String>,
     pub allowed_ports: Vec<u16>,
     pub allow_localhost: bool,
     pub allow_private_ips: bool,

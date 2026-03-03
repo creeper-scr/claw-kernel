@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::{
-    error::ProviderError,
     traits::MessageFormat,
     types::{CompletionResponse, Delta, FinishReason, Message, Options, Role, TokenUsage},
 };
@@ -131,14 +130,17 @@ impl MessageFormat for OpenAIFormat {
             .collect();
 
         let mut messages = msg_array;
-        
+
         // Prepend system message if provided
         if let Some(sys) = &opts.system {
-            messages.insert(0, OpenAIMessage {
-                role: "system".to_string(),
-                content: sys.clone(),
-                tool_call_id: None,
-            });
+            messages.insert(
+                0,
+                OpenAIMessage {
+                    role: "system".to_string(),
+                    content: sys.clone(),
+                    tool_call_id: None,
+                },
+            );
         }
 
         OpenAIRequest {

@@ -8,6 +8,7 @@ use futures::{Stream, StreamExt};
 
 use crate::{
     error::ProviderError,
+    retry::RetryConfig,
     traits::{HttpTransport, LLMProvider, MessageFormat},
     transport::DefaultHttpTransport,
     types::{CompletionResponse, Delta, Message, Options},
@@ -19,6 +20,7 @@ pub struct AnthropicProvider {
     api_key: String,
     model: String,
     transport: Arc<dyn HttpTransport>,
+    retry_config: Option<RetryConfig>,
 }
 
 impl AnthropicProvider {
@@ -27,6 +29,7 @@ impl AnthropicProvider {
             api_key: api_key.into(),
             model: model.into(),
             transport: Arc::new(DefaultHttpTransport::new("https://api.anthropic.com")),
+            retry_config: None,
         }
     }
 
@@ -36,6 +39,20 @@ impl AnthropicProvider {
         let model =
             std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-opus-4-6".to_string());
         Ok(Self::new(api_key, model))
+    }
+
+    /// Set the retry configuration for this provider.
+    pub fn with_retry(mut self, config: RetryConfig) -> Self {
+        self.retry_config = Some(config);
+        // Recreate transport with retry config
+        let transport = DefaultHttpTransport::new("https://api.anthropic.com").with_retry(config);
+        self.transport = Arc::new(transport);
+        self
+    }
+
+    /// Get the current retry configuration.
+    pub fn retry_config(&self) -> Option<&RetryConfig> {
+        self.retry_config.as_ref()
     }
 
     fn base_url(&self) -> &str {
@@ -78,8 +95,7 @@ impl LLMProvider for AnthropicProvider {
         let raw: serde_json::Value = self.transport.post_json(&url, &headers, &body).await?;
         let response: <AnthropicFormat as MessageFormat>::Response =
             serde_json::from_value(raw).map_err(|e| ProviderError::Serialization(e.to_string()))?;
-        AnthropicFormat::parse_response(response)
-            .map_err(|e| ProviderError::Other(e.to_string()))
+        AnthropicFormat::parse_response(response).map_err(|e| ProviderError::Other(e.to_string()))
     }
 
     async fn complete_stream(
@@ -133,17 +149,26 @@ impl LLMProvider for AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::retry::RetryConfig;
 
     #[test]
     fn test_anthropic_provider_new() {
         let p = AnthropicProvider::new("sk-ant-test", "claude-opus-4-6");
         assert_eq!(p.api_key, "sk-ant-test");
         assert_eq!(p.model, "claude-opus-4-6");
+        assert!(p.retry_config().is_none());
     }
 
     #[test]
     fn test_anthropic_provider_id() {
         let p = AnthropicProvider::new("key", "claude-opus-4-6");
         assert_eq!(p.provider_id(), "anthropic");
+    }
+
+    #[test]
+    fn test_anthropic_provider_with_retry() {
+        let config = RetryConfig::new().with_max_retries(5);
+        let p = AnthropicProvider::new("sk-ant-test", "claude-opus-4-6").with_retry(config);
+        assert_eq!(p.retry_config().unwrap().max_retries, 5);
     }
 }

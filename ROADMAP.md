@@ -13,7 +13,7 @@ language: bilingual
 
 # claw-kernel Roadmap
 
-> **Current Status: v0.1.0 Released — 9 crates, 389 tests passing**
+> **Current Status: v0.1.0 Released — 9 crates, 670+ tests passing**
 
 ---
 
@@ -24,8 +24,8 @@ language: bilingual
 | Architecture design | ✅ Complete |
 | ADRs (001-008) | ✅ All accepted |
 | Core implementation (9 crates) | ✅ Complete |
-| 389 unit + integration tests | ✅ All passing |
-| Clippy / fmt / doc checks | ✅ Clean |
+| 670+ unit + integration tests | ✅ All passing |
+| Clippy / fmt / doc checks | ✅ Clean (zero warnings) |
 | Published on crates.io | ⬜ Planned (v0.2.0) |
 
 See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
@@ -35,16 +35,17 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
 ## Completed — v0.1.0 (2026-03-01)
 
 ### claw-pal (Platform Abstraction Layer)
-- [x] Unix Domain Socket IPC with 4-byte little-endian frame protocol
+- [x] Unix Domain Socket IPC with 4-byte Big Endian frame protocol
 - [x] `ProcessManager` (DashMap + SIGTERM → SIGKILL escalation)
 - [x] Platform config directories (`dirs`)
 - [x] Security key validation (`argon2`)
 - [x] Linux and macOS sandbox groundwork
+- [x] Windows IPC skeleton (Named Pipe foundation for v0.2.0)
 
 ### claw-runtime (System Runtime)
 - [x] `EventBus` (Tokio broadcast, capacity 1024)
 - [x] `AgentOrchestrator` (DashMap + AtomicU64 AgentId)
-- [x] `IpcRouter` for inter-agent message routing
+- [x] `IpcRouter` for inter-agent message routing (Unix Domain Socket)
 - [x] `Runtime` unified async entry point
 
 ### claw-provider (LLM Providers)
@@ -185,6 +186,7 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 **Current priority areas:**
 - New LLM providers: Gemini, Mistral, local GGUF
+- **Windows Named Pipe IPC support (High Priority)**
 - Windows sandbox implementation
 - Deno/V8 engine bridge
 - Expanded integration test coverage
@@ -195,7 +197,7 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 # claw-kernel 路线图
 
-> **当前状态：v0.1.0 已发布 —— 9 个 crate，389 个测试全部通过**
+> **当前状态：v0.1.0 已发布 —— 9 个 crate，670+ 个测试全部通过**
 
 ---
 
@@ -206,7 +208,7 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 | 架构设计 | ✅ 已完成 |
 | ADR（001-008） | ✅ 全部已接受 |
 | 核心实现（9 个 crate） | ✅ 已完成 |
-| 389 个单元+集成测试 | ✅ 全部通过 |
+| 670+ 个单元+集成测试 | ✅ 全部通过 |
 | Clippy / fmt / 文档检查 | ✅ 干净 |
 | 发布到 crates.io | ⬜ 计划中（v0.2.0） |
 
@@ -218,9 +220,9 @@ v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 ### 核心亮点（完整列表见上方英文部分）
 
-- [x] **claw-pal**：Unix Domain Socket IPC + 进程管理 + 安全密钥验证
+- [x] **claw-pal**：Unix Domain Socket IPC + Windows Named Pipe 骨架 + 进程管理 + 安全密钥验证
 - [x] **claw-runtime**：EventBus + AgentOrchestrator + IpcRouter + Runtime
-- [x] **claw-provider**：5 个 LLM Provider（Anthropic/OpenAI/Ollama/DeepSeek/Moonshot）
+- [x] **claw-provider**：5 个 LLM Provider（Anthropic/OpenAI/Ollama/DeepSeek/Moonshot）+ Temperature 规范 (0.0–2.0)
 - [x] **claw-tools**：工具注册表 + 热加载 + JSON Schema 生成
 - [x] **claw-loop**：环形历史 + 三种停止条件 + Builder
 - [x] **claw-memory**：Ngram 嵌入 + SQLite 检索 + 安全配额存储

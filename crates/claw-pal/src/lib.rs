@@ -1,5 +1,6 @@
 //! Platform Abstraction Layer for claw-kernel.
 
+pub mod config;
 pub mod dirs;
 pub mod error;
 pub mod ipc;
@@ -20,6 +21,7 @@ pub mod windows;
 pub use error::{IpcError, PalError, ProcessError, SandboxError};
 pub use ipc::InterprocessTransport;
 pub use manager::TokioProcessManager;
+pub use security::{PowerKey, PowerKeyHash, PowerKeyManager, PowerKeyValidator, SecurityError};
 pub use traits::{IpcTransport, ProcessManager, SandboxBackend};
 pub use types::ipc::{IpcConnection, IpcEndpoint, IpcListener, IpcMessage};
 pub use types::process::{ExitStatus, ProcessConfig, ProcessHandle, ProcessSignal};

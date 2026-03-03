@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::state_machine::{AgentState, StateEvent};
+
 #[derive(Debug, Error)]
 pub enum AgentError {
     #[error("provider error: {0}")]
@@ -22,4 +24,21 @@ pub enum AgentError {
 
     #[error("serialization error: {0}")]
     Serialization(String),
+
+    /// Invalid state transition attempted.
+    #[error(
+        "invalid state transition from {from:?} on event {event:?}, allowed events: {allowed:?}"
+    )]
+    InvalidStateTransition {
+        from: AgentState,
+        event: StateEvent,
+        allowed: Vec<StateEvent>,
+    },
+
+    /// State mismatch detected during execution.
+    #[error("state mismatch: expected {expected:?}, found {actual:?}")]
+    StateMismatch {
+        expected: AgentState,
+        actual: AgentState,
+    },
 }

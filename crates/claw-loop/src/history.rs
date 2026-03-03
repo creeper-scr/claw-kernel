@@ -56,9 +56,33 @@ impl HistoryManager for InMemoryHistory {
         self.messages.len()
     }
 
-    /// Rough estimate: each character counts as ~0.25 tokens (+1 per message for overhead).
+    /// Rough estimate: ASCII characters count as 0.25 tokens, CJK characters count as 1.0 tokens.
+    /// Each message has +1 overhead. Each tool_call adds 50 tokens overhead.
     fn token_estimate(&self) -> usize {
-        self.messages.iter().map(|m| m.content.len() / 4 + 1).sum()
+        self.messages
+            .iter()
+            .map(|m| {
+                // Count tokens based on character types
+                let content_tokens: f64 = m
+                    .content
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii() {
+                            0.25
+                        } else {
+                            // CJK and other non-ASCII characters
+                            1.0
+                        }
+                    })
+                    .sum();
+
+                // Tool calls overhead: 50 tokens per tool_call
+                let tool_call_tokens = m.tool_calls.as_ref().map(|tc| tc.len() * 50).unwrap_or(0);
+
+                // +1 per message for overhead
+                (content_tokens as usize) + 1 + tool_call_tokens
+            })
+            .sum()
     }
 
     fn clear(&mut self) {

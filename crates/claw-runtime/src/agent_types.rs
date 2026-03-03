@@ -33,9 +33,12 @@ impl std::fmt::Display for AgentId {
 }
 
 /// Simple non-cryptographic hex token derived from the current nanosecond
-/// timestamp plus an atomic counter.  Guarantees uniqueness within a single
-/// process lifetime even on very fast hardware where nanos may repeat.
+/// timestamp, atomic counter, process ID, and thread ID.
+/// Guarantees uniqueness within a single process lifetime even on very fast
+/// hardware where nanos may repeat, and across different processes/threads.
 fn rand_hex(n: usize) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -45,8 +48,19 @@ fn rand_hex(n: usize) -> String {
     let t = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    // Mix nanos with the atomic sequence number to eliminate collisions.
-    let raw = t.as_nanos() ^ ((seq as u128).wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    let pid = std::process::id() as u128;
+
+    // Hash thread ID to get a stable u64 value (thread_id_value is unstable)
+    let thread_id = std::thread::current().id();
+    let mut hasher = DefaultHasher::new();
+    thread_id.hash(&mut hasher);
+    let tid = hasher.finish() as u128;
+
+    // Mix nanos with sequence number, PID, and TID to eliminate collisions.
+    let raw = t.as_nanos()
+        ^ ((seq as u128).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+        ^ (pid << 48)
+        ^ (tid << 32);
     format!("{:0>width$x}", raw & ((1u128 << (n * 4)) - 1), width = n)
 }
 

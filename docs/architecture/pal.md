@@ -227,6 +227,10 @@ impl SandboxBackend for WindowsSandbox {
 
 Cross-platform inter-process communication.
 
+> **v0.1.0 Limitation:** IPC is currently only supported on Unix-like systems (Linux, macOS).
+> Windows Named Pipe support is planned for v0.2.0. On Windows, IPC operations will return
+> `IpcError::ConnectionRefused`.
+
 ```rust
 pub trait IpcTransport: Send + Sync {
     /// Connect to an IPC endpoint
@@ -255,11 +259,11 @@ pub enum IpcConnection {
 **Implementation Strategy:**
 
 We use the [`interprocess`](https://crates.io/crates/interprocess) crate which provides:
-- **Unix:** Unix Domain Sockets (highest performance)
-- **Windows:** Named Pipes (native equivalent)
+- **Unix:** Unix Domain Sockets (highest performance) — ✅ **Implemented in v0.1.0**
+- **Windows:** Named Pipes (native equivalent) — 🚫 **Planned for v0.2.0**
 
 ```rust
-// Platform-agnostic usage
+// Platform-agnostic usage (Unix only in v0.1.0)
 use interprocess::local_socket::{LocalSocketStream, LocalSocketListener};
 
 pub struct InterprocessTransport;
@@ -277,9 +281,9 @@ impl IpcTransport for InterprocessTransport {
 }
 ```
 
-**Fallback Strategy:**
+**Future: Windows Fallback Strategy (v0.2.0)**
 
-If Named Pipe permissions are restricted on Windows, we automatically fall back to TCP loopback:
+If Named Pipe permissions are restricted on Windows, we will automatically fall back to TCP loopback:
 
 ```rust
 pub async fn connect_with_fallback(endpoint: &str) -> Result<Box<dyn IpcConnection>, IpcError> {

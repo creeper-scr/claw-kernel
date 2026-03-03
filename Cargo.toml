@@ -29,11 +29,13 @@ repository = "https://github.com/claw-project/claw-kernel"
 [workspace.dependencies]
 # 异步运行时 (Async Runtime) - 兼容 Rust 1.83+
 tokio = { version = "1.35.0", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "io-util"] }
+tokio-util = { version = "0.7.10", features = ["rt"] }
 async-trait = "0.1.77"
 
 # 并发数据结构 (Concurrent Data Structures)
 dashmap = "5.5.3"
 futures = "0.3"
+rand = "0.8"
 
 # HTTP 客户端 (HTTP Client) - 兼容 Tokio 1.35+
 reqwest = { version = "0.11.23", features = ["json", "stream", "rustls-tls"], default-features = false }
@@ -66,6 +68,7 @@ nix = { version = "0.27.1", features = ["process", "sched"] }
 
 # 安全 (Security)
 rust-argon2 = "0.8"
+sha2 = "0.10"
 
 
 
@@ -99,6 +102,17 @@ sqlite-vec = "0.1.6"
 # 零拷贝字节转换（Vec<f32> → &[u8]）
 zerocopy = { version = "0.8", features = ["derive"] }
 
+# 临时文件（测试用）
+tempfile = "3.9"
+
+# 锁定旧版本以兼容 Rust 1.83
+# time 0.3.36+ 需要 Rust 1.67+，但 time-core 0.1.8 需要 Rust 1.88+
+time = { version = "0.3.36" }
+time-core = { version = "=0.1.2" }
+time-macros = { version = "=0.2.18" }
+deranged = { version = "=0.3.11" }
+getrandom = { version = "0.2.15" }
+
 # ============================================
 # Channel 层依赖
 # ============================================
@@ -123,6 +137,9 @@ panic = "unwind"
 panic = "unwind"
 
 [profile.test]
+# Note: panic setting is ignored for test profile by Cargo,
+# but we keep it here for documentation purposes and consistency.
+# mlua requires panic = "unwind" in all other profiles.
 panic = "unwind"
 
 

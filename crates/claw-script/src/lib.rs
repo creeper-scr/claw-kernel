@@ -10,7 +10,11 @@ pub mod lua;
 
 pub use error::{CompileError, ScriptError};
 pub use traits::ScriptEngine;
-pub use types::{EngineType, Script, ScriptContext, ScriptValue};
+pub use types::{EngineType, FsBridgeConfig, NetBridgeConfig, Script, ScriptContext, ScriptValue};
 
 #[cfg(feature = "engine-lua")]
 pub use lua::LuaEngine;
+
+// Re-export bridge types for configuration
+pub use bridge::tools::CallerContext;
+pub use bridge::{FsBridge, NetBridge, ToolsBridge};

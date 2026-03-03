@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::Duration;
 
 // ─── ToolResult / ToolError ─────────────────────────────────────────────────
@@ -146,17 +147,40 @@ impl FsPermissions {
 pub struct NetworkPermissions {
     /// Allowed domains (e.g., "api.example.com"). Empty = no network.
     pub allowed_domains: HashSet<String>,
+    /// Allowed ports (applies to all domains). Default: [443, 80].
+    pub allowed_ports: Vec<u16>,
+    /// Allow localhost connections. Default: true.
+    pub allow_localhost: bool,
+    /// Allow private IP ranges. Default: false.
+    pub allow_private_ips: bool,
+}
+
+impl Default for NetworkPermissions {
+    fn default() -> Self {
+        Self {
+            allowed_domains: HashSet::new(),
+            allowed_ports: vec![443, 80], // Default: HTTPS and HTTP
+            allow_localhost: true,
+            allow_private_ips: false,
+        }
+    }
 }
 
 impl NetworkPermissions {
     pub fn none() -> Self {
         Self {
             allowed_domains: HashSet::new(),
+            allowed_ports: vec![443, 80],
+            allow_localhost: true,
+            allow_private_ips: false,
         }
     }
     pub fn allow(domains: impl IntoIterator<Item = String>) -> Self {
         Self {
             allowed_domains: domains.into_iter().collect(),
+            allowed_ports: vec![443, 80],
+            allow_localhost: true,
+            allow_private_ips: false,
         }
     }
 }
@@ -224,24 +248,77 @@ impl ToolContext {
 /// Configuration for hot-loading tool scripts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotLoadingConfig {
-    /// Directory to watch for tool scripts.
-    pub watch_dir: String,
+    /// Directories to watch for tool scripts.
+    pub watch_dirs: Vec<PathBuf>,
     /// File extensions to load (e.g., ["lua", "js"]).
     pub extensions: Vec<String>,
     /// Debounce delay in milliseconds (default 50ms).
     pub debounce_ms: u64,
     /// Maximum tool execution timeout (default 30s).
     pub default_timeout_secs: u64,
+    /// Compilation timeout in seconds (default 10s).
+    pub compile_timeout_secs: u64,
+    /// Seconds to keep previous versions (default 300s = 5min).
+    pub keep_previous_secs: u64,
+    /// Auto-enable newly loaded tools (default true).
+    pub auto_enable: bool,
 }
 
 impl Default for HotLoadingConfig {
     fn default() -> Self {
         Self {
-            watch_dir: "tools".to_string(),
+            watch_dirs: vec![PathBuf::from("tools")],
             extensions: vec!["lua".to_string()],
             debounce_ms: 50,
             default_timeout_secs: 30,
+            compile_timeout_secs: 10,
+            keep_previous_secs: 300,
+            auto_enable: true,
         }
+    }
+}
+
+impl HotLoadingConfig {
+    /// Validate the configuration.
+    ///
+    /// Returns Ok(()) if valid, Err with description if invalid.
+    pub fn validate(&self) -> Result<(), String> {
+        // Validate watch_dirs is not empty
+        if self.watch_dirs.is_empty() {
+            return Err("watch_dirs cannot be empty".to_string());
+        }
+
+        // Validate extensions is not empty
+        if self.extensions.is_empty() {
+            return Err("extensions cannot be empty".to_string());
+        }
+
+        // Validate debounce_ms is reasonable
+        if self.debounce_ms == 0 {
+            return Err("debounce_ms must be > 0".to_string());
+        }
+
+        // Validate timeouts are reasonable
+        if self.default_timeout_secs == 0 {
+            return Err("default_timeout_secs must be > 0".to_string());
+        }
+        if self.compile_timeout_secs == 0 {
+            return Err("compile_timeout_secs must be > 0".to_string());
+        }
+
+        // Validate all extensions are non-empty
+        for ext in &self.extensions {
+            if ext.is_empty() {
+                return Err("extensions cannot contain empty strings".to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if a file extension is in the watched list.
+    pub fn is_watched_extension(&self, ext: &str) -> bool {
+        self.extensions.iter().any(|e| e == ext)
     }
 }
 
@@ -307,15 +384,114 @@ mod tests {
         assert!(perms.filesystem.read_paths.is_empty());
         assert!(perms.filesystem.write_paths.is_empty());
         assert!(perms.network.allowed_domains.is_empty());
+        assert_eq!(perms.network.allowed_ports, vec![443, 80]);
+        assert!(perms.network.allow_localhost);
+        assert!(!perms.network.allow_private_ips);
         assert_eq!(perms.subprocess, SubprocessPolicy::Denied);
+    }
+
+    #[test]
+    fn test_network_permissions_default() {
+        let perms = NetworkPermissions::default();
+        assert!(perms.allowed_domains.is_empty());
+        assert_eq!(perms.allowed_ports, vec![443, 80]);
+        assert!(perms.allow_localhost);
+        assert!(!perms.allow_private_ips);
+    }
+
+    #[test]
+    fn test_network_permissions_none() {
+        let perms = NetworkPermissions::none();
+        assert!(perms.allowed_domains.is_empty());
+        assert_eq!(perms.allowed_ports, vec![443, 80]);
+        assert!(perms.allow_localhost);
+        assert!(!perms.allow_private_ips);
+    }
+
+    #[test]
+    fn test_network_permissions_allow() {
+        let perms = NetworkPermissions::allow(vec!["api.example.com".to_string()]);
+        assert!(perms.allowed_domains.contains("api.example.com"));
+        assert_eq!(perms.allowed_ports, vec![443, 80]);
+        assert!(perms.allow_localhost);
+        assert!(!perms.allow_private_ips);
     }
 
     #[test]
     fn test_hot_loading_config_default() {
         let config = HotLoadingConfig::default();
-        assert_eq!(config.watch_dir, "tools");
+        assert_eq!(config.watch_dirs, vec![PathBuf::from("tools")]);
         assert_eq!(config.extensions, vec!["lua"]);
         assert_eq!(config.debounce_ms, 50);
         assert_eq!(config.default_timeout_secs, 30);
+        assert_eq!(config.compile_timeout_secs, 10);
+        assert!(config.auto_enable);
+    }
+
+    #[test]
+    fn test_hot_loading_config_validate_ok() {
+        let config = HotLoadingConfig::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_hot_loading_config_validate_empty_watch_dirs() {
+        let config = HotLoadingConfig {
+            watch_dirs: vec![],
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("watch_dirs cannot be empty"));
+    }
+
+    #[test]
+    fn test_hot_loading_config_validate_empty_extensions() {
+        let config = HotLoadingConfig {
+            extensions: vec![],
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("extensions cannot be empty"));
+    }
+
+    #[test]
+    fn test_hot_loading_config_validate_zero_debounce() {
+        let config = HotLoadingConfig {
+            debounce_ms: 0,
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("debounce_ms must be > 0"));
+    }
+
+    #[test]
+    fn test_hot_loading_config_validate_zero_timeout() {
+        let config = HotLoadingConfig {
+            default_timeout_secs: 0,
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("default_timeout_secs must be > 0"));
+    }
+
+    #[test]
+    fn test_hot_loading_config_validate_empty_extension() {
+        let config = HotLoadingConfig {
+            extensions: vec!["lua".to_string(), "".to_string()],
+            ..Default::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("extensions cannot contain empty strings"));
+    }
+
+    #[test]
+    fn test_hot_loading_config_is_watched_extension() {
+        let config = HotLoadingConfig {
+            extensions: vec!["lua".to_string(), "js".to_string()],
+            ..Default::default()
+        };
+        assert!(config.is_watched_extension("lua"));
+        assert!(config.is_watched_extension("js"));
+        assert!(!config.is_watched_extension("py"));
     }
 }

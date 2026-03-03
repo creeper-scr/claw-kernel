@@ -6,7 +6,18 @@ authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+engine-lua = []
+engine-v8 = []
+engine-py = []
+
+[[bin]]
+name = "claw-kernel"
+path = "src/main.rs"
+
 [dependencies]
+# 内部 crate 依赖
 claw-pal = { path = "../crates/claw-pal" }
 claw-runtime = { path = "../crates/claw-runtime" }
 claw-provider = { path = "../crates/claw-provider" }
@@ -16,7 +27,25 @@ claw-memory = { path = "../crates/claw-memory" }
 claw-channel = { path = "../crates/claw-channel" }
 claw-script = { path = "../crates/claw-script" }
 
+# CLI 解析
+clap = { version = "4.5", features = ["derive", "env"] }
 
-[features]
-default = ["engine-lua"]
-engine-lua = ["claw-script/engine-lua"]
+# 错误处理
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# 异步运行时
+tokio = { workspace = true }
+
+# 日志与追踪
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# 序列化
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# 配置解析
+figment = { version = "0.10.19", features = ["toml", "env"] }
+toml = { version = "0.8.0", default-features = false, features = ["parse", "display"] }
+rustc_version_runtime = "0.3.0"

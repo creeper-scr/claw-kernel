@@ -25,13 +25,20 @@ pub enum Event {
         completion_tokens: u64,
     },
 
+    // ── Message handling ────────────────────────────────────────────────────
+    MessageReceived {
+        agent_id: AgentId,
+        channel: String,
+        message_type: String,
+    },
+
     // ── Tool usage ───────────────────────────────────────────────────────────
-    ToolCallStarted {
+    ToolCalled {
         agent_id: AgentId,
         tool_name: String,
         call_id: String,
     },
-    ToolCallCompleted {
+    ToolResult {
         agent_id: AgentId,
         tool_name: String,
         call_id: String,

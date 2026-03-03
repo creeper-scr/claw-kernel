@@ -1,5 +1,9 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use claw_tools::{registry::ToolRegistry, types::PermissionSet};
 use serde::{Deserialize, Serialize};
 
 /// Supported scripting engines.
@@ -27,8 +31,47 @@ impl Script {
     }
 }
 
+/// Configuration for filesystem bridge.
+#[derive(Debug, Clone, Default)]
+pub struct FsBridgeConfig {
+    /// Allowed read/write paths.
+    pub allowed_paths: HashSet<PathBuf>,
+    /// Base directory for resolving relative paths.
+    pub base_dir: PathBuf,
+}
+
+/// Configuration for network bridge.
+#[derive(Debug, Clone, Default)]
+pub struct NetBridgeConfig {
+    /// Allowed domains (e.g., "api.example.com").
+    pub allowed_domains: HashSet<String>,
+    /// Allowed ports. Empty means standard ports only.
+    pub allowed_ports: HashSet<u16>,
+    /// Whether loopback addresses are allowed.
+    pub allow_loopback: bool,
+    /// Request timeout in seconds.
+    pub timeout_secs: u64,
+}
+
+impl NetBridgeConfig {
+    /// Create a config that denies all network access.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Create a config with specific allowed domains.
+    pub fn with_domains(domains: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            allowed_domains: domains.into_iter().collect(),
+            allowed_ports: [80, 443].iter().cloned().collect(),
+            allow_loopback: false,
+            timeout_secs: 30,
+        }
+    }
+}
+
 /// Execution context passed to scripts.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ScriptContext {
     /// Agent ID executing the script.
     pub agent_id: String,
@@ -36,6 +79,28 @@ pub struct ScriptContext {
     pub globals: std::collections::HashMap<String, serde_json::Value>,
     /// Maximum execution time for a single script (default 30 s).
     pub timeout: Duration,
+    /// Filesystem bridge configuration.
+    pub fs_config: FsBridgeConfig,
+    /// Network bridge configuration.
+    pub net_config: NetBridgeConfig,
+    /// Tool permissions for the caller.
+    pub permissions: PermissionSet,
+    /// Tool registry for executing tools from scripts.
+    pub tool_registry: Option<Arc<ToolRegistry>>,
+}
+
+impl std::fmt::Debug for ScriptContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScriptContext")
+            .field("agent_id", &self.agent_id)
+            .field("globals", &self.globals)
+            .field("timeout", &self.timeout)
+            .field("fs_config", &self.fs_config)
+            .field("net_config", &self.net_config)
+            .field("permissions", &self.permissions)
+            .field("tool_registry", &self.tool_registry.is_some())
+            .finish()
+    }
 }
 
 impl Default for ScriptContext {
@@ -44,6 +109,10 @@ impl Default for ScriptContext {
             agent_id: String::new(),
             globals: Default::default(),
             timeout: Duration::from_secs(30),
+            fs_config: FsBridgeConfig::default(),
+            net_config: NetBridgeConfig::default(),
+            permissions: PermissionSet::minimal(),
+            tool_registry: None,
         }
     }
 }
@@ -54,7 +123,17 @@ impl ScriptContext {
             agent_id: agent_id.into(),
             globals: Default::default(),
             timeout: Duration::from_secs(30),
+            fs_config: FsBridgeConfig::default(),
+            net_config: NetBridgeConfig::default(),
+            permissions: PermissionSet::minimal(),
+            tool_registry: None,
         }
+    }
+
+    /// Set the tool registry for executing tools from scripts.
+    pub fn with_tool_registry(mut self, registry: Arc<ToolRegistry>) -> Self {
+        self.tool_registry = Some(registry);
+        self
     }
 
     pub fn with_global(mut self, key: impl Into<String>, val: serde_json::Value) -> Self {
@@ -64,6 +143,30 @@ impl ScriptContext {
 
     pub fn with_timeout(mut self, d: Duration) -> Self {
         self.timeout = d;
+        self
+    }
+
+    /// Set filesystem bridge configuration.
+    pub fn with_fs_config(mut self, config: FsBridgeConfig) -> Self {
+        self.fs_config = config;
+        self
+    }
+
+    /// Set network bridge configuration.
+    pub fn with_net_config(mut self, config: NetBridgeConfig) -> Self {
+        self.net_config = config;
+        self
+    }
+
+    /// Set tool permissions.
+    pub fn with_permissions(mut self, permissions: PermissionSet) -> Self {
+        self.permissions = permissions;
+        self
+    }
+
+    /// Set the tool registry (builder-style for optional chaining).
+    pub fn with_registry(mut self, registry: Arc<ToolRegistry>) -> Self {
+        self.tool_registry = Some(registry);
         self
     }
 }

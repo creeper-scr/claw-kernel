@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/rust-1.83%2B-orange.svg)](https://www.rust-lang.org)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](docs/platform/)
-[![Tests](https://img.shields.io/badge/tests-389%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-389+%20passing-brightgreen.svg)](#)
 [![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](CHANGELOG.md)
 
 [中文文档 →](docs/README.zh.md)
@@ -48,17 +48,21 @@ claw-kernel = { git = "https://github.com/claw-project/claw-kernel", features = 
 ```
 
 ```rust
-use claw_provider::AnthropicProvider;
-use claw_tools::ToolRegistry;
-use claw_loop::AgentLoop;
+use std::sync::Arc;
+use claw_kernel::prelude::*;
+// 或明确使用:
+// use claw_kernel::provider::AnthropicProvider;
+// use claw_kernel::tools::ToolRegistry;
+// use claw_kernel::loop_builder::AgentLoopBuilder;
 
 #[tokio::main]
 async fn main() {
-    let agent = AgentLoop::builder()
-        .provider(AnthropicProvider::from_env())
-        .tools(ToolRegistry::new())
-        .max_turns(10)
-        .build();
+    let agent = AgentLoopBuilder::new()
+        .with_provider(Arc::new(AnthropicProvider::from_env().unwrap()))
+        .with_tools(Arc::new(ToolRegistry::new()))
+        .with_max_turns(10)
+        .build()
+        .unwrap();
     agent.run("Hello, world!").await.unwrap();
 }
 ```
@@ -81,11 +85,15 @@ See [`examples/`](examples/) for `simple-agent`, `custom-tool`, and `self-evolvi
 
 ## Platform Support
 
-| Platform | Sandbox | Isolation |
-|----------|---------|-----------|
-| Linux | seccomp-bpf + Namespaces | Strongest |
-| macOS | sandbox(7) / Seatbelt | Medium |
-| Windows | AppContainer + Job Objects | Medium |
+| Platform | Sandbox | Isolation | IPC Support |
+|----------|---------|-----------|-------------|
+| Linux | seccomp-bpf + Namespaces | Strongest | ✅ Unix Domain Socket |
+| macOS | sandbox(7) / Seatbelt | Medium | ✅ Unix Domain Socket |
+| Windows | AppContainer + Job Objects | Medium | 🚧 Skeleton included, fully available in v0.2.0 |
+
+> **Note:** Windows IPC foundation is included in v0.1.0 with basic skeleton structure. Full Named Pipe implementation will be available in v0.2.0 **(High Priority)**.
+>
+> **注意**: IPC 远程消息投递当前未实现，仅支持本地进程内通信。Windows IPC 计划在 v0.2.0 中实现。
 
 Platform guides: [Linux](docs/platform/linux.md) · [macOS](docs/platform/macos.md) · [Windows](docs/platform/windows.md)
 
@@ -97,7 +105,7 @@ Platform guides: [Linux](docs/platform/linux.md) · [macOS](docs/platform/macos.
 git clone https://github.com/claw-project/claw-kernel.git
 cd claw-kernel
 cargo build                          # default (Lua only)
-cargo test --workspace               # 389 tests
+cargo test --workspace               # 389+ tests
 cargo clippy --workspace -- -D warnings
 ```
 

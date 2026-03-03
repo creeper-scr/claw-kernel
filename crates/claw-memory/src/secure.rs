@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use crate::{
     config::MemorySecurityConfig,
@@ -12,7 +13,7 @@ use crate::{
 ///
 /// **Safe Mode** (`MemorySecurityConfig::safe_mode()`):
 /// - All write/read operations are restricted to `self.namespace`.
-/// - A per-namespace byte quota is checked before each `store()` call.
+/// - A per-namespace byte quota is atomically checked before each `store()` call.
 ///
 /// **Power Mode** (`MemorySecurityConfig::power_mode()`):
 /// - No restrictions; all calls are forwarded unchanged.
@@ -21,6 +22,10 @@ pub struct SecureMemoryStore {
     config: MemorySecurityConfig,
     /// The owning namespace.  In Safe Mode every item is forced into this namespace.
     namespace: String,
+    /// Lock to ensure atomic quota check and store operation.
+    /// This protects against race conditions when multiple tasks attempt
+    /// to store items concurrently while checking quota limits.
+    quota_lock: Mutex<()>,
 }
 
 impl SecureMemoryStore {
@@ -33,6 +38,7 @@ impl SecureMemoryStore {
             inner,
             config,
             namespace: namespace.into(),
+            quota_lock: Mutex::new(()),
         }
     }
 
@@ -44,43 +50,45 @@ impl SecureMemoryStore {
         item
     }
 
-    /// Enforce the per-namespace byte quota.
-    ///
-    /// `estimated_size` is added to the current usage before comparing against
-    /// the quota, so the check acts as a *pre-check* (write-ahead quota guard).
-    async fn check_quota(&self, estimated_size: u64) -> Result<(), MemoryError> {
-        if self.config.quota_bytes == u64::MAX {
-            return Ok(());
-        }
-        let used = self.inner.namespace_usage(&self.namespace).await?;
-        if used.saturating_add(estimated_size) > self.config.quota_bytes {
-            return Err(MemoryError::QuotaExceeded {
-                namespace: self.namespace.clone(),
-                used,
-                limit: self.config.quota_bytes,
-            });
-        }
-        Ok(())
+    /// Calculate the estimated byte size of a memory item.
+    fn estimate_size(&self, item: &MemoryItem) -> u64 {
+        item.content.len() as u64
+            + item.namespace.len() as u64
+            + item
+                .embedding
+                .as_ref()
+                .map(|e| e.len() as u64 * 4)
+                .unwrap_or(0)
     }
 }
 
 #[async_trait]
 impl MemoryStore for SecureMemoryStore {
     // ------------------------------------------------------------------
-    // store — quota check + namespace enforcement
+    // store — ATOMIC quota check + namespace enforcement
     // ------------------------------------------------------------------
     async fn store(&self, item: MemoryItem) -> Result<MemoryId, MemoryError> {
         // Estimate the byte footprint of this item before writing.
-        let estimated_size = item.content.len() as u64
-            + item.namespace.len() as u64
-            + item
-                .embedding
-                .as_ref()
-                .map(|e| e.len() as u64 * 4)
-                .unwrap_or(0);
-        self.check_quota(estimated_size).await?;
+        let estimated_size = self.estimate_size(&item);
+
+        // Enforce namespace before checking quota
         let item = self.enforce_namespace(item);
-        self.inner.store(item).await
+
+        // Power Mode: skip quota check and lock
+        if self.config.quota_bytes == u64::MAX {
+            return self.inner.store(item).await;
+        }
+
+        // Safe Mode: acquire lock to ensure atomic quota check + store
+        // This prevents race conditions when multiple concurrent stores
+        // would each see available quota and exceed the limit collectively.
+        let _guard = self.quota_lock.lock().await;
+
+        // Use atomic quota check if available (SQLite backend)
+        // This performs the check and store in a single database transaction
+        self.inner
+            .store_with_quota_check(item, estimated_size, self.config.quota_bytes)
+            .await
     }
 
     // ------------------------------------------------------------------
@@ -202,7 +210,6 @@ mod tests {
         let config = MemorySecurityConfig {
             namespace_isolation: true,
             quota_bytes: 1, // 1 byte — immediately exceeded
-            max_items: usize::MAX,
             semantic_search_enabled: true,
             max_embedding_dims: 64,
         };
@@ -286,7 +293,6 @@ mod tests {
         let config = MemorySecurityConfig {
             namespace_isolation: true,
             quota_bytes: 50,
-            max_items: usize::MAX,
             semantic_search_enabled: true,
             max_embedding_dims: 64,
         };
@@ -298,6 +304,52 @@ mod tests {
         assert!(
             matches!(result, Err(MemoryError::QuotaExceeded { .. })),
             "expected QuotaExceeded (precheck), got {result:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_atomic_quota_check_no_partial_write() {
+        // Test that atomic quota check prevents partial writes
+        // (i.e., if quota would be exceeded, nothing is written)
+        let inner = Arc::new(SqliteMemoryStore::in_memory().unwrap());
+
+        // First, store a small item to establish baseline usage
+        let baseline = make_item_with_id("atomic-ns", "baseline", "base-1");
+        inner.store(baseline).await.unwrap();
+
+        // Set quota to be just barely exceeded by a large item
+        let config = MemorySecurityConfig {
+            namespace_isolation: true,
+            quota_bytes: 50, // Very small quota
+            semantic_search_enabled: true,
+            max_embedding_dims: 64,
+        };
+        let secure = SecureMemoryStore::new(inner.clone(), config, "atomic-ns");
+
+        // Try to store a large item that exceeds quota
+        let big_content = "a".repeat(100); // 100 bytes > 50 quota
+        let big_item = make_item_with_id("atomic-ns", &big_content, "big-1");
+        let result = secure.store(big_item).await;
+
+        // Should fail with QuotaExceeded
+        assert!(
+            matches!(result, Err(MemoryError::QuotaExceeded { .. })),
+            "expected QuotaExceeded, got {result:?}"
+        );
+
+        // Verify the item was NOT partially written
+        let not_stored = inner.retrieve(&MemoryId::new("big-1")).await.unwrap();
+        assert!(
+            not_stored.is_none(),
+            "item that exceeds quota should not be stored"
+        );
+
+        // Verify baseline item still exists
+        let baseline_still_there = inner.retrieve(&MemoryId::new("base-1")).await.unwrap();
+        assert!(
+            baseline_still_there.is_some(),
+            "baseline item should still exist"
         );
     }
 }

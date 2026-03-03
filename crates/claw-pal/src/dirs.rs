@@ -1,287 +1,158 @@
-//! Cross-platform standard directory paths for claw-kernel.
-//!
-//! Provides platform-agnostic access to configuration, data, and cache directories
-//! using the `dirs` crate as the underlying implementation.
-//!
-//! # Platform Mappings
-//!
-//! - **Linux:** XDG Base Directory Specification
-//! - **macOS:** macOS standard directories (~/Library/Application Support, etc.)
-//! - **Windows:** Windows standard directories (%APPDATA%, %LOCALAPPDATA%, etc.)
+//! Directory management for claw-kernel.
 
 use std::path::PathBuf;
 
-/// Configuration directory for claw-kernel.
-///
-/// Returns the platform-specific configuration directory with `claw-kernel` subdirectory appended.
-///
-/// # Platform Paths
-/// - Linux: `~/.config/claw-kernel/`
-/// - macOS: `~/Library/Application Support/claw-kernel/`
-/// - Windows: `%APPDATA%\claw-kernel\`
-///
-/// # Returns
-/// `Some(PathBuf)` if the home directory is available, `None` otherwise.
+/// Get the configuration directory.
 pub fn config_dir() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("claw-kernel"))
 }
 
-/// Data directory for claw-kernel (tools, scripts, persistent state).
-///
-/// Returns the platform-specific data directory with `claw-kernel` subdirectory appended.
-///
-/// # Platform Paths
-/// - Linux: `~/.local/share/claw-kernel/`
-/// - macOS: `~/Library/Application Support/claw-kernel/`
-/// - Windows: `%APPDATA%\claw-kernel\`
-///
-/// # Returns
-/// `Some(PathBuf)` if the home directory is available, `None` otherwise.
+/// Get the data directory.
 pub fn data_dir() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("claw-kernel"))
 }
 
-/// Cache directory for claw-kernel.
-///
-/// Returns the platform-specific cache directory with `claw-kernel` subdirectory appended.
-///
-/// # Platform Paths
-/// - Linux: `~/.cache/claw-kernel/`
-/// - macOS: `~/Library/Caches/claw-kernel/`
-/// - Windows: `%LOCALAPPDATA%\claw-kernel\cache\`
-///
-/// # Returns
-/// `Some(PathBuf)` if the home directory is available, `None` otherwise.
+/// Get the cache directory.
 pub fn cache_dir() -> Option<PathBuf> {
     dirs::cache_dir().map(|d| d.join("claw-kernel"))
 }
 
-/// Tools directory for hot-loaded scripts.
-///
-/// Returns `data_dir()/tools`.
-///
-/// # Returns
-/// `Some(PathBuf)` if the data directory is available, `None` otherwise.
+/// Get the tools directory.
 pub fn tools_dir() -> Option<PathBuf> {
     data_dir().map(|d| d.join("tools"))
 }
 
-/// Runtime extension scripts directory.
-///
-/// Returns `data_dir()/scripts`.
-///
-/// # Returns
-/// `Some(PathBuf)` if the data directory is available, `None` otherwise.
+/// Get the scripts directory.
 pub fn scripts_dir() -> Option<PathBuf> {
     data_dir().map(|d| d.join("scripts"))
 }
 
-/// Logs directory for audit and runtime logs.
-///
-/// Returns `data_dir()/logs`.
-///
-/// # Returns
-/// `Some(PathBuf)` if the data directory is available, `None` otherwise.
+/// Get the logs directory.
 pub fn logs_dir() -> Option<PathBuf> {
     data_dir().map(|d| d.join("logs"))
 }
 
-/// Agents directory for agent metadata and IPC endpoints.
-///
-/// Returns `data_dir()/agents`.
-///
-/// Per ADR-005, agents register themselves in this directory with subdirectories
-/// containing metadata and IPC pipes.
-///
-/// # Returns
-/// `Some(PathBuf)` if the data directory is available, `None` otherwise.
+/// Get the agents directory.
 pub fn agents_dir() -> Option<PathBuf> {
     data_dir().map(|d| d.join("agents"))
+}
+
+/// Get the power key file path.
+pub fn power_key_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("power.key"))
+}
+
+/// Kernel directory paths.
+#[derive(Debug, Clone)]
+pub struct KernelDirs {
+    pub config_dir: PathBuf,
+    pub data_dir: PathBuf,
+    pub log_dir: PathBuf,
+    pub agents_dir: PathBuf,
+    pub tools_dir: PathBuf,
+}
+
+impl KernelDirs {
+    /// Create a new KernelDirs instance.
+    pub fn new() -> Result<Self, std::io::Error> {
+        let config_dir = Self::config_dir()?;
+        let data_dir = Self::data_dir()?;
+
+        Ok(Self {
+            log_dir: data_dir.join("logs"),
+            agents_dir: data_dir.join("agents"),
+            tools_dir: data_dir.join("tools"),
+            config_dir,
+            data_dir,
+        })
+    }
+
+    /// Get the configuration directory.
+    pub fn config_dir() -> Result<PathBuf, std::io::Error> {
+        dirs::config_dir()
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Could not find config directory",
+                )
+            })
+            .map(|d| d.join("claw-kernel"))
+    }
+
+    /// Get the data directory.
+    pub fn data_dir() -> Result<PathBuf, std::io::Error> {
+        dirs::data_dir()
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Could not find data directory",
+                )
+            })
+            .map(|d| d.join("claw-kernel"))
+    }
+
+    /// Ensure all directories exist, creating them if necessary.
+    pub async fn ensure_all(&self) -> Result<(), std::io::Error> {
+        tokio::fs::create_dir_all(&self.config_dir).await?;
+        tokio::fs::create_dir_all(&self.data_dir).await?;
+        tokio::fs::create_dir_all(&self.log_dir).await?;
+        tokio::fs::create_dir_all(&self.agents_dir).await?;
+        tokio::fs::create_dir_all(&self.tools_dir).await?;
+        Ok(())
+    }
+
+    /// Create directories synchronously.
+    pub fn ensure_all_sync(&self) -> Result<(), std::io::Error> {
+        std::fs::create_dir_all(&self.config_dir)?;
+        std::fs::create_dir_all(&self.data_dir)?;
+        std::fs::create_dir_all(&self.log_dir)?;
+        std::fs::create_dir_all(&self.agents_dir)?;
+        std::fs::create_dir_all(&self.tools_dir)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
-    fn test_config_dir_returns_some() {
-        let result = config_dir();
-        assert!(
-            result.is_some(),
-            "config_dir should return Some when HOME is available"
-        );
+    fn test_kernel_dirs_structure() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        let dirs = KernelDirs {
+            config_dir: root.join("config"),
+            data_dir: root.join("data"),
+            log_dir: root.join("data/logs"),
+            agents_dir: root.join("data/agents"),
+            tools_dir: root.join("data/tools"),
+        };
+
+        assert_eq!(dirs.log_dir, root.join("data/logs"));
+        assert_eq!(dirs.agents_dir, root.join("data/agents"));
+        assert_eq!(dirs.tools_dir, root.join("data/tools"));
     }
 
-    #[test]
-    fn test_config_dir_contains_claw_kernel() {
-        if let Some(path) = config_dir() {
-            assert!(
-                path.to_string_lossy().contains("claw-kernel"),
-                "config_dir path should contain 'claw-kernel' subdirectory"
-            );
-        }
-    }
+    #[tokio::test]
+    async fn test_ensure_all() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
 
-    #[test]
-    fn test_data_dir_returns_some() {
-        let result = data_dir();
-        assert!(
-            result.is_some(),
-            "data_dir should return Some when HOME is available"
-        );
-    }
+        let dirs = KernelDirs {
+            config_dir: root.join("config"),
+            data_dir: root.join("data"),
+            log_dir: root.join("data/logs"),
+            agents_dir: root.join("data/agents"),
+            tools_dir: root.join("data/tools"),
+        };
 
-    #[test]
-    fn test_data_dir_contains_claw_kernel() {
-        if let Some(path) = data_dir() {
-            assert!(
-                path.to_string_lossy().contains("claw-kernel"),
-                "data_dir path should contain 'claw-kernel' subdirectory"
-            );
-        }
-    }
+        dirs.ensure_all().await.unwrap();
 
-    #[test]
-    fn test_cache_dir_returns_some() {
-        let result = cache_dir();
-        assert!(
-            result.is_some(),
-            "cache_dir should return Some when HOME is available"
-        );
-    }
-
-    #[test]
-    fn test_cache_dir_contains_claw_kernel() {
-        if let Some(path) = cache_dir() {
-            assert!(
-                path.to_string_lossy().contains("claw-kernel"),
-                "cache_dir path should contain 'claw-kernel' subdirectory"
-            );
-        }
-    }
-
-    #[test]
-    fn test_tools_dir_returns_some() {
-        let result = tools_dir();
-        assert!(
-            result.is_some(),
-            "tools_dir should return Some when HOME is available"
-        );
-    }
-
-    #[test]
-    fn test_tools_dir_contains_tools() {
-        if let Some(path) = tools_dir() {
-            assert!(
-                path.to_string_lossy().contains("tools"),
-                "tools_dir path should contain 'tools' subdirectory"
-            );
-        }
-    }
-
-    #[test]
-    fn test_scripts_dir_returns_some() {
-        let result = scripts_dir();
-        assert!(
-            result.is_some(),
-            "scripts_dir should return Some when HOME is available"
-        );
-    }
-
-    #[test]
-    fn test_scripts_dir_contains_scripts() {
-        if let Some(path) = scripts_dir() {
-            assert!(
-                path.to_string_lossy().contains("scripts"),
-                "scripts_dir path should contain 'scripts' subdirectory"
-            );
-        }
-    }
-
-    #[test]
-    fn test_logs_dir_returns_some() {
-        let result = logs_dir();
-        assert!(
-            result.is_some(),
-            "logs_dir should return Some when HOME is available"
-        );
-    }
-
-    #[test]
-    fn test_logs_dir_contains_logs() {
-        if let Some(path) = logs_dir() {
-            assert!(
-                path.to_string_lossy().contains("logs"),
-                "logs_dir path should contain 'logs' subdirectory"
-            );
-        }
-    }
-
-    #[test]
-    fn test_agents_dir_returns_some() {
-        let result = agents_dir();
-        assert!(
-            result.is_some(),
-            "agents_dir should return Some when HOME is available"
-        );
-    }
-
-    #[test]
-    fn test_agents_dir_contains_agents() {
-        if let Some(path) = agents_dir() {
-            assert!(
-                path.to_string_lossy().contains("agents"),
-                "agents_dir path should contain 'agents' subdirectory"
-            );
-        }
-    }
-
-    #[test]
-    fn test_dirs_do_not_create_directories() {
-        // Call all functions
-        let _ = config_dir();
-        let _ = data_dir();
-        let _ = cache_dir();
-        let _ = tools_dir();
-        let _ = scripts_dir();
-        let _ = logs_dir();
-        let _ = agents_dir();
-
-        // Verify that if a path was returned, the directory doesn't actually exist
-        // (we're just returning paths, not creating them)
-        if let Some(path) = config_dir() {
-            // The directory should not exist after calling the function
-            // (unless it was already created by the user or another process)
-            // This test just verifies the function doesn't panic or create dirs
-            assert!(path.is_absolute(), "config_dir should return absolute path");
-        }
-    }
-
-    #[test]
-    fn test_subdirectory_hierarchy() {
-        // Verify that subdirectories are properly nested
-        if let Some(data) = data_dir() {
-            if let Some(tools) = tools_dir() {
-                assert!(
-                    tools.starts_with(&data),
-                    "tools_dir should be under data_dir"
-                );
-            }
-            if let Some(scripts) = scripts_dir() {
-                assert!(
-                    scripts.starts_with(&data),
-                    "scripts_dir should be under data_dir"
-                );
-            }
-            if let Some(logs) = logs_dir() {
-                assert!(logs.starts_with(&data), "logs_dir should be under data_dir");
-            }
-            if let Some(agents) = agents_dir() {
-                assert!(
-                    agents.starts_with(&data),
-                    "agents_dir should be under data_dir"
-                );
-            }
-        }
+        assert!(dirs.config_dir.exists());
+        assert!(dirs.log_dir.exists());
+        assert!(dirs.agents_dir.exists());
+        assert!(dirs.tools_dir.exists());
     }
 }

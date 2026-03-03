@@ -8,6 +8,7 @@ use crate::{
     error::ProviderError,
     openai::format::OpenAIFormat,
     openai::format::OpenAIResponse,
+    retry::RetryConfig,
     traits::{HttpTransport, LLMProvider, MessageFormat},
     transport::DefaultHttpTransport,
     types::{CompletionResponse, Delta, Message, Options},
@@ -17,6 +18,7 @@ pub struct DeepSeekProvider {
     api_key: String,
     model: String,
     transport: Arc<dyn HttpTransport>,
+    retry_config: Option<RetryConfig>,
 }
 
 impl DeepSeekProvider {
@@ -25,6 +27,7 @@ impl DeepSeekProvider {
             api_key: api_key.into(),
             model: model.into(),
             transport: Arc::new(DefaultHttpTransport::new("https://api.deepseek.com")),
+            retry_config: None,
         }
     }
 
@@ -33,6 +36,20 @@ impl DeepSeekProvider {
             .map_err(|_| ProviderError::Auth("DEEPSEEK_API_KEY not set".into()))?;
         let model = std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-chat".to_string());
         Ok(Self::new(api_key, model))
+    }
+
+    /// Set the retry configuration for this provider.
+    pub fn with_retry(mut self, config: RetryConfig) -> Self {
+        self.retry_config = Some(config);
+        // Recreate transport with retry config
+        let transport = DefaultHttpTransport::new("https://api.deepseek.com").with_retry(config);
+        self.transport = Arc::new(transport);
+        self
+    }
+
+    /// Get the current retry configuration.
+    pub fn retry_config(&self) -> Option<&RetryConfig> {
+        self.retry_config.as_ref()
     }
 
     fn base_url(&self) -> &str {
@@ -135,6 +152,7 @@ impl LLMProvider for DeepSeekProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::retry::RetryConfig;
 
     #[test]
     fn test_deepseek_provider_new() {
@@ -143,5 +161,13 @@ mod tests {
         assert_eq!(p.model, "deepseek-chat");
         assert_eq!(p.provider_id(), "deepseek");
         assert_eq!(p.model_id(), "deepseek-chat");
+        assert!(p.retry_config().is_none());
+    }
+
+    #[test]
+    fn test_deepseek_provider_with_retry() {
+        let config = RetryConfig::new().with_max_retries(3);
+        let p = DeepSeekProvider::new("ds-key", "deepseek-chat").with_retry(config);
+        assert_eq!(p.retry_config().unwrap().max_retries, 3);
     }
 }

@@ -151,14 +151,11 @@ pub enum Event {
 /// Agent-to-Agent message for inter-agent communication
 pub struct A2AMessage {
     pub from: AgentId,
-    pub to: Option<AgentId>,         // None = broadcast
-    pub message_type: A2AMessageType,
-    pub payload: Payload,            // Serialized message payload
-    pub correlation_id: Option<Uuid>,// For request-response correlation
-    pub timeout: Option<Duration>,   // Message timeout, default: 30s
-    pub priority: MessagePriority,   // Message priority, default: Normal
-    pub timestamp: SystemTime,       // Message creation time
+    pub to: AgentId,                 // Required: target agent ID
+    pub correlation_id: String,      // For request-response correlation
+    pub payload: serde_json::Value,  // Serialized message payload
 }
+// 注意: 当前代码缺少 message_type, timeout, priority, timestamp 字段
 
 pub enum Payload {
     Json(serde_json::Value),
@@ -196,6 +193,8 @@ pub enum ExtensionEvent {
 - Subagent lifecycle (spawn / kill / list / steer)
 - Health checking and auto-restart
 - Resource quotas (CPU/memory)
+
+> **注意**: IPC 远程消息投递当前未实现，仅支持本地进程内通信。Windows IPC 计划在 v0.2.0 中实现。
 
 ### Layer 2: Agent Kernel Protocol
 
@@ -259,16 +258,21 @@ pub trait HttpTransport: Send + Sync {
 ```rust
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
-    async fn complete(&self, messages: &[Message], opts: &Options) -> Result<CompletionResponse, ProviderError>;
-    async fn stream_complete(&self, messages: &[Message], opts: &Options) 
-        -> Result<BoxStream<'static, Result<Delta, ProviderError>>, ProviderError>;
-    fn token_count(&self, messages: &[Message]) -> usize;
+    fn provider_id(&self) -> &str;           // Provider identifier (e.g., "anthropic")
+    fn model_id(&self) -> &str;              // Default model ID
+    async fn complete(&self, messages: Vec<Message>, options: Options) -> Result<CompletionResponse, ProviderError>;
+    async fn complete_stream(&self, messages: Vec<Message>, options: Options) 
+        -> Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError>;
+    fn token_count(&self, text: &str) -> usize {  // Rough estimate: chars / 4
+        text.len() / 4
+    }
 }
 
 // 嵌入接口（单独 trait，因为不是所有 provider 都支持）
 #[async_trait]
 pub trait EmbeddingProvider: Send + Sync {
-    async fn embed(&self, texts: &[String]) -> Result<Vec<Embedding>, ProviderError>;
+    async fn embed(&self, text: &str) -> Result<Embedding, ProviderError>;
+    async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Embedding>, ProviderError>;
 }
 ```
 
@@ -292,12 +296,14 @@ pub enum Role {
 
 // LLM call options
 pub struct Options {
-    pub model: Option<String>,              // Model identifier, None = use provider default
-    pub temperature: Option<f32>,           // Range: 0.0-2.0, default: 1.0
-    pub max_tokens: Option<usize>,          // Maximum tokens to generate, default: 4096
+    pub model: String,                      // Model identifier (e.g., "claude-opus-4-6", "gpt-4o")
+    pub max_tokens: u32,                    // Maximum tokens to generate, default: 4096
+    pub temperature: f32,                   // Sampling temperature (0.0–2.0), default: 0.7
+    pub stream: bool,                       // Enable streaming response, default: false
+    pub system: Option<String>,             // System prompt (overrides system message in list)
     pub stop_sequences: Vec<String>,        // Stop sequences, default: empty
     pub tools: Option<Vec<ToolDef>>,        // Available tools for function calling
-    pub timeout: Duration,                  // Request timeout, default: 60s
+    pub timeout_seconds: u64,               // Request timeout in seconds, default: 60
     pub max_retries: u32,                   // Max retry attempts, default: 3
 }
 
@@ -338,11 +344,10 @@ See [ADR-006](../adr/006-message-format-abstraction.md) for the full architectur
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;           // Tool description for LLM
-    fn version(&self) -> &str;               // Semantic version, e.g., "1.0.0"
-    fn schema(&self) -> ToolSchema;
-    async fn execute(&self, params: serde_json::Value) -> Result<ToolResult, ToolError>;
-    fn permissions(&self) -> PermissionSet;
+    fn schema(&self) -> &ToolSchema;
+    fn permissions(&self) -> &PermissionSet;
     fn timeout(&self) -> Duration { Duration::from_secs(30) }  // Default timeout
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> ToolResult;
 }
 
 /// JSON Schema for tool parameters
@@ -350,10 +355,10 @@ pub type ToolSchema = serde_json::Value; // JSON Schema as JSON
 
 /// Result of tool execution
 pub struct ToolResult {
+    pub success: bool,                      // Whether execution succeeded
     pub output: Option<serde_json::Value>,  // Success output
     pub error: Option<ToolError>,           // Error information
-    pub logs: Vec<LogEntry>,                // Execution logs with timestamps
-    pub execution_time_ms: u64,             // Execution duration
+    pub duration_ms: u64,                   // Execution duration
 }
 
 pub struct ToolError {
@@ -373,16 +378,11 @@ pub enum ToolErrorCode {
 }
 
 pub struct LogEntry {
-    pub timestamp: SystemTime,
-    pub level: LogLevel,
-    pub message: String,
-}
-
-pub enum LogLevel {
-    Debug,
-    Info,
-    Warning,
-    Error,
+    pub timestamp_ms: u64,      // Unix timestamp in milliseconds
+    pub agent_id: String,       // ID of the calling agent
+    pub tool_name: String,      // Name of the tool executed
+    pub success: bool,          // Whether execution succeeded
+    pub duration_ms: u64,       // Execution duration in milliseconds
 }
 
 /// Permission set for tool execution
@@ -399,7 +399,7 @@ pub enum FsPermissions {
 }
 
 pub struct NetworkPermissions {
-    pub allowed_domains: Vec<String>,        // Supports wildcards like "*.example.com"
+    pub allowed_domains: HashSet<String>,    // Supports wildcards like "*.example.com"
     pub allowed_ports: Vec<u16>,             // Allowed ports (applies to all domains)
     pub allow_localhost: bool,               // Allow localhost connections
     pub allow_private_ips: bool,             // Allow private IP ranges
@@ -408,7 +408,7 @@ pub struct NetworkPermissions {
 impl Default for NetworkPermissions {
     fn default() -> Self {
         Self {
-            allowed_domains: vec![],
+            allowed_domains: HashSet::new(),
             allowed_ports: vec![443, 80],      // Default: HTTPS and HTTP
             allow_localhost: true,
             allow_private_ips: false,
@@ -437,10 +437,10 @@ pub struct RegisteredTool {
 
 impl ToolRegistry {
     pub fn new() -> Self;
-    pub fn register(&mut self, tool: Box<dyn Tool>) -> Result<(), RegistryError>;
-    pub fn unregister(&mut self, name: &str) -> Result<(), RegistryError>;
-    pub fn get(&self, name: &str) -> Option<&dyn Tool>;
-    pub fn list(&self) -> Vec<&ToolMeta>;
+    pub fn register(&self, tool: Box<dyn Tool>) -> Result<(), RegistryError>;
+    pub fn unregister(&self, name: &str) -> Result<(), RegistryError>;
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>>;
+    pub fn list(&self) -> Vec<ToolMeta>;
     pub async fn execute(&self, name: &str, params: serde_json::Value) -> Result<ToolResult, ToolError>;
     
     // Hot-loading support
@@ -504,35 +504,41 @@ pub struct AgentLoop {
 }
 
 pub struct AgentLoopConfig {
-    /// Default: 50 — Based on Claude 3.5 Sonnet average interaction depth for complex tasks (P95)
-    pub max_turns: Option<usize>,
-    /// Default: 8000 — ~6K input + 2K output, suitable for Claude 3.5 Sonnet context window
-    pub token_budget: Option<usize>,
+    /// Default: 20 — Prevents runaway loops, adjustable for complex tasks
+    pub max_turns: u32,
+    /// Default: 0 (unlimited) — Token budget for the session
+    pub token_budget: u64,
     /// System prompt for the agent
     pub system_prompt: Option<String>,
-    /// Default: true — Streaming improves perceived responsiveness
-    pub enable_streaming: bool,
+    /// Whether to enable tool use. Default: true
+    pub tool_use_enabled: bool,
     /// Default: 30s — Most API calls complete within 10s, buffer for network variance
-    pub tool_timeout: Duration,
+    pub tool_timeout_seconds: u64,
     /// Default: 10 — Prevents runaway recursive calls, based on common workflow complexity
     pub max_tool_calls_per_turn: usize,
+    /// Enable streaming response. Default: false
+    pub enable_streaming: bool,
 }
 
 impl Default for AgentLoopConfig {
     fn default() -> Self {
         Self {
-            max_turns: Some(50),
-            token_budget: Some(8000),
+            max_turns: 20,
+            token_budget: 0,
             system_prompt: None,
-            enable_streaming: true,
-            tool_timeout: Duration::from_secs(30),
+            tool_use_enabled: true,
+            tool_timeout_seconds: 30,
             max_tool_calls_per_turn: 10,
+            enable_streaming: false,
         }
     }
 }
 
 impl AgentLoop {
-    pub fn builder() -> AgentLoopBuilder;
+    /// Create a new builder for configuring the agent loop.
+    pub fn builder() -> AgentLoopBuilder {
+        AgentLoopBuilder::new()
+    }
     pub async fn run(&mut self, context: impl Into<ConversationContext>) -> Result<AgentResult>;
     pub async fn stream_run(&mut self, context: impl Into<ConversationContext>) -> Result<BoxStream<'static, StreamChunk>>;
     pub fn history(&self) -> &dyn HistoryManager;
@@ -596,31 +602,33 @@ impl From<&str> for ConversationContext {
 /// Core trait for the long-term memory subsystem (Layer 2)
 #[async_trait]
 pub trait MemoryStore: Send + Sync {
-    /// Compute embedding via claw-provider and persist to vector store
-    async fn insert_semantic(
-        &self,
-        content: &str,
-        metadata: serde_json::Value,
-    ) -> Result<MemoryId, MemoryError>;
+    /// Store a memory item. Returns the assigned ID.
+    async fn store(&self, item: MemoryItem) -> Result<MemoryId, MemoryError>;
 
-    /// Vector similarity search (top-k)
-    async fn search_semantic(
+    /// Retrieve a specific item by ID.
+    async fn retrieve(&self, id: &MemoryId) -> Result<Option<MemoryItem>, MemoryError>;
+
+    /// Search episodic history with a filter.
+    async fn search_episodic(
         &self,
-        query: &str,
+        filter: &EpisodicFilter,
+    ) -> Result<Vec<EpisodicEntry>, MemoryError>;
+
+    /// Semantic search: find items whose embeddings are closest to the query vector.
+    async fn semantic_search(
+        &self,
+        query_embedding: &[f32],
         top_k: usize,
     ) -> Result<Vec<MemoryItem>, MemoryError>;
 
-    /// Append a timestamped episodic log entry
-    async fn insert_episodic(
-        &self,
-        entry: EpisodicEntry,
-    ) -> Result<EpisodeId, MemoryError>;
+    /// Delete a memory item.
+    async fn delete(&self, id: &MemoryId) -> Result<(), MemoryError>;
 
-    /// Query episodic log by time range or tag filter
-    async fn query_episodic(
-        &self,
-        filter: EpisodicFilter,
-    ) -> Result<Vec<EpisodicEntry>, MemoryError>;
+    /// Clear all items in a namespace.
+    async fn clear_namespace(&self, namespace: &str) -> Result<usize, MemoryError>;
+
+    /// Total storage used by a namespace, in bytes (approximate).
+    async fn namespace_usage(&self, namespace: &str) -> Result<u64, MemoryError>;
 }
 
 pub struct MemoryItem {

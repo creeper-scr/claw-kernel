@@ -1,7 +1,7 @@
 ---
 title: claw-tools
 description: Tool registry, hot-loading, schema generation
-status: design-phase
+status: implemented
 version: "0.1.0"
 last_updated: "2026-03-01"
 language: en
@@ -134,18 +134,66 @@ pub struct PermissionSet {
     pub subprocess: SubprocessPolicy,
 }
 
-pub enum FsPermissions {
-    ReadOnly(Vec<PathBuf>),
-    ReadWrite(Vec<PathBuf>),
-    None,
+/// Filesystem permission for a tool.
+pub struct FsPermissions {
+    /// Allowed read paths (glob patterns or absolute paths).
+    pub read_paths: HashSet<String>,
+    /// Allowed write paths.
+    pub write_paths: HashSet<String>,
+}
+
+impl FsPermissions {
+    pub fn none() -> Self {
+        Self {
+            read_paths: HashSet::new(),
+            write_paths: HashSet::new(),
+        }
+    }
+    pub fn read_only(paths: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            read_paths: paths.into_iter().collect(),
+            write_paths: HashSet::new(),
+        }
+    }
+}
+
+/// Network permissions for a tool.
+pub struct NetworkPermissions {
+    /// Allowed domains (e.g., "api.example.com"). Empty = no network.
+    pub allowed_domains: HashSet<String>,
+    /// Allowed ports (applies to all domains). Default: [443, 80].
+    pub allowed_ports: Vec<u16>,
+    /// Allow localhost connections. Default: true.
+    pub allow_localhost: bool,
+    /// Allow private IP ranges. Default: false.
+    pub allow_private_ips: bool,
+}
+
+impl Default for NetworkPermissions {
+    fn default() -> Self {
+        Self {
+            allowed_domains: HashSet::new(),
+            allowed_ports: vec![443, 80],      // Default: HTTPS and HTTP
+            allow_localhost: true,
+            allow_private_ips: false,
+        }
+    }
+}
+
+/// Subprocess policy for a tool.
+pub enum SubprocessPolicy {
+    Denied,
+    Allowed,
 }
 ```
 
 Available permissions:
-- `fs.read` / `fs.write` — File system access
-- `net.http` — HTTP requests
-- `memory.read` / `memory.write` — Agent memory access
-- `process.spawn` — Subprocesses (Power Mode only)
+- `filesystem.read_paths` / `filesystem.write_paths` — File system access (HashSet of path patterns)
+- `network.allowed_domains` — HTTP requests to allowed domains
+- `network.allowed_ports` — Allowed ports (default: [443, 80])
+- `network.allow_localhost` — Allow localhost connections (default: true)
+- `network.allow_private_ips` — Allow private IP ranges (default: false)
+- `subprocess` — Subprocess spawning policy (Power Mode only)
 
 ---
 
@@ -219,7 +267,7 @@ impl Tool for CalculatorTool {
 ```toml
 [features]
 default = ["hot-loading"]
-hot-loading = ["notify"]  # File watching
+hot-loading = ["notify"]  # File watching (50ms debounce)
 schema-gen = ["schemars"]
 ```
 

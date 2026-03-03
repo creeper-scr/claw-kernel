@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    error::ProviderError,
     traits::MessageFormat,
     types::{CompletionResponse, Delta, FinishReason, Message, Options, Role, TokenUsage},
 };
@@ -200,7 +199,9 @@ impl MessageFormat for AnthropicFormat {
             serde_json::from_str(line).map_err(|e| AnthropicError::InvalidFormat(e.to_string()))?;
 
         match chunk {
-            AnthropicStreamChunk::ContentBlockDelta { delta } if delta.delta_type == "text_delta" => {
+            AnthropicStreamChunk::ContentBlockDelta { delta }
+                if delta.delta_type == "text_delta" =>
+            {
                 Ok(Some(Delta {
                     content: Some(delta.text),
                     tool_call: None,

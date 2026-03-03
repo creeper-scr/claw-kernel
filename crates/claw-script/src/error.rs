@@ -24,6 +24,8 @@ pub enum ScriptError {
     Timeout,
     #[error("engine not available: {0}")]
     EngineUnavailable(String),
+    #[error("recursion limit exceeded (max {0} levels)")]
+    RecursionLimitExceeded(u32),
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -65,5 +67,8 @@ mod tests {
 
         let e5 = ScriptError::EngineUnavailable("v8".to_string());
         assert_eq!(e5.to_string(), "engine not available: v8");
+
+        let e6 = ScriptError::RecursionLimitExceeded(32);
+        assert_eq!(e6.to_string(), "recursion limit exceeded (max 32 levels)");
     }
 }

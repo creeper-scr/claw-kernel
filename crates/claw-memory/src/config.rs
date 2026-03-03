@@ -7,8 +7,6 @@ pub struct MemorySecurityConfig {
     pub namespace_isolation: bool,
     /// Per-namespace storage quota in bytes (default: 50 MB).
     pub quota_bytes: u64,
-    /// Maximum number of items per namespace.
-    pub max_items: usize,
     /// Whether semantic search is enabled.
     pub semantic_search_enabled: bool,
     /// Maximum embedding dimensions to store.
@@ -20,7 +18,6 @@ impl Default for MemorySecurityConfig {
         Self {
             namespace_isolation: true,
             quota_bytes: 50 * 1024 * 1024, // 50 MB
-            max_items: 10_000,
             semantic_search_enabled: true,
             max_embedding_dims: 64,
         }
@@ -37,7 +34,6 @@ impl MemorySecurityConfig {
         Self {
             namespace_isolation: false,
             quota_bytes: u64::MAX,
-            max_items: usize::MAX,
             semantic_search_enabled: true,
             max_embedding_dims: 1024,
         }
@@ -56,7 +52,6 @@ mod tests {
         let cfg = MemorySecurityConfig::safe_mode();
         assert!(cfg.namespace_isolation);
         assert_eq!(cfg.quota_bytes, 50 * 1024 * 1024);
-        assert_eq!(cfg.max_items, 10_000);
         assert!(cfg.semantic_search_enabled);
         assert_eq!(cfg.max_embedding_dims, 64);
     }
@@ -66,7 +61,6 @@ mod tests {
         let cfg = MemorySecurityConfig::power_mode();
         assert!(!cfg.namespace_isolation);
         assert_eq!(cfg.quota_bytes, u64::MAX);
-        assert_eq!(cfg.max_items, usize::MAX);
         assert!(cfg.semantic_search_enabled);
         assert_eq!(cfg.max_embedding_dims, 1024);
     }

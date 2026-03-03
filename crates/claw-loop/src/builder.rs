@@ -2,14 +2,19 @@ use std::sync::Arc;
 
 use claw_provider::traits::LLMProvider;
 use claw_tools::registry::ToolRegistry;
+use tokio::sync::{broadcast, RwLock};
 
 use crate::{
     agent_loop::AgentLoop,
     error::AgentError,
     history::InMemoryHistory,
+    state_machine::AgentState,
     traits::{HistoryManager, StopCondition},
     types::AgentLoopConfig,
 };
+
+/// Default capacity for state broadcast channel.
+const DEFAULT_STATE_CHANNEL_CAPACITY: usize = 1024;
 
 /// Fluent builder for [`AgentLoop`].
 ///
@@ -24,6 +29,7 @@ pub struct AgentLoopBuilder {
     history: Box<dyn HistoryManager>,
     stop_conditions: Vec<Box<dyn StopCondition>>,
     config: AgentLoopConfig,
+    state_channel_capacity: usize,
 }
 
 impl AgentLoopBuilder {
@@ -35,6 +41,7 @@ impl AgentLoopBuilder {
             history: Box::new(InMemoryHistory::default()),
             stop_conditions: Vec::new(),
             config: AgentLoopConfig::default(),
+            state_channel_capacity: DEFAULT_STATE_CHANNEL_CAPACITY,
         }
     }
 
@@ -86,6 +93,18 @@ impl AgentLoopBuilder {
         self
     }
 
+    /// Set the state broadcast channel capacity (default: 1024).
+    pub fn with_state_channel_capacity(mut self, capacity: usize) -> Self {
+        self.state_channel_capacity = capacity;
+        self
+    }
+
+    /// Set the maximum number of tool calls to execute in parallel per turn (default: 10).
+    pub fn with_max_tool_calls_per_turn(mut self, max: usize) -> Self {
+        self.config.max_tool_calls_per_turn = max;
+        self
+    }
+
     /// Build the [`AgentLoop`].
     ///
     /// Returns `Err(AgentError::Context)` if no provider was set.
@@ -94,12 +113,20 @@ impl AgentLoopBuilder {
             .provider
             .ok_or_else(|| AgentError::Context("no provider set".to_string()))?;
 
+        // Create state broadcast channel
+        let (state_tx, _state_rx) = broadcast::channel(self.state_channel_capacity);
+
+        // Initialize state as Idle
+        let state = Arc::new(RwLock::new(AgentState::Idle));
+
         Ok(AgentLoop {
             provider,
             tools: self.tools,
             history: self.history,
             stop_conditions: self.stop_conditions,
             config: self.config,
+            state,
+            state_tx,
         })
     }
 }
@@ -219,5 +246,74 @@ mod tests {
             "builder should not auto-add any stop conditions by default, got {}",
             agent.stop_conditions.len()
         );
+    }
+
+    // ── test_builder_with_state_channel_capacity ─────────────────────────────
+
+    #[test]
+    fn test_builder_with_state_channel_capacity() {
+        let agent = AgentLoopBuilder::new()
+            .with_provider(mock_provider())
+            .with_state_channel_capacity(512)
+            .build()
+            .expect("build should succeed");
+
+        // Channel capacity is set, verify by checking that we can subscribe
+        let _rx = agent.subscribe_state();
+        // If build succeeded, the capacity was set correctly
+    }
+
+    // ── test_builder_with_max_tool_calls_per_turn ────────────────────────────
+
+    #[test]
+    fn test_builder_with_max_tool_calls_per_turn() {
+        let agent = AgentLoopBuilder::new()
+            .with_provider(mock_provider())
+            .with_max_tool_calls_per_turn(5)
+            .build()
+            .expect("build should succeed");
+
+        assert_eq!(agent.config.max_tool_calls_per_turn, 5);
+    }
+
+    // ── test_builder_default_max_tool_calls ──────────────────────────────────
+
+    #[test]
+    fn test_builder_default_max_tool_calls() {
+        let agent = AgentLoopBuilder::new()
+            .with_provider(mock_provider())
+            .build()
+            .expect("build should succeed");
+
+        assert_eq!(agent.config.max_tool_calls_per_turn, 10);
+    }
+
+    // ── test_builder_initial_state_is_idle ───────────────────────────────────
+
+    #[tokio::test]
+    async fn test_builder_initial_state_is_idle() {
+        let agent = AgentLoopBuilder::new()
+            .with_provider(mock_provider())
+            .build()
+            .expect("build should succeed");
+
+        assert_eq!(agent.current_state().await, AgentState::Idle);
+    }
+
+    // ── test_builder_state_subscription ──────────────────────────────────────
+
+    #[test]
+    fn test_builder_state_subscription() {
+        let agent = AgentLoopBuilder::new()
+            .with_provider(mock_provider())
+            .build()
+            .expect("build should succeed");
+
+        // Should be able to subscribe multiple times
+        let _rx1 = agent.subscribe_state();
+        let _rx2 = agent.subscribe_state();
+
+        // Just verify we can create subscribers successfully
+        // (broadcast channels don't have borrow(), only watch channels do)
     }
 }

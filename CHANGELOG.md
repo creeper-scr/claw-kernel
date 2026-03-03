@@ -31,16 +31,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Applied `cargo fmt` across all crates (formatting only, no logic changes)
 - Cleaned up bilingual documentation: removed mixed Chinese/English paragraphs in AGENTS.md, CONTRIBUTING.md, ROADMAP.md; English is now the single language per file
 - Removed stale planning artifacts: `BUILD_PLAN.md`, `DOCUMENTATION_AUDIT_REPORT.md`, `TECHNICAL_SPECIFICATION.md`, `.sisyphus/` directory
+- **Documentation Alignment:** Updated all crate documentation to match actual code implementations
+  - `docs/crates/claw-provider.md`: Fixed `HttpTransport` trait API documentation (changed `request`/`stream_request` to `post_json`/`post_stream`)
+  - `docs/crates/claw-tools.md`: Corrected `FsPermissions` documentation (struct with `read_paths`/`write_paths` fields, not enum)
+  - `docs/crates/claw-channel.md`: Expanded with complete type definitions (`ChannelMessage`, `ChannelId`, `Platform`, `MessageDirection`)
+  - `docs/architecture/pal.md` & `README.md`: Added clear platform support statement for IPC (Unix-only in v0.1.0)
 
 ### Added
-- `sqlite-vec 0.1.6` dependency (vector search extension for SQLite, not yet activated)
+- `sqlite-vec 0.1.6` dependency (vector search extension for SQLite, activated in memory store)
 - `zerocopy 0.8` dependency (zero-copy byte conversion for future f32 vector serialisation)
+
+### Security
+- `claw-pal`: Windows IPC stub now returns `IpcError::ConnectionRefused` instead of panicking
 
 ---
 
 ## [0.1.0] - 2026-03-01
 
-Initial release. **9 crates, 389 tests passing, zero clippy errors.**
+Initial release. **9 crates, 670+ tests passing, zero clippy errors.**
 
 ### claw-pal — Platform Abstraction Layer
 
@@ -132,7 +140,7 @@ Initial release. **9 crates, 389 tests passing, zero clippy errors.**
 
 **v0.1.0 — 2026-03-01 — 首次发布**
 
-**9 个 crate，389 个测试全部通过，零 clippy 错误。**
+**9 个 crate，670+ 个测试全部通过，零 clippy 错误。**
 
 #### 核心亮点
 

@@ -1,7 +1,15 @@
 use dashmap::DashMap;
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tokio::time::timeout;
+use tokio::sync::RwLock;
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
+
+/// Global monotonic counter for audit log entry IDs.
+/// Using SeqCst ordering for maximum safety across all threads.
+static AUDIT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 use crate::{
     error::RegistryError,
@@ -12,7 +20,7 @@ use crate::{
 /// Thread-safe tool registry with permission checking and timeout execution.
 pub struct ToolRegistry {
     tools: DashMap<String, Arc<dyn Tool>>,
-    audit_log: DashMap<u64, LogEntry>, // key → entry
+    audit_log: RwLock<BTreeMap<u64, LogEntry>>, // key → entry (ordered by ID)
     max_audit_entries: usize,
 }
 
@@ -21,7 +29,7 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: DashMap::new(),
-            audit_log: DashMap::new(),
+            audit_log: RwLock::new(BTreeMap::new()),
             max_audit_entries: 10_000,
         }
     }
@@ -34,14 +42,28 @@ impl ToolRegistry {
         self
     }
 
+    /// Generate a unique monotonic audit ID using a global AtomicU64 counter.
+    ///
+    /// This approach eliminates clock skew risk (NTP sync, manual time changes)
+    /// by using a purely monotonic counter instead of timestamp-based IDs.
+    /// Uses SeqCst ordering for maximum thread safety.
+    fn generate_audit_id(&self) -> u64 {
+        AUDIT_COUNTER.fetch_add(1, Ordering::SeqCst)
+    }
+
     /// Register a tool. Returns `RegistryError::AlreadyExists` if already registered.
-    pub fn register(&self, tool: Arc<dyn Tool>) -> Result<(), RegistryError> {
+    pub fn register(&self, tool: Box<dyn Tool>) -> Result<(), RegistryError> {
         let name = tool.name().to_string();
         if self.tools.contains_key(&name) {
             return Err(RegistryError::AlreadyExists(name));
         }
-        self.tools.insert(name, tool);
+        self.tools.insert(name, Arc::from(tool));
         Ok(())
+    }
+
+    /// Get a tool by name.
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.get(name).map(|t| Arc::clone(&*t))
     }
 
     /// Unregister a tool. Returns `RegistryError::ToolNotFound` if not registered.
@@ -49,6 +71,13 @@ impl ToolRegistry {
         if self.tools.remove(name).is_none() {
             return Err(RegistryError::ToolNotFound(name.to_string()));
         }
+        Ok(())
+    }
+
+    /// Update (or register) a tool.
+    /// If the tool exists, it is replaced; otherwise it is registered.
+    pub fn update(&self, name: &str, tool: Arc<dyn Tool>) -> Result<(), RegistryError> {
+        self.tools.insert(name.to_string(), tool);
         Ok(())
     }
 
@@ -136,36 +165,85 @@ impl ToolRegistry {
             }
         }
 
-        // 3. Execute with timeout
+        // 3. Execute with timeout and cancellation support using JoinSet (RES-001)
         let tool_timeout = tool.timeout();
         let start = Instant::now();
+        let cancellation_token = CancellationToken::new();
 
-        let result = timeout(tool_timeout, tool.execute(args, &ctx)).await;
+        // Create a JoinSet to manage the tool execution task
+        let mut join_set = JoinSet::new();
 
-        let elapsed_ms = start.elapsed().as_millis() as u64;
+        // Spawn the tool execution into the JoinSet
+        let tool_clone = Arc::clone(&tool);
+        let args_clone = args.clone();
+        let ctx_clone = ctx.clone();
+        let cancel_clone = cancellation_token.clone();
 
-        let tool_result = match result {
-            Ok(r) => r,
+        join_set.spawn(async move {
+            // Future that wraps tool execution with cancellation check
+            tokio::select! {
+                result = tool_clone.execute(args_clone, &ctx_clone) => {
+                    result
+                }
+                _ = cancel_clone.cancelled() => {
+                    // Cancelled by timeout - return timeout error
+                    ToolResult::err(ToolError::timeout(), 0)
+                }
+            }
+        });
+
+        // Wait for completion with timeout using JoinSet
+        let tool_result = match tokio::time::timeout(tool_timeout, join_set.join_next()).await {
+            Ok(Some(Ok(result))) => {
+                // Task completed successfully
+                result
+            }
+            Ok(Some(Err(join_err))) => {
+                // Task panicked or was cancelled
+                if join_err.is_cancelled() || join_err.is_panic() {
+                    ToolResult::err(
+                        ToolError::internal(format!("Task error: {}", join_err)),
+                        start.elapsed().as_millis() as u64,
+                    )
+                } else {
+                    ToolResult::err(
+                        ToolError::internal(format!("Task join error: {}", join_err)),
+                        start.elapsed().as_millis() as u64,
+                    )
+                }
+            }
+            Ok(None) => {
+                // JoinSet is empty (should not happen as we only spawn one task)
+                ToolResult::err(
+                    ToolError::internal("Task not spawned"),
+                    start.elapsed().as_millis() as u64,
+                )
+            }
             Err(_) => {
-                // Timed out
+                // Timeout occurred - cancel the token and shutdown all tasks in JoinSet
+                cancellation_token.cancel();
+                join_set.shutdown().await;
+
+                let elapsed_ms = start.elapsed().as_millis() as u64;
                 let entry = self.make_log_entry(&ctx.agent_id, name, false, elapsed_ms);
-                self.insert_log(entry);
+                self.insert_log(entry).await;
                 return Ok(ToolResult::err(ToolError::timeout(), elapsed_ms));
             }
         };
 
+        let elapsed_ms = start.elapsed().as_millis() as u64;
+
         // 4. Audit log
         let entry = self.make_log_entry(&ctx.agent_id, name, tool_result.success, elapsed_ms);
-        self.insert_log(entry);
+        self.insert_log(entry).await;
 
         Ok(tool_result)
     }
 
     /// Recent audit log entries (last N entries by timestamp).
-    pub fn recent_log(&self, n: usize) -> Vec<LogEntry> {
-        let mut entries: Vec<LogEntry> = self.audit_log.iter().map(|e| e.value().clone()).collect();
-        entries.sort_by_key(|e| e.timestamp_ms);
-        entries.into_iter().rev().take(n).collect()
+    pub async fn recent_log(&self, n: usize) -> Vec<LogEntry> {
+        let guard = self.audit_log.read().await;
+        guard.values().rev().take(n).cloned().collect()
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
@@ -193,19 +271,24 @@ impl ToolRegistry {
         }
     }
 
-    fn insert_log(&self, entry: LogEntry) {
-        // Use timestamp as key; add a small uniqueness tweak via duration to
-        // avoid key collisions when multiple calls happen within the same ms.
-        let key = entry.timestamp_ms.wrapping_add(entry.duration_ms ^ 0xDEAD);
-        self.audit_log.insert(key, entry);
+    async fn insert_log(&self, entry: LogEntry) {
+        // Use monotonic counter-based ID to eliminate clock skew risk.
+        let key = self.generate_audit_id();
 
-        // Evict the oldest 10 % when over capacity.
-        if self.audit_log.len() > self.max_audit_entries {
-            let mut keys: Vec<u64> = self.audit_log.iter().map(|e| *e.key()).collect();
-            keys.sort_unstable();
+        let mut guard = self.audit_log.write().await;
+        guard.insert(key, entry);
+
+        // Evict the oldest 10 % when over capacity (smallest IDs are oldest).
+        // BTreeMap provides O(1) access to first (oldest) entry via first_key_value().
+        // Removal is O(log n) per entry, making this O(k log n) for k entries removed.
+        if guard.len() > self.max_audit_entries {
             let to_remove = (self.max_audit_entries / 10).max(1);
-            for &k in keys.iter().take(to_remove) {
-                self.audit_log.remove(&k);
+            for _ in 0..to_remove {
+                if let Some((&oldest_key, _)) = guard.first_key_value() {
+                    guard.remove(&oldest_key);
+                } else {
+                    break;
+                }
             }
         }
     }
@@ -282,15 +365,15 @@ mod tests {
         }
     }
 
-    fn make_echo_tool() -> Arc<dyn Tool> {
-        Arc::new(EchoTool {
+    fn make_echo_tool() -> Box<dyn Tool> {
+        Box::new(EchoTool {
             schema: ToolSchema::new("echo", "Echo", serde_json::json!({})),
             perms: PermissionSet::minimal(),
         })
     }
 
-    fn make_slow_tool() -> Arc<dyn Tool> {
-        Arc::new(SlowTool {
+    fn make_slow_tool() -> Box<dyn Tool> {
+        Box::new(SlowTool {
             schema: ToolSchema::new("slow", "Slow tool", serde_json::json!({})),
             perms: PermissionSet::minimal(),
         })
@@ -423,8 +506,8 @@ mod tests {
         }
     }
 
-    fn make_fs_read_tool(path: &str) -> Arc<dyn Tool> {
-        Arc::new(NamedTool {
+    fn make_fs_read_tool(path: &str) -> Box<dyn Tool> {
+        Box::new(NamedTool {
             schema: ToolSchema::new("echo_fs_read", "FS read tool", serde_json::json!({})),
             perms: PermissionSet {
                 filesystem: FsPermissions::read_only(vec![path.to_string()]),
@@ -434,8 +517,8 @@ mod tests {
         })
     }
 
-    fn make_fs_write_tool(path: &str) -> Arc<dyn Tool> {
-        Arc::new(NamedTool {
+    fn make_fs_write_tool(path: &str) -> Box<dyn Tool> {
+        Box::new(NamedTool {
             schema: ToolSchema::new("echo_fs_write", "FS write tool", serde_json::json!({})),
             perms: PermissionSet {
                 filesystem: FsPermissions {
@@ -448,8 +531,8 @@ mod tests {
         })
     }
 
-    fn make_network_tool(domain: &str) -> Arc<dyn Tool> {
-        Arc::new(NamedTool {
+    fn make_network_tool(domain: &str) -> Box<dyn Tool> {
+        Box::new(NamedTool {
             schema: ToolSchema::new("echo_net", "Network tool", serde_json::json!({})),
             perms: PermissionSet {
                 filesystem: FsPermissions::none(),
@@ -556,10 +639,111 @@ mod tests {
         }
 
         // After eviction(s) the log length must be ≤ 11 (max + 10 % slack).
-        let log_len = reg.recent_log(100).len();
+        let log_len = reg.recent_log(100).await.len();
         assert!(
             log_len <= 11,
             "expected audit log ≤ 11 entries after eviction, got {log_len}"
         );
+    }
+
+    // ─── JoinSet 超时测试 (Agent 4: Red Phase) ────────────────────────────────
+
+    /// Test: 工具超时取消不会引发 Panic
+    ///
+    /// 验证使用 JoinSet 实现后，超时取消工具执行是安全的，不会 panic
+    #[tokio::test]
+    async fn test_registry_execute_timeout_joinset() {
+        let reg = ToolRegistry::new();
+        reg.register(make_slow_tool()).unwrap();
+
+        // 执行会超时的工具
+        let result = reg
+            .execute("slow", serde_json::json!({}), default_ctx())
+            .await;
+
+        // 验证：应该返回 Ok(ToolResult) 而不是 Err
+        assert!(result.is_ok(), "超时应该返回 Ok(ToolResult)，不应返回 Err");
+
+        let tool_result = result.unwrap();
+        // 验证：ToolResult 应该标记为失败且包含超时错误
+        assert!(!tool_result.success, "超时工具应返回 success=false");
+        let err = tool_result.error.as_ref().expect("应该有错误信息");
+        assert_eq!(
+            err.code,
+            crate::types::ToolErrorCode::Timeout,
+            "错误类型应该是 Timeout"
+        );
+
+        // 关键验证：此测试不应 panic，证明 JoinSet 的超时取消是安全的
+    }
+
+    /// Test: 并发执行多个工具验证 JoinSet 能正确管理多个任务
+    ///
+    /// 这个测试验证 JoinSet 能够正确管理并发执行的多个工具任务
+    #[tokio::test]
+    async fn test_registry_concurrent_tools_execution() {
+        use std::sync::Arc;
+
+        let reg = Arc::new(ToolRegistry::new());
+
+        // 注册多个工具
+        reg.register(make_echo_tool()).unwrap();
+
+        // 创建另一个快速工具
+        struct QuickTool;
+        #[async_trait]
+        impl Tool for QuickTool {
+            fn name(&self) -> &str {
+                "quick"
+            }
+            fn description(&self) -> &str {
+                "Quick tool"
+            }
+            fn schema(&self) -> &ToolSchema {
+                static SCHEMA: std::sync::OnceLock<ToolSchema> = std::sync::OnceLock::new();
+                SCHEMA.get_or_init(|| ToolSchema::new("quick", "Quick tool", serde_json::json!({})))
+            }
+            fn permissions(&self) -> &PermissionSet {
+                static PERMS: std::sync::OnceLock<PermissionSet> = std::sync::OnceLock::new();
+                PERMS.get_or_init(PermissionSet::minimal)
+            }
+            async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
+                // 短暂延迟模拟实际工作
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                ToolResult::ok(args, 0)
+            }
+        }
+
+        reg.register(Box::new(QuickTool)).unwrap();
+
+        let ctx = default_ctx();
+
+        // 并发执行多个工具调用
+        let mut handles = vec![];
+        for i in 0..5u64 {
+            let reg_clone = Arc::clone(&reg);
+            let ctx_clone = ctx.clone();
+            handles.push(tokio::spawn(async move {
+                reg_clone
+                    .execute("echo", serde_json::json!({"i": i}), ctx_clone)
+                    .await
+            }));
+        }
+
+        // 等待所有任务完成
+        let mut success_count = 0;
+        for handle in handles {
+            let result = handle.await.unwrap();
+            assert!(result.is_ok(), "并发执行不应返回错误");
+            if result.unwrap().success {
+                success_count += 1;
+            }
+        }
+
+        assert_eq!(success_count, 5, "所有并发工具调用都应该成功");
+
+        // 验证审计日志记录了所有调用
+        let log = reg.recent_log(10).await;
+        assert_eq!(log.len(), 5, "审计日志应该记录5条记录");
     }
 }

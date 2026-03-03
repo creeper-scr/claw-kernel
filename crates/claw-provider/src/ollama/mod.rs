@@ -9,6 +9,7 @@ use futures::{Stream, StreamExt};
 use crate::{
     error::ProviderError,
     ollama::format::OllamaFormat,
+    retry::RetryConfig,
     traits::{HttpTransport, LLMProvider, MessageFormat},
     transport::DefaultHttpTransport,
     types::{CompletionResponse, Delta, Message, Options},
@@ -18,6 +19,7 @@ pub struct OllamaProvider {
     model: String,
     base_url: String,
     transport: Arc<dyn HttpTransport>,
+    retry_config: Option<RetryConfig>,
 }
 
 impl OllamaProvider {
@@ -27,6 +29,7 @@ impl OllamaProvider {
             model: model.into(),
             base_url: base_url.clone(),
             transport: Arc::new(DefaultHttpTransport::new(base_url)),
+            retry_config: None,
         }
     }
 
@@ -42,6 +45,20 @@ impl OllamaProvider {
         let base_url = std::env::var("OLLAMA_BASE_URL")
             .unwrap_or_else(|_| "http://localhost:11434".to_string());
         Ok(Self::new(model).with_base_url(base_url))
+    }
+
+    /// Set the retry configuration for this provider.
+    pub fn with_retry(mut self, config: RetryConfig) -> Self {
+        self.retry_config = Some(config);
+        // Recreate transport with retry config
+        let transport = DefaultHttpTransport::new(self.base_url.clone()).with_retry(config);
+        self.transport = Arc::new(transport);
+        self
+    }
+
+    /// Get the current retry configuration.
+    pub fn retry_config(&self) -> Option<&RetryConfig> {
+        self.retry_config.as_ref()
     }
 
     fn build_headers(&self) -> Vec<(String, String)> {
@@ -80,7 +97,9 @@ impl LLMProvider for OllamaProvider {
             .collect();
         let raw = self.transport.post_json(&url, &headers, &body).await?;
         let response: <OllamaFormat as MessageFormat>::Response = serde_json::from_value(raw)
-            .map_err(|e| ProviderError::Serialization(format!("Failed to parse response: {}", e)))?;
+            .map_err(|e| {
+                ProviderError::Serialization(format!("Failed to parse response: {}", e))
+            })?;
         OllamaFormat::parse_response(response).map_err(|e| ProviderError::Other(e.to_string()))
     }
 
@@ -109,13 +128,11 @@ impl LLMProvider for OllamaProvider {
         let delta_stream = byte_stream.flat_map(move |chunk_result| {
             let deltas: Vec<Result<Delta, ProviderError>> = match chunk_result {
                 Err(e) => vec![Err(e)],
-                Ok(bytes) => {
-                    match OllamaFormat::parse_stream_chunk(&bytes) {
-                        Ok(Some(delta)) => vec![Ok(delta)],
-                        Ok(None) => vec![],
-                        Err(e) => vec![Err(ProviderError::Other(e.to_string()))],
-                    }
-                }
+                Ok(bytes) => match OllamaFormat::parse_stream_chunk(&bytes) {
+                    Ok(Some(delta)) => vec![Ok(delta)],
+                    Ok(None) => vec![],
+                    Err(e) => vec![Err(ProviderError::Other(e.to_string()))],
+                },
             };
             futures::stream::iter(deltas)
         });
@@ -127,6 +144,7 @@ impl LLMProvider for OllamaProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::retry::RetryConfig;
 
     #[test]
     fn test_ollama_provider_new() {
@@ -135,5 +153,13 @@ mod tests {
         assert_eq!(p.base_url, "http://localhost:11434");
         assert_eq!(p.provider_id(), "ollama");
         assert_eq!(p.model_id(), "llama3");
+        assert!(p.retry_config().is_none());
+    }
+
+    #[test]
+    fn test_ollama_provider_with_retry() {
+        let config = RetryConfig::new().with_max_retries(3);
+        let p = OllamaProvider::new("llama3").with_retry(config);
+        assert_eq!(p.retry_config().unwrap().max_retries, 3);
     }
 }

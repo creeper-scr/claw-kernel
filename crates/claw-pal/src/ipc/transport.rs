@@ -1,5 +1,9 @@
 //! Core IPC transport backed by `interprocess` local sockets.
 //!
+//! **v0.1.0 Platform Support:** Unix-like systems only (Linux, macOS).
+//! Windows Named Pipe support is planned for v0.2.0. On Windows, operations
+//! will return `IpcError::ConnectionRefused`.
+//!
 //! Design: a single background reader task drains the socket and forwards
 //! frames via an `mpsc` channel.  The write path is serialised through a
 //! `Mutex<OwnedWriteHalf>`.  This deliberately avoids concurrent bi-directional
@@ -104,7 +108,7 @@ unsafe impl Sync for InterprocessTransport {}
 impl IpcTransport for InterprocessTransport {
     /// Return metadata for a client connection endpoint.
     ///
-    /// Does not establish an actual socket connection; use [`new_client`] for that.
+    /// Does not establish an actual socket connection; use `new_client` for that.
     async fn connect(endpoint: &str) -> Result<IpcConnection, IpcError> {
         if endpoint.is_empty() {
             return Err(IpcError::InvalidMessage);
@@ -114,7 +118,7 @@ impl IpcTransport for InterprocessTransport {
 
     /// Return metadata for a listener endpoint.
     ///
-    /// Does not bind an actual socket; use [`new_server`] for that.
+    /// Does not bind an actual socket; use `new_server` for that.
     async fn listen(endpoint: &str) -> Result<IpcListener, IpcError> {
         if endpoint.is_empty() {
             return Err(IpcError::InvalidMessage);
@@ -146,6 +150,8 @@ impl IpcTransport for InterprocessTransport {
 // ---------------------------------------------------------------------------
 // Windows stub – Named Pipe support is future work.
 // ---------------------------------------------------------------------------
+
+// TODO: Implement Named Pipe for v0.2.0
 #[cfg(windows)]
 pub struct InterprocessTransport {
     _endpoint: String,

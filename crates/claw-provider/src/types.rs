@@ -1,3 +1,4 @@
+use crate::error::ProviderError;
 use serde::{Deserialize, Serialize};
 
 /// Role in a conversation.
@@ -81,7 +82,7 @@ impl Message {
 }
 
 /// Token usage statistics.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct TokenUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -154,13 +155,17 @@ pub struct ToolDef {
 /// Options for LLM completion requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Options {
-    /// Model identifier (e.g., "claude-opus-4-6", "gpt-4o").
+    /// Model identifier (e.g., "claude-opus-4-6", "gpt-4o"). Required, not optional.
     pub model: String,
-    /// Maximum tokens to generate.
+    /// Maximum tokens to generate. Required, not optional.
     pub max_tokens: u32,
-    /// Sampling temperature (0.0–2.0).
+    /// Sampling temperature (0.0–2.0). Required, not optional.
+    ///
+    /// **Core Specification:** The kernel strictly validates temperature within 0.0–2.0 range.
+    /// For LLMs supporting wider ranges (e.g., 5.0), individual Provider implementations
+    /// should perform their own value mapping in the request building layer.
     pub temperature: f32,
-    /// Enable streaming.
+    /// Enable streaming. Required, not optional.
     pub stream: bool,
     /// System prompt (overrides any system message in the message list).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -171,9 +176,9 @@ pub struct Options {
     /// Available tools for function calling.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDef>>,
-    /// Request timeout in seconds.
+    /// Request timeout in seconds. Required, not optional.
     pub timeout_seconds: u64,
-    /// Max retry attempts.
+    /// Max retry attempts. Required, not optional.
     pub max_retries: u32,
 }
 
@@ -202,9 +207,18 @@ impl Options {
         self
     }
 
-    pub fn with_temperature(mut self, t: f32) -> Self {
+    /// Set temperature with validation (0.0–2.0).
+    ///
+    /// # Temperature Specification
+    /// - Core kernel enforces 0.0–2.0 range for cross-provider consistency
+    /// - For LLMs supporting extended ranges (e.g., Gemini's 0.0–5.0),
+    ///   Provider implementations should map values in their MessageFormat::build_request
+    pub fn with_temperature(mut self, t: f32) -> Result<Self, ProviderError> {
+        if !(0.0..=2.0).contains(&t) {
+            return Err(ProviderError::InvalidTemperature(t));
+        }
         self.temperature = t;
-        self
+        Ok(self)
     }
 
     pub fn with_system(mut self, sys: impl Into<String>) -> Self {
@@ -239,6 +253,56 @@ pub type Embedding = Vec<f32>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::ProviderError;
+
+    #[test]
+    fn test_options_temperature_validation() {
+        // Test valid temperature values (0.0-2.0 range)
+        let opts = Options::new("test-model")
+            .with_temperature(0.5)
+            .expect("0.5 should be valid");
+        assert!((opts.temperature - 0.5f32).abs() < f32::EPSILON);
+
+        // Test boundary values
+        let opts = Options::new("test-model")
+            .with_temperature(0.0)
+            .expect("0.0 should be valid");
+        assert!((opts.temperature - 0.0f32).abs() < f32::EPSILON);
+
+        let opts = Options::new("test-model")
+            .with_temperature(2.0)
+            .expect("2.0 should be valid");
+        assert!((opts.temperature - 2.0f32).abs() < f32::EPSILON);
+
+        // Test invalid temperature values
+        let result = Options::new("test-model").with_temperature(-0.1);
+        assert!(result.is_err());
+
+        let result = Options::new("test-model").with_temperature(2.1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_options_all_fields() {
+        let opts = Options::new("test-model")
+            .with_max_tokens(2048)
+            .with_temperature(0.8)
+            .expect("0.8 should be valid")
+            .with_stream()
+            .with_system("You are helpful.")
+            .with_stop_sequences(vec!["STOP".to_string()])
+            .with_timeout(30)
+            .with_max_retries(5);
+
+        assert_eq!(opts.model, "test-model");
+        assert_eq!(opts.max_tokens, 2048);
+        assert!((opts.temperature - 0.8f32).abs() < f32::EPSILON);
+        assert!(opts.stream);
+        assert_eq!(opts.system, Some("You are helpful.".to_string()));
+        assert_eq!(opts.stop_sequences, vec!["STOP".to_string()]);
+        assert_eq!(opts.timeout_seconds, 30);
+        assert_eq!(opts.max_retries, 5);
+    }
 
     #[test]
     fn test_message_user_constructor() {
@@ -272,6 +336,7 @@ mod tests {
         let opts = Options::new("claude-opus-4-6")
             .with_max_tokens(8192)
             .with_temperature(0.3)
+            .expect("valid temperature")
             .with_stream()
             .with_system("You are a helpful assistant.");
 
@@ -283,6 +348,36 @@ mod tests {
             opts.system,
             Some("You are a helpful assistant.".to_string())
         );
+    }
+
+    #[test]
+    fn test_options_invalid_temperature() {
+        // Test temperature below valid range
+        let result = Options::new("claude-opus-4-6").with_temperature(-0.1);
+        assert!(result.is_err());
+        match result {
+            Err(ProviderError::InvalidTemperature(t)) => assert!((t + 0.1f32).abs() < 1e-6),
+            _ => panic!("expected InvalidTemperature error for negative temperature"),
+        }
+
+        // Test temperature above valid range
+        let result = Options::new("claude-opus-4-6").with_temperature(2.1);
+        assert!(result.is_err());
+        match result {
+            Err(ProviderError::InvalidTemperature(t)) => assert!((t - 2.1f32).abs() < 1e-6),
+            _ => panic!("expected InvalidTemperature error for temperature > 2.0"),
+        }
+
+        // Test boundary values (valid)
+        let opts = Options::new("claude-opus-4-6")
+            .with_temperature(0.0)
+            .expect("0.0 should be valid");
+        assert!((opts.temperature).abs() < 1e-6);
+
+        let opts = Options::new("claude-opus-4-6")
+            .with_temperature(2.0)
+            .expect("2.0 should be valid");
+        assert!((opts.temperature - 2.0f32).abs() < 1e-6);
     }
 
     #[test]

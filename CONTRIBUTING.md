@@ -6,7 +6,7 @@
 
 claw-kernel is the shared foundation of the Claw ecosystem. We hold contributions to a high standard, but the bar for getting started is intentionally low. Every bug report, doc fix, and test improvement matters.
 
-> **Project Status**: v0.1.0 released. 9 crates implemented, 389 tests passing. Great time to contribute new providers, sandbox hardening, or test coverage.
+> **Project Status**: v0.1.0 released. 9 crates implemented, 670+ tests passing. Great time to contribute new providers, sandbox hardening, or test coverage.
 
 ## Code of Conduct
 

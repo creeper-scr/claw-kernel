@@ -34,7 +34,7 @@ mod tests {
         use crate::{types::Script, LuaEngine};
 
         // Verify that LuaEngine can be used as a Box<dyn ScriptEngine>
-        let engine: Box<dyn ScriptEngine> = Box::new(LuaEngine);
+        let engine: Box<dyn ScriptEngine> = Box::new(LuaEngine::new());
         assert_eq!(engine.engine_type(), "lua");
 
         let script = Script::lua("test", "return 1 + 1");

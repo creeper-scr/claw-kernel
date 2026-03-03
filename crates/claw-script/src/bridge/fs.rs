@@ -1,0 +1,558 @@
+//! Lua-Rust filesystem bridge with sandbox path validation.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use mlua::{Lua, Result as LuaResult, UserData, UserDataMethods};
+
+/// Filesystem bridge exposing sandboxed file operations to Lua.
+///
+/// All paths are validated against `allowed_paths` — any access outside
+/// these directories is rejected with a permission error.
+pub struct FsBridge {
+    /// Set of allowed base directories for filesystem access.
+    allowed_paths: HashSet<PathBuf>,
+    /// Base directory for resolving relative paths.
+    base_dir: PathBuf,
+}
+
+impl FsBridge {
+    /// Create a new FsBridge with the given allowed paths and base directory.
+    pub fn new(
+        allowed_paths: impl IntoIterator<Item = PathBuf>,
+        base_dir: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            allowed_paths: allowed_paths.into_iter().collect(),
+            base_dir: base_dir.into(),
+        }
+    }
+
+    /// Create a new FsBridge with no allowed paths (denies all access).
+    pub fn empty() -> Self {
+        Self {
+            allowed_paths: HashSet::new(),
+            base_dir: PathBuf::from("."),
+        }
+    }
+
+    /// Validate that the given path is within allowed directories.
+    ///
+    /// Returns the canonicalized path on success, or an error message on failure.
+    fn validate_path(&self, path: &str) -> Result<PathBuf, String> {
+        // Check against allowed paths first (before any filesystem operations)
+        if self.allowed_paths.is_empty() {
+            return Err(format!(
+                "Permission denied: no filesystem access allowed (path: '{}')",
+                path
+            ));
+        }
+
+        // Parse and resolve the path
+        let path_obj = Path::new(path);
+        let resolved = if path_obj.is_absolute() {
+            path_obj.to_path_buf()
+        } else {
+            self.base_dir.join(path_obj)
+        };
+
+        // Canonicalize to resolve symlinks and normalize
+        let canonical = match resolved.canonicalize() {
+            Ok(c) => c,
+            Err(_) => {
+                // If we can't canonicalize, try to at least check for directory traversal
+                // by checking if the resolved path starts with the base_dir
+                let base_canonical = self
+                    .base_dir
+                    .canonicalize()
+                    .map_err(|e| format!("Failed to resolve base directory: {}", e))?;
+
+                // For relative paths, check they don't escape base_dir
+                if !path_obj.is_absolute() {
+                    let normalized = self.normalize_path(&resolved);
+                    if !normalized.starts_with(&base_canonical) {
+                        return Err(format!(
+                            "Permission denied: path '{}' is outside allowed directories",
+                            path
+                        ));
+                    }
+                }
+
+                return Err(format!(
+                    "Failed to resolve path '{}': No such file or directory",
+                    path
+                ));
+            }
+        };
+
+        for allowed in &self.allowed_paths {
+            // Also canonicalize allowed paths for comparison
+            let allowed_canonical = allowed.canonicalize().unwrap_or_else(|_| allowed.clone());
+            if canonical.starts_with(&allowed_canonical) {
+                return Ok(canonical);
+            }
+        }
+
+        Err(format!(
+            "Permission denied: path '{}' is outside allowed directories",
+            canonical.display()
+        ))
+    }
+
+    /// Normalize a path by resolving ".." and "." components (without requiring the path to exist).
+    fn normalize_path(&self, path: &Path) -> PathBuf {
+        let mut result = PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    result.pop();
+                }
+                std::path::Component::Normal(c) => {
+                    result.push(c);
+                }
+                std::path::Component::RootDir => {
+                    result.push("/");
+                }
+                _ => {}
+            }
+        }
+        result
+    }
+
+    /// Read file contents as string.
+    fn read_file(&self, path: &str) -> Result<String, String> {
+        let valid_path = self.validate_path(path)?;
+        std::fs::read_to_string(&valid_path)
+            .map_err(|e| format!("Failed to read file '{}': {}", valid_path.display(), e))
+    }
+
+    /// Validate that a parent directory is within allowed paths.
+    fn validate_parent_dir(&self, path: &str) -> Result<PathBuf, String> {
+        // Check if allowed_paths is empty
+        if self.allowed_paths.is_empty() {
+            return Err(format!(
+                "Permission denied: no filesystem access allowed (path: '{}')",
+                path
+            ));
+        }
+
+        let path_obj = Path::new(path);
+        let resolved = if path_obj.is_absolute() {
+            path_obj.to_path_buf()
+        } else {
+            self.base_dir.join(path_obj)
+        };
+
+        // Get parent directory
+        let parent = resolved
+            .parent()
+            .ok_or_else(|| format!("Cannot write to root path: '{}'", path))?;
+
+        // Canonicalize parent
+        let parent_canonical = parent.canonicalize().map_err(|e| {
+            format!(
+                "Failed to resolve parent directory '{}': {}",
+                parent.display(),
+                e
+            )
+        })?;
+
+        // Check if parent is within allowed paths
+        for allowed in &self.allowed_paths {
+            let allowed_canonical = allowed.canonicalize().unwrap_or_else(|_| allowed.clone());
+            if parent_canonical.starts_with(&allowed_canonical) {
+                return Ok(resolved);
+            }
+        }
+
+        Err(format!(
+            "Permission denied: path '{}' is outside allowed directories",
+            parent_canonical.display()
+        ))
+    }
+
+    /// Write string contents to file.
+    fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
+        // For write operations, we validate the parent directory exists and is allowed
+        let target_path = self.validate_parent_dir(path)?;
+        std::fs::write(&target_path, content)
+            .map_err(|e| format!("Failed to write file '{}': {}", target_path.display(), e))
+    }
+
+    /// Check if path exists.
+    fn exists(&self, path: &str) -> Result<bool, String> {
+        // First check if allowed_paths is empty
+        if self.allowed_paths.is_empty() {
+            return Err(format!(
+                "Permission denied: no filesystem access allowed (path: '{}')",
+                path
+            ));
+        }
+
+        // Parse and resolve the path
+        let path_obj = Path::new(path);
+        let resolved = if path_obj.is_absolute() {
+            path_obj.to_path_buf()
+        } else {
+            self.base_dir.join(path_obj)
+        };
+
+        // For exists check, we need to validate the parent directory is allowed
+        // but we can't canonicalize a non-existent file
+        let parent = resolved.parent().unwrap_or(&resolved);
+        let parent_canonical = parent
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve path '{}': {}", path, e))?;
+
+        // Check if parent is within allowed paths
+        let mut parent_allowed = false;
+        for allowed in &self.allowed_paths {
+            let allowed_canonical = allowed.canonicalize().unwrap_or_else(|_| allowed.clone());
+            if parent_canonical.starts_with(&allowed_canonical) {
+                parent_allowed = true;
+                break;
+            }
+        }
+
+        if !parent_allowed {
+            return Err(format!(
+                "Permission denied: path '{}' is outside allowed directories",
+                parent_canonical.display()
+            ));
+        }
+
+        Ok(resolved.exists())
+    }
+
+    /// List directory contents.
+    /// Returns a table of entries with `name` and `is_dir` fields.
+    fn list_dir(&self, path: &str) -> Result<Vec<DirEntry>, String> {
+        let valid_path = self.validate_path(path)?;
+
+        if !valid_path.is_dir() {
+            return Err(format!("'{}' is not a directory", valid_path.display()));
+        }
+
+        let entries: Result<Vec<DirEntry>, String> = std::fs::read_dir(&valid_path)
+            .map_err(|e| format!("Failed to read directory '{}': {}", valid_path.display(), e))?
+            .map(|entry| {
+                entry
+                    .map_err(|e| format!("Failed to read directory entry: {}", e))
+                    .and_then(|e| {
+                        let name = e
+                            .file_name()
+                            .into_string()
+                            .map_err(|_| "Invalid filename encoding".to_string())?;
+                        let is_dir = e.file_type().map_err(|e| e.to_string())?.is_dir();
+                        Ok(DirEntry { name, is_dir })
+                    })
+            })
+            .collect();
+
+        entries
+    }
+
+    /// Create a directory.
+    fn mkdir(&self, path: &str) -> Result<(), String> {
+        // For mkdir operations, we validate the parent directory exists and is allowed
+        let path_obj = Path::new(path);
+        let resolved = if path_obj.is_absolute() {
+            path_obj.to_path_buf()
+        } else {
+            self.base_dir.join(path_obj)
+        };
+
+        // For creating a directory, we need to validate the parent of the target directory
+        // (unless it's a single-level directory in the base_dir)
+        let parent = if resolved
+            .parent()
+            .map(|p| p.as_os_str().is_empty())
+            .unwrap_or(true)
+        {
+            // Target is directly in base_dir
+            self.base_dir.clone()
+        } else {
+            resolved.parent().unwrap().to_path_buf()
+        };
+
+        // Validate the parent path
+        if self.allowed_paths.is_empty() {
+            return Err(format!(
+                "Permission denied: no filesystem access allowed (path: '{}')",
+                path
+            ));
+        }
+
+        let parent_canonical = parent.canonicalize().map_err(|e| {
+            format!(
+                "Failed to resolve parent directory '{}': {}",
+                parent.display(),
+                e
+            )
+        })?;
+
+        let mut parent_allowed = false;
+        for allowed in &self.allowed_paths {
+            let allowed_canonical = allowed.canonicalize().unwrap_or_else(|_| allowed.clone());
+            if parent_canonical.starts_with(&allowed_canonical) {
+                parent_allowed = true;
+                break;
+            }
+        }
+
+        if !parent_allowed {
+            return Err(format!(
+                "Permission denied: path '{}' is outside allowed directories",
+                parent_canonical.display()
+            ));
+        }
+
+        std::fs::create_dir_all(&resolved)
+            .map_err(|e| format!("Failed to create directory '{}': {}", resolved.display(), e))
+    }
+}
+
+/// Directory entry for list_dir results.
+#[derive(Debug, Clone)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
+impl UserData for DirEntry {
+    fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_method("name", |_, this, ()| Ok(this.name.clone()));
+        methods.add_method("is_dir", |_, this, ()| Ok(this.is_dir));
+    }
+}
+
+impl UserData for FsBridge {
+    fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_method("read_file", |_, this, path: String| {
+            this.read_file(&path).map_err(mlua::Error::runtime)
+        });
+
+        methods.add_method(
+            "write_file",
+            |_, this, (path, content): (String, String)| {
+                this.write_file(&path, &content)
+                    .map_err(mlua::Error::runtime)
+            },
+        );
+
+        methods.add_method("exists", |_, this, path: String| {
+            this.exists(&path).map_err(mlua::Error::runtime)
+        });
+
+        methods.add_method("list_dir", |lua, this, path: String| {
+            let entries = this.list_dir(&path).map_err(mlua::Error::runtime)?;
+
+            // Create a Lua table from the entries
+            let table = lua.create_table()?;
+            for (i, entry) in entries.into_iter().enumerate() {
+                let entry_table = lua.create_table()?;
+                entry_table.set("name", entry.name)?;
+                entry_table.set("is_dir", entry.is_dir)?;
+                table.raw_set(i + 1, entry_table)?;
+            }
+            Ok(table)
+        });
+
+        methods.add_method("mkdir", |_, this, path: String| {
+            this.mkdir(&path).map_err(mlua::Error::runtime)
+        });
+    }
+}
+
+/// Register the FsBridge as a global `fs` table in the Lua instance.
+///
+/// # Example in Lua:
+/// ```lua
+/// local content = fs:read_file("/allowed/path/file.txt")
+/// fs:write_file("/allowed/path/output.txt", "Hello, World!")
+/// local exists = fs:exists("/allowed/path/file.txt")
+/// local entries = fs:list_dir("/allowed/path")
+/// for _, entry in ipairs(entries) do
+///     print(entry.name, entry.is_dir)
+/// end
+/// fs:mkdir("/allowed/path/new_dir")
+/// ```
+pub fn register_fs(lua: &Lua, bridge: FsBridge) -> LuaResult<()> {
+    lua.globals().set("fs", bridge)
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn create_temp_dir() -> PathBuf {
+        let counter = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let temp_dir = std::env::temp_dir().join(format!(
+            "claw_script_test_{}_{}",
+            std::process::id(),
+            counter
+        ));
+        // Clean up any existing directory first
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        temp_dir
+    }
+
+    fn cleanup_temp_dir(path: &Path) {
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn test_fs_bridge_validate_path_within_allowed() {
+        let temp_dir = create_temp_dir();
+        let allowed_path = temp_dir.join("allowed");
+        std::fs::create_dir(&allowed_path).unwrap();
+
+        let bridge = FsBridge::new(vec![allowed_path.clone()], &temp_dir);
+
+        // Create a test file
+        let test_file = allowed_path.join("test.txt");
+        std::fs::write(&test_file, "test content").unwrap();
+
+        let result = bridge.validate_path("allowed/test.txt");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), test_file.canonicalize().unwrap());
+
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_fs_bridge_validate_path_outside_allowed() {
+        let temp_dir = create_temp_dir();
+        let allowed_path = temp_dir.join("allowed");
+        std::fs::create_dir(&allowed_path).unwrap();
+
+        let outside_dir = std::env::temp_dir().join(format!("outside_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&outside_dir);
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("secret.txt"), "secret").unwrap();
+
+        let bridge = FsBridge::new(vec![allowed_path], &temp_dir);
+
+        let path_str = outside_dir.join("secret.txt").to_str().unwrap().to_string();
+        let result = bridge.validate_path(&path_str);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("Permission denied"),
+            "Expected 'Permission denied' but got: {}",
+            err_msg
+        );
+
+        cleanup_temp_dir(&temp_dir);
+        let _ = std::fs::remove_dir_all(&outside_dir);
+    }
+
+    #[test]
+    fn test_fs_bridge_empty_denies_all() {
+        let bridge = FsBridge::empty();
+
+        let result = bridge.validate_path("/any/path.txt");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("no filesystem access allowed"));
+    }
+
+    #[test]
+    fn test_fs_bridge_read_file_success() {
+        let temp_dir = create_temp_dir();
+        let test_file = temp_dir.join("test.txt");
+        std::fs::write(&test_file, "Hello, World!").unwrap();
+
+        let bridge = FsBridge::new(vec![temp_dir.clone()], &temp_dir);
+
+        let content = bridge.read_file("test.txt").unwrap();
+        assert_eq!(content, "Hello, World!");
+
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_fs_bridge_write_file_success() {
+        let temp_dir = create_temp_dir();
+        let bridge = FsBridge::new(vec![temp_dir.clone()], &temp_dir);
+
+        bridge.write_file("output.txt", "Test content").unwrap();
+
+        let content = std::fs::read_to_string(temp_dir.join("output.txt")).unwrap();
+        assert_eq!(content, "Test content");
+
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_fs_bridge_exists() {
+        let temp_dir = create_temp_dir();
+        let test_file = temp_dir.join("exists.txt");
+        std::fs::write(&test_file, "").unwrap();
+
+        let bridge = FsBridge::new(vec![temp_dir.clone()], &temp_dir);
+
+        assert!(bridge.exists("exists.txt").unwrap());
+        assert!(!bridge.exists("nonexistent.txt").unwrap());
+
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_fs_bridge_list_dir() {
+        let temp_dir = create_temp_dir();
+        std::fs::write(temp_dir.join("file1.txt"), "").unwrap();
+        std::fs::create_dir(temp_dir.join("subdir")).unwrap();
+
+        let bridge = FsBridge::new(vec![temp_dir.clone()], &temp_dir);
+
+        let entries = bridge.list_dir(".").unwrap();
+        assert_eq!(entries.len(), 2);
+
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"file1.txt"));
+        assert!(names.contains(&"subdir"));
+
+        let subdir_entry = entries.iter().find(|e| e.name == "subdir").unwrap();
+        assert!(subdir_entry.is_dir);
+
+        let file_entry = entries.iter().find(|e| e.name == "file1.txt").unwrap();
+        assert!(!file_entry.is_dir);
+
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_fs_bridge_mkdir() {
+        let temp_dir = create_temp_dir();
+        let bridge = FsBridge::new(vec![temp_dir.clone()], &temp_dir);
+
+        bridge.mkdir("new_directory").unwrap();
+        assert!(temp_dir.join("new_directory").is_dir());
+
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_fs_bridge_permission_denied_read() {
+        let temp_dir = create_temp_dir();
+        let allowed = temp_dir.join("allowed");
+        let denied = temp_dir.join("denied");
+        std::fs::create_dir(&allowed).unwrap();
+        std::fs::create_dir(&denied).unwrap();
+        std::fs::write(denied.join("secret.txt"), "secret").unwrap();
+
+        let bridge = FsBridge::new(vec![allowed], &temp_dir);
+
+        let result = bridge.read_file("../denied/secret.txt");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Permission denied"));
+
+        cleanup_temp_dir(&temp_dir);
+    }
+}

@@ -50,7 +50,7 @@ fn send_unix_signal(pid: u32, signal: ProcessSignal) -> Result<(), ProcessError>
         ProcessSignal::Kill => Signal::SIGKILL,
     };
     kill(Pid::from_raw(pid as i32), nix_signal)
-        .map_err(|e| ProcessError::SpawnFailed(e.to_string()))
+        .map_err(|e| ProcessError::SignalFailed(e.to_string()))
 }
 
 /// Signal stub for Windows.
@@ -151,7 +151,7 @@ impl ProcessManager for TokioProcessManager {
         child
             .kill()
             .await
-            .map_err(|e| ProcessError::SpawnFailed(e.to_string()))?;
+            .map_err(|e| ProcessError::SignalFailed(e.to_string()))?;
 
         // Reap the zombie.
         let _ = child.wait().await;
@@ -175,7 +175,7 @@ impl ProcessManager for TokioProcessManager {
         let status = child
             .wait()
             .await
-            .map_err(|e| ProcessError::SpawnFailed(e.to_string()))?;
+            .map_err(|e| ProcessError::SignalFailed(e.to_string()))?;
 
         drop(child);
         drop(entry);

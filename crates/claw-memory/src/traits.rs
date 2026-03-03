@@ -12,6 +12,19 @@ pub trait MemoryStore: Send + Sync {
     /// Store a memory item. Returns the assigned ID.
     async fn store(&self, item: MemoryItem) -> Result<MemoryId, MemoryError>;
 
+    /// Store multiple memory items in batch. Returns the assigned IDs.
+    ///
+    /// The default implementation stores items sequentially, but concrete
+    /// implementations can override this with optimized batch operations.
+    async fn store_batch(&self, items: Vec<MemoryItem>) -> Result<Vec<MemoryId>, MemoryError> {
+        // Default implementation: store items one by one
+        let mut ids = Vec::new();
+        for item in items {
+            ids.push(self.store(item).await?);
+        }
+        Ok(ids)
+    }
+
     /// Retrieve a specific item by ID.
     async fn retrieve(&self, id: &MemoryId) -> Result<Option<MemoryItem>, MemoryError>;
 
@@ -37,6 +50,44 @@ pub trait MemoryStore: Send + Sync {
 
     /// Total storage used by a namespace, in bytes (approximate).
     async fn namespace_usage(&self, namespace: &str) -> Result<u64, MemoryError>;
+
+    /// Atomically check quota and store if within limit.
+    ///
+    /// This method performs an atomic check-and-store operation:
+    /// 1. Calculates the total size after adding `estimated_size`
+    /// 2. If within `quota_bytes`, stores the item and returns Ok
+    /// 3. If would exceed quota, returns Err(QuotaExceeded) without storing
+    ///
+    /// The default implementation falls back to non-atomic check_quota + store,
+    /// but concrete implementations (like SQLite) should override this for
+    /// true atomicity using database transactions.
+    ///
+    /// # Arguments
+    /// * `item` - The memory item to store
+    /// * `estimated_size` - The estimated byte size of the item
+    /// * `quota_bytes` - The maximum allowed bytes for this namespace
+    ///
+    /// # Returns
+    /// * `Ok(MemoryId)` - Item was stored successfully
+    /// * `Err(MemoryError::QuotaExceeded)` - Item would exceed quota
+    async fn store_with_quota_check(
+        &self,
+        item: MemoryItem,
+        estimated_size: u64,
+        quota_bytes: u64,
+    ) -> Result<MemoryId, MemoryError> {
+        // Default non-atomic implementation for backward compatibility
+        // Concrete stores should override with atomic implementation
+        let used = self.namespace_usage(&item.namespace).await?;
+        if used.saturating_add(estimated_size) > quota_bytes {
+            return Err(MemoryError::QuotaExceeded {
+                namespace: item.namespace.clone(),
+                used,
+                limit: quota_bytes,
+            });
+        }
+        self.store(item).await
+    }
 }
 
 /// Local (synchronous) text embedding.

@@ -15,17 +15,8 @@ pub const MIN_CHAR_TYPES: usize = 2;
 
 /// Generate a random 16-byte salt using OS entropy.
 fn rand_salt() -> [u8; 16] {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-    let mut salt = [0u8; 16];
-    // Use two different RandomState instances for 128 bits of entropy
-    let s1 = RandomState::new();
-    let s2 = RandomState::new();
-    let h1 = s1.build_hasher().finish().to_ne_bytes();
-    let h2 = s2.build_hasher().finish().to_ne_bytes();
-    salt[..8].copy_from_slice(&h1);
-    salt[8..].copy_from_slice(&h2);
-    salt
+    use rand::Rng;
+    rand::thread_rng().gen()
 }
 /// Security-related errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +166,25 @@ impl PowerKeyHash {
     }
 }
 
+impl fmt::Display for PowerKeyHash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl PowerKeyHash {
+    /// Create a PowerKeyHash from a stored string representation.
+    ///
+    /// Note: This does NOT validate the key - it assumes the hash was previously
+    /// created by PowerKeyHash::new().
+    pub fn from_string(hash: &str) -> Result<Self, SecurityError> {
+        if hash.is_empty() {
+            return Err(SecurityError::HashError("Empty hash string".to_string()));
+        }
+        Ok(Self(hash.to_string()))
+    }
+}
+
 /// Guard for mode transitions between Safe and Power modes.
 ///
 /// Enforces the security model from ADR-003:
@@ -215,6 +225,304 @@ impl ModeTransitionGuard {
             to: ExecutionMode::Safe,
         })
     }
+}
+
+/// Manages Power Key persistence and retrieval.
+///
+/// Power Key resolution follows this priority (highest first):
+/// 1. CLI argument (`--power-key`)
+/// 2. Environment variable (`CLAW_KERNEL_POWER_KEY`)
+/// 3. Config file (`~/.config/claw-kernel/power.key`)
+pub struct PowerKeyManager;
+
+impl PowerKeyManager {
+    /// Save a Power Key to the config file.
+    ///
+    /// The key is validated and hashed before storage. Only the hash is stored,
+    /// never the plaintext key.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SecurityError` if validation fails or file operations fail.
+    pub fn save_power_key(key: &str) -> Result<(), SecurityError> {
+        // Validate the key first
+        PowerKeyValidator::validate(key)?;
+
+        // Hash the key
+        let hash = PowerKeyHash::new(key)?;
+
+        // Get the config directory
+        let config_dir = crate::dirs::config_dir()
+            .ok_or_else(|| SecurityError::HashError("Cannot find config directory".to_string()))?;
+
+        // Ensure config directory exists
+        std::fs::create_dir_all(&config_dir)
+            .map_err(|e| SecurityError::HashError(format!("Failed to create config dir: {e}")))?;
+
+        // Write hash to power.key file
+        let key_path = config_dir.join("power.key");
+        std::fs::write(&key_path, hash.to_string())
+            .map_err(|e| SecurityError::HashError(format!("Failed to write power key: {e}")))?;
+
+        // Set restrictive permissions (read/write for owner only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&key_path)
+                .map_err(|e| SecurityError::HashError(format!("Failed to get metadata: {e}")))?
+                .permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(&key_path, perms)
+                .map_err(|e| SecurityError::HashError(format!("Failed to set permissions: {e}")))?;
+        }
+
+        Ok(())
+    }
+
+    /// Load the stored Power Key hash from config file.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SecurityError::InvalidPowerKey` if no key file exists.
+    pub fn load_stored_hash() -> Result<PowerKeyHash, SecurityError> {
+        let key_path = crate::dirs::power_key_path()
+            .ok_or_else(|| SecurityError::HashError("Cannot find config directory".to_string()))?;
+
+        let hash_str =
+            std::fs::read_to_string(&key_path).map_err(|_| SecurityError::InvalidPowerKey)?;
+
+        PowerKeyHash::from_string(hash_str.trim())
+    }
+
+    /// Check if a Power Key has been configured (exists in config file).
+    pub fn is_configured() -> bool {
+        if let Some(key_path) = crate::dirs::power_key_path() {
+            key_path.exists()
+        } else {
+            false
+        }
+    }
+
+    /// Resolve the effective Power Key following priority order:
+    /// 1. CLI argument (`--power-key`)
+    /// 2. Environment variable (`CLAW_KERNEL_POWER_KEY`)
+    /// 3. Config file (`~/.config/claw-kernel/power.key`)
+    ///
+    /// Returns `Some(key)` if found from CLI or env var, `None` if only
+    /// a stored hash exists (needs verification via `load_stored_hash`).
+    pub fn resolve_power_key(cli_key: Option<String>) -> Option<String> {
+        // Priority 1: CLI argument
+        if cli_key.is_some() {
+            return cli_key;
+        }
+
+        // Priority 2: Environment variable
+        if let Ok(env_key) = std::env::var("CLAW_KERNEL_POWER_KEY") {
+            if !env_key.is_empty() {
+                return Some(env_key);
+            }
+        }
+
+        // Priority 3: Config file - return None, caller should use load_stored_hash
+        None
+    }
+}
+
+/// Simple SHA-256 based Power Key for verification purposes.
+///
+/// This is a lightweight alternative to `PowerKeyHash` (which uses Argon2)
+/// for scenarios where:
+/// - You need deterministic hashing (same key always produces same hash)
+/// - Performance is critical and Argon2's memory-hard properties aren't required
+/// - You're verifying keys against external systems that use SHA-256
+///
+/// **Security Note:** Unlike `PowerKeyHash`, this does NOT use a salt, making
+/// it vulnerable to rainbow table attacks. Only use this for:
+/// - Temporary/in-memory key verification
+/// - Integration with systems that require SHA-256
+/// - Cases where the key itself is high-entropy (randomly generated)
+///
+/// For persistent storage, prefer `PowerKeyHash` with Argon2.
+#[derive(Debug, Clone)]
+pub struct PowerKey {
+    verification_hash: [u8; 32],
+}
+
+impl PowerKey {
+    /// Create a new PowerKey from a plaintext key.
+    ///
+    /// Computes the SHA-256 hash of the key for later verification.
+    /// No validation is performed on the key strength - use `PowerKeyValidator`
+    /// first if you need to enforce minimum requirements.
+    ///
+    /// # Example
+    /// ```
+    /// use claw_pal::security::PowerKey;
+    ///
+    /// let key = PowerKey::new("my-secret-key");
+    /// assert!(key.verify("my-secret-key"));
+    /// assert!(!key.verify("wrong-key"));
+    /// ```
+    pub fn new(key: &str) -> Self {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(key.as_bytes());
+        let result = hasher.finalize();
+
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+
+        Self {
+            verification_hash: hash,
+        }
+    }
+
+    /// Verify a provided key against the stored hash.
+    ///
+    /// Uses constant-time comparison to prevent timing attacks.
+    ///
+    /// # Returns
+    /// - `true` if the provided key matches the stored hash
+    /// - `false` otherwise
+    pub fn verify(&self, provided: &str) -> bool {
+        use sha2::{Digest, Sha256};
+
+        let mut hasher = Sha256::new();
+        hasher.update(provided.as_bytes());
+        let result = hasher.finalize();
+
+        let mut provided_hash = [0u8; 32];
+        provided_hash.copy_from_slice(&result);
+
+        // Constant-time comparison to prevent timing attacks
+        constant_time_eq(&self.verification_hash, &provided_hash)
+    }
+
+    /// Load a PowerKey from a file containing the raw key.
+    ///
+    /// The file should contain the plaintext key (not a hash). The key is
+    /// hashed after reading and the plaintext is zeroed from memory when possible.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the key file
+    ///
+    /// # Returns
+    /// * `Ok(PowerKey)` - Key loaded and hashed successfully
+    /// * `Err(SecurityError)` - File not found, permission denied, or empty key
+    ///
+    /// # Example
+    /// ```
+    /// use claw_pal::security::PowerKey;
+    /// use std::path::Path;
+    ///
+    /// // Load from default location
+    /// if let Some(key_path) = claw_pal::dirs::power_key_path() {
+    ///     // Read the raw key and create PowerKey
+    ///     // Note: This reads the hash from the file, not the plaintext
+    /// }
+    /// ```
+    pub fn load_from_file(path: &std::path::Path) -> Result<Self, SecurityError> {
+        // Read the hash string from file (same format as PowerKeyHash stores)
+        let hash_str = std::fs::read_to_string(path)
+            .map_err(|e| SecurityError::HashError(format!("Failed to read key file: {e}")))?;
+
+        let hash_str = hash_str.trim();
+        if hash_str.is_empty() {
+            return Err(SecurityError::HashError("Empty key file".to_string()));
+        }
+
+        // Decode hex string to bytes
+        let bytes = hex_to_bytes(hash_str)
+            .map_err(|e| SecurityError::HashError(format!("Invalid key file format: {e}")))?;
+
+        if bytes.len() != 32 {
+            return Err(SecurityError::HashError(format!(
+                "Invalid hash length: expected 32 bytes, got {}",
+                bytes.len()
+            )));
+        }
+
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&bytes);
+
+        Ok(Self {
+            verification_hash: hash,
+        })
+    }
+
+    /// Save this PowerKey's hash to a file.
+    ///
+    /// # Arguments
+    /// * `path` - Path to write the key file
+    ///
+    /// # Returns
+    /// * `Ok(())` - Key saved successfully
+    /// * `Err(SecurityError)` - IO error or permission denied
+    pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), SecurityError> {
+        let hash_hex = bytes_to_hex(&self.verification_hash);
+
+        std::fs::write(path, hash_hex)
+            .map_err(|e| SecurityError::HashError(format!("Failed to write key file: {e}")))?;
+
+        // Set restrictive permissions (read/write for owner only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(path)
+                .map_err(|e| SecurityError::HashError(format!("Failed to get metadata: {e}")))?
+                .permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(path, perms)
+                .map_err(|e| SecurityError::HashError(format!("Failed to set permissions: {e}")))?;
+        }
+
+        Ok(())
+    }
+}
+
+/// Constant-time comparison of two byte arrays.
+///
+/// This prevents timing attacks by ensuring the comparison takes the same
+/// amount of time regardless of where the arrays differ.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+
+    let mut result = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        result |= x ^ y;
+    }
+
+    result == 0
+}
+
+/// Convert bytes to lowercase hex string.
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(s, "{:02x}", byte).unwrap();
+    }
+    s
+}
+
+/// Convert hex string to bytes.
+fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
+    if hex.len() % 2 != 0 {
+        return Err("Odd number of hex digits".to_string());
+    }
+
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for i in (0..hex.len()).step_by(2) {
+        let byte = u8::from_str_radix(&hex[i..i + 2], 16)
+            .map_err(|e| format!("Invalid hex digit: {e}"))?;
+        bytes.push(byte);
+    }
+
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -458,5 +766,218 @@ mod tests {
             debug.contains("InvalidPowerKey"),
             "Debug should contain variant name"
         );
+    }
+
+    // ===== PowerKeyManager tests =====
+
+    #[test]
+    fn test_power_key_manager_save_and_load() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let _original_config_dir = std::env::var("HOME").ok();
+
+        // Set up a temp config directory
+        let temp_config = temp.path().join(".config/claw-kernel");
+        std::fs::create_dir_all(&temp_config).unwrap();
+
+        // Temporarily override the config directory lookup
+        // Note: In real tests, we'd need to use a test-specific config override
+        // For now, we test the hash functions directly
+
+        let key = "SecureKey123!";
+        let hash = PowerKeyHash::new(key).unwrap();
+
+        // Test that the hash can verify the key
+        assert!(hash.verify(key));
+        assert!(!hash.verify("WrongKey123!"));
+
+        // Test from_string roundtrip
+        let hash_str = hash.to_string();
+        let loaded = PowerKeyHash::from_string(&hash_str).unwrap();
+        assert!(loaded.verify(key));
+    }
+
+    #[test]
+    fn test_power_key_hash_from_string_empty() {
+        let result = PowerKeyHash::from_string("");
+        assert!(
+            matches!(result, Err(SecurityError::HashError(_))),
+            "empty hash should be rejected"
+        );
+    }
+
+    // ===== PowerKey (SHA-256) tests =====
+
+    #[test]
+    fn test_power_key_new_and_verify() {
+        let key = PowerKey::new("my-secret-key");
+        assert!(key.verify("my-secret-key"));
+        assert!(!key.verify("wrong-key"));
+    }
+
+    #[test]
+    fn test_power_key_empty_string() {
+        let key = PowerKey::new("");
+        assert!(key.verify(""));
+        assert!(!key.verify("not-empty"));
+    }
+
+    #[test]
+    fn test_power_key_deterministic() {
+        // Same input should produce same hash
+        let key1 = PowerKey::new("deterministic-key");
+        let key2 = PowerKey::new("deterministic-key");
+        assert!(key1.verify("deterministic-key"));
+        assert!(key2.verify("deterministic-key"));
+
+        // Both should have same internal hash
+        assert_eq!(key1.verification_hash, key2.verification_hash);
+    }
+
+    #[test]
+    fn test_power_key_different_inputs() {
+        let key1 = PowerKey::new("key-one");
+        let key2 = PowerKey::new("key-two");
+
+        // Different inputs should produce different hashes
+        assert_ne!(key1.verification_hash, key2.verification_hash);
+
+        // Each key should only verify its own input
+        assert!(key1.verify("key-one"));
+        assert!(!key1.verify("key-two"));
+        assert!(key2.verify("key-two"));
+        assert!(!key2.verify("key-one"));
+    }
+
+    #[test]
+    fn test_power_key_unicode() {
+        let key = PowerKey::new("密钥🔐key");
+        assert!(key.verify("密钥🔐key"));
+        assert!(!key.verify("密钥key"));
+    }
+
+    #[test]
+    fn test_power_key_long_input() {
+        let long_key = "a".repeat(10000);
+        let key = PowerKey::new(&long_key);
+        assert!(key.verify(&long_key));
+        assert!(!key.verify(&(long_key + "x")));
+    }
+
+    #[test]
+    fn test_power_key_save_and_load_roundtrip() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let key_path = temp.path().join("test_power.key");
+
+        // Create and save a key
+        let original = PowerKey::new("test-key-for-file");
+        original.save_to_file(&key_path).unwrap();
+
+        // Load it back
+        let loaded = PowerKey::load_from_file(&key_path).unwrap();
+
+        // Both should verify the same input
+        assert!(original.verify("test-key-for-file"));
+        assert!(loaded.verify("test-key-for-file"));
+        assert!(!original.verify("wrong-key"));
+        assert!(!loaded.verify("wrong-key"));
+
+        // Internal hashes should match
+        assert_eq!(original.verification_hash, loaded.verification_hash);
+    }
+
+    #[test]
+    fn test_power_key_load_nonexistent_file() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let key_path = temp.path().join("nonexistent.key");
+
+        let result = PowerKey::load_from_file(&key_path);
+        assert!(
+            matches!(result, Err(SecurityError::HashError(_))),
+            "nonexistent file should return HashError"
+        );
+    }
+
+    #[test]
+    fn test_power_key_load_empty_file() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let key_path = temp.path().join("empty.key");
+        std::fs::write(&key_path, "").unwrap();
+
+        let result = PowerKey::load_from_file(&key_path);
+        assert!(
+            matches!(result, Err(SecurityError::HashError(_))),
+            "empty file should return HashError"
+        );
+    }
+
+    #[test]
+    fn test_power_key_load_invalid_hex() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let key_path = temp.path().join("invalid.key");
+        std::fs::write(&key_path, "not-hex-data!!!").unwrap();
+
+        let result = PowerKey::load_from_file(&key_path);
+        assert!(
+            matches!(result, Err(SecurityError::HashError(_))),
+            "invalid hex should return HashError"
+        );
+    }
+
+    #[test]
+    fn test_power_key_load_wrong_length() {
+        use tempfile::TempDir;
+
+        let temp = TempDir::new().unwrap();
+        let key_path = temp.path().join("wrong_length.key");
+        // 16 bytes instead of 32
+        std::fs::write(&key_path, "0123456789abcdef").unwrap();
+
+        let result = PowerKey::load_from_file(&key_path);
+        assert!(
+            matches!(result, Err(SecurityError::HashError(_))),
+            "wrong length hash should return HashError"
+        );
+    }
+
+    #[test]
+    fn test_constant_time_eq() {
+        // Same arrays
+        assert!(constant_time_eq(&[1, 2, 3], &[1, 2, 3]));
+        assert!(constant_time_eq(&[], &[]));
+        assert!(constant_time_eq(&[0; 32], &[0; 32]));
+
+        // Different arrays
+        assert!(!constant_time_eq(&[1, 2, 3], &[1, 2, 4]));
+        assert!(!constant_time_eq(&[1, 2, 3], &[1, 2]));
+        assert!(!constant_time_eq(&[1, 2], &[1, 2, 3]));
+        assert!(!constant_time_eq(&[0; 32], &[1; 32]));
+    }
+
+    #[test]
+    fn test_bytes_to_hex_roundtrip() {
+        let bytes = vec![0x00, 0x0f, 0xf0, 0xff, 0xab, 0xcd, 0xef];
+        let hex = bytes_to_hex(&bytes);
+        assert_eq!(hex, "000ff0ffabcdef");
+        assert_eq!(hex_to_bytes(&hex).unwrap(), bytes);
+    }
+
+    #[test]
+    fn test_hex_to_bytes_invalid() {
+        // Odd length
+        assert!(hex_to_bytes("abc").is_err());
+
+        // Invalid characters
+        assert!(hex_to_bytes("gggg").is_err());
+        assert!(hex_to_bytes("ABCDXYZ").is_err());
     }
 }

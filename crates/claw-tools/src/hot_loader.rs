@@ -1,11 +1,45 @@
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashSet;
+use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::{error::WatchError, types::HotLoadingConfig};
 
+// Note: This module is kept for backward compatibility.
+// For new code, use the hot_reload module which provides more comprehensive
+// hot-reloading capabilities including atomic swaps and version management.
+
 /// File watcher for hot-loading tool scripts.
+///
+/// # Deprecated
+///
+/// This struct is deprecated in favor of the `hot_reload` module which provides
+/// more comprehensive hot-reloading capabilities:
+///
+/// - [`FileWatcher`](crate::hot_reload::FileWatcher) for file watching
+/// - [`HotReloadProcessor`](crate::hot_reload::HotReloadProcessor) for event processing
+/// - [`VersionedModule`](crate::hot_reload::VersionedModule) for atomic module swapping
+/// - [`VersionedToolSet`](crate::hot_reload::VersionedToolSet) for versioned tool collections
+///
+/// # Migration
+///
+/// ```rust,ignore
+/// // Old API (deprecated)
+/// let loader = HotLoader::new(config, |path| { ... })?;
+///
+/// // New API (recommended)
+/// use claw_tools::hot_reload::{FileWatcher, HotReloadProcessor};
+///
+/// let mut watcher = FileWatcher::new(&config)?;
+/// let processor = HotReloadProcessor::new(registry, config);
+/// // ... set up event channel ...
+/// ```
+#[deprecated(
+    since = "0.1.0",
+    note = "Use the hot_reload module: FileWatcher, HotReloadProcessor, VersionedModule, VersionedToolSet"
+)]
 ///
 /// Watches a directory and calls the provided callback when a relevant file
 /// changes. Rapid filesystem events are coalesced via a configurable debounce
@@ -18,6 +52,7 @@ pub struct HotLoader {
     _event_tx: mpsc::Sender<PathBuf>,
 }
 
+#[allow(deprecated)]
 impl HotLoader {
     /// Create a new `HotLoader` with the given config.
     ///
@@ -57,20 +92,52 @@ impl HotLoader {
         })
         .map_err(|e| WatchError::WatchFailed(e.to_string()))?;
 
-        // Start watching the configured directory.
-        let watch_path = PathBuf::from(&config.watch_dir);
-        watcher
-            .watch(&watch_path, RecursiveMode::Recursive)
-            .map_err(|e| WatchError::WatchFailed(e.to_string()))?;
+        // Start watching the configured directories.
+        // ISSUE-001 fix: Ensure watch directories exist before watching.
+        for watch_dir in &config.watch_dirs {
+            fs::create_dir_all(watch_dir).map_err(|e| {
+                WatchError::WatchFailed(format!("Failed to create watch dir: {}", e))
+            })?;
+            watcher
+                .watch(watch_dir, RecursiveMode::Recursive)
+                .map_err(|e| WatchError::WatchFailed(e.to_string()))?;
+        }
 
         // Spawn background task: read events, apply debounce, call on_change.
+        // Uses a HashSet to track all unique changed paths within the debounce window,
+        // ensuring no file change events are lost.
         let debounce_ms = config.debounce_ms;
         tokio::spawn(async move {
-            while let Some(path) = event_rx.recv().await {
-                // Coalesce rapid events within the debounce window.
-                tokio::time::sleep(Duration::from_millis(debounce_ms)).await;
-                while event_rx.try_recv().is_ok() {}
-                on_change(path);
+            let mut pending_paths: HashSet<PathBuf> = HashSet::new();
+            let debounce_duration = Duration::from_millis(debounce_ms);
+
+            loop {
+                // Wait for the first event
+                match event_rx.recv().await {
+                    Some(path) => {
+                        pending_paths.insert(path);
+                    }
+                    None => break, // Channel closed
+                }
+
+                // Collect all events within the debounce window
+                let debounce_deadline = tokio::time::Instant::now() + debounce_duration;
+                loop {
+                    let timeout =
+                        debounce_deadline.saturating_duration_since(tokio::time::Instant::now());
+                    match tokio::time::timeout(timeout, event_rx.recv()).await {
+                        Ok(Some(path)) => {
+                            pending_paths.insert(path);
+                        }
+                        Ok(None) => break, // Channel closed
+                        Err(_) => break,   // Debounce window expired
+                    }
+                }
+
+                // Process all unique changed paths
+                for path in pending_paths.drain() {
+                    on_change(path);
+                }
             }
         });
 
@@ -81,9 +148,13 @@ impl HotLoader {
         })
     }
 
-    /// Return the watched directory path as configured.
+    /// Return the first watched directory path as configured.
     pub fn watched_path(&self) -> &str {
-        &self.config.watch_dir
+        self.config
+            .watch_dirs
+            .first()
+            .map(|p| p.to_str().unwrap_or(""))
+            .unwrap_or("")
     }
 
     /// Check if a file extension is in the watched list.
@@ -97,6 +168,7 @@ impl HotLoader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hot_reload::FileWatcher;
 
     fn default_config() -> HotLoadingConfig {
         HotLoadingConfig::default()
@@ -105,67 +177,59 @@ mod tests {
     #[test]
     fn test_hot_loader_default_config() {
         let config = default_config();
-        assert_eq!(config.watch_dir, "tools");
+        assert_eq!(config.watch_dirs, vec![PathBuf::from("tools")]);
         assert_eq!(config.extensions, vec!["lua"]);
         assert_eq!(config.debounce_ms, 50);
         assert_eq!(config.default_timeout_secs, 30);
     }
 
-    #[test]
-    fn test_hot_loader_is_watched_extension() {
+    #[tokio::test]
+    async fn test_hot_loader_is_watched_extension() {
         // Build a config pointing at an existing tmp dir so watch() succeeds.
         let tmp = std::env::temp_dir();
         let config = HotLoadingConfig {
-            watch_dir: tmp.to_string_lossy().into_owned(),
+            watch_dirs: vec![tmp],
             extensions: vec!["lua".to_string(), "js".to_string()],
-            debounce_ms: 50,
-            default_timeout_secs: 30,
+            ..Default::default()
         };
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let loader = rt
-            .block_on(async {
-                // We need a tokio context for the spawn inside HotLoader::new.
-                HotLoader::new(config, |_| {})
-            })
-            .expect("HotLoader::new should succeed");
+        // Use new FileWatcher API instead of deprecated HotLoader
+        let watcher = FileWatcher::new(&config).expect("FileWatcher::new should succeed");
 
-        assert!(loader.is_watched_extension("lua"));
-        assert!(loader.is_watched_extension("js"));
+        assert!(watcher.is_watched_extension_pub("lua"));
+        assert!(watcher.is_watched_extension_pub("js"));
     }
 
-    #[test]
-    fn test_hot_loader_non_watched_extension() {
+    #[tokio::test]
+    async fn test_hot_loader_non_watched_extension() {
         let tmp = std::env::temp_dir();
         let config = HotLoadingConfig {
-            watch_dir: tmp.to_string_lossy().into_owned(),
+            watch_dirs: vec![tmp],
             extensions: vec!["lua".to_string()],
-            debounce_ms: 50,
-            default_timeout_secs: 30,
+            ..Default::default()
         };
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let loader = rt
-            .block_on(async { HotLoader::new(config, |_| {}) })
-            .expect("HotLoader::new should succeed");
+        // Use new FileWatcher API instead of deprecated HotLoader
+        let watcher = FileWatcher::new(&config).expect("FileWatcher::new should succeed");
 
-        assert!(!loader.is_watched_extension("py"));
-        assert!(!loader.is_watched_extension("rs"));
-        assert!(!loader.is_watched_extension(""));
+        assert!(!watcher.is_watched_extension_pub("py"));
+        assert!(!watcher.is_watched_extension_pub("rs"));
+        assert!(!watcher.is_watched_extension_pub(""));
     }
 
     #[tokio::test]
     async fn test_hot_loader_create_with_tmpdir() {
         let tmp = std::env::temp_dir();
         let config = HotLoadingConfig {
-            watch_dir: tmp.to_string_lossy().into_owned(),
+            watch_dirs: vec![tmp],
             extensions: vec!["lua".to_string()],
-            debounce_ms: 50,
-            default_timeout_secs: 30,
+            ..Default::default()
         };
-        let loader = HotLoader::new(config, move |_path| {
-            // callback — just mark that it's callable
-        });
+        // Use new FileWatcher API instead of deprecated HotLoader
+        let watcher = FileWatcher::new(&config);
         // Should not panic or error.
-        assert!(loader.is_ok(), "HotLoader::new with tmpdir should succeed");
+        assert!(
+            watcher.is_ok(),
+            "FileWatcher::new with tmpdir should succeed"
+        );
     }
 
     #[tokio::test]
@@ -173,12 +237,15 @@ mod tests {
         let tmp = std::env::temp_dir();
         let dir_str = tmp.to_string_lossy().into_owned();
         let config = HotLoadingConfig {
-            watch_dir: dir_str.clone(),
+            watch_dirs: vec![tmp],
             extensions: vec!["lua".to_string()],
-            debounce_ms: 50,
-            default_timeout_secs: 30,
+            ..Default::default()
         };
-        let loader = HotLoader::new(config, |_| {}).expect("should create");
-        assert_eq!(loader.watched_path(), &dir_str);
+        // Use new FileWatcher API instead of deprecated HotLoader
+        let watcher = FileWatcher::new(&config).expect("should create");
+        // Check first watched directory matches
+        let dirs = watcher.watch_dirs();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs[0].to_string_lossy().into_owned(), dir_str);
     }
 }

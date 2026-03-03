@@ -12,6 +12,12 @@ pub struct AgentLoopConfig {
     pub system_prompt: Option<String>,
     /// Whether to enable tool use. Default: true.
     pub tool_use_enabled: bool,
+    /// Tool execution timeout in seconds. Default: 30.
+    pub tool_timeout_seconds: u64,
+    /// Maximum number of tool calls per turn. Default: 10.
+    pub max_tool_calls_per_turn: usize,
+    /// Whether to enable streaming responses. Default: false.
+    pub enable_streaming: bool,
 }
 
 impl Default for AgentLoopConfig {
@@ -21,6 +27,9 @@ impl Default for AgentLoopConfig {
             token_budget: 0,
             system_prompt: None,
             tool_use_enabled: true,
+            tool_timeout_seconds: 30,
+            max_tool_calls_per_turn: 10,
+            enable_streaming: false,
         }
     }
 }
@@ -42,6 +51,21 @@ impl AgentLoopConfig {
 
     pub fn with_system(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
+        self
+    }
+
+    pub fn with_tool_timeout_seconds(mut self, seconds: u64) -> Self {
+        self.tool_timeout_seconds = seconds;
+        self
+    }
+
+    pub fn with_max_tool_calls_per_turn(mut self, max: usize) -> Self {
+        self.max_tool_calls_per_turn = max;
+        self
+    }
+
+    pub fn with_enable_streaming(mut self, enabled: bool) -> Self {
+        self.enable_streaming = enabled;
         self
     }
 }
@@ -115,6 +139,9 @@ mod tests {
         assert_eq!(cfg.token_budget, 0);
         assert!(cfg.system_prompt.is_none());
         assert!(cfg.tool_use_enabled);
+        assert_eq!(cfg.tool_timeout_seconds, 30);
+        assert_eq!(cfg.max_tool_calls_per_turn, 10);
+        assert!(!cfg.enable_streaming);
     }
 
     #[test]
@@ -122,7 +149,10 @@ mod tests {
         let cfg = AgentLoopConfig::new()
             .with_max_turns(50)
             .with_token_budget(100_000)
-            .with_system("You are a coding assistant.");
+            .with_system("You are a coding assistant.")
+            .with_tool_timeout_seconds(60)
+            .with_max_tool_calls_per_turn(5)
+            .with_enable_streaming(true);
 
         assert_eq!(cfg.max_turns, 50);
         assert_eq!(cfg.token_budget, 100_000);
@@ -131,6 +161,23 @@ mod tests {
             Some("You are a coding assistant.".to_string())
         );
         assert!(cfg.tool_use_enabled);
+        assert_eq!(cfg.tool_timeout_seconds, 60);
+        assert_eq!(cfg.max_tool_calls_per_turn, 5);
+        assert!(cfg.enable_streaming);
+    }
+
+    #[test]
+    fn test_agent_loop_config_new_fields() {
+        let config = AgentLoopConfig::new()
+            .with_max_turns(50)
+            .with_tool_timeout_seconds(30)
+            .with_max_tool_calls_per_turn(10)
+            .with_enable_streaming(false);
+
+        assert_eq!(config.max_turns, 50);
+        assert_eq!(config.tool_timeout_seconds, 30);
+        assert_eq!(config.max_tool_calls_per_turn, 10);
+        assert!(!config.enable_streaming);
     }
 
     #[test]

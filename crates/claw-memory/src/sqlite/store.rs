@@ -14,7 +14,10 @@ use crate::{
 /// All rows are keyed by a text ID.  Embedding vectors are stored as JSON
 /// arrays in a TEXT column; cosine similarity is computed in-process when a
 /// semantic search is requested, making the implementation entirely
-/// self-contained with no native extensions.
+/// self-contained (no SQLite native extensions required for core functionality).
+///
+/// Note: The `sqlite-vec` dependency is available for future vector search
+/// optimizations but is not currently active in v0.1.0.
 pub struct SqliteMemoryStore {
     conn: Arc<Mutex<Connection>>,
 }
@@ -330,6 +333,75 @@ impl MemoryStore for SqliteMemoryStore {
             )
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
         Ok(total as u64)
+    }
+
+    // ------------------------------------------------------------------
+    // store_with_quota_check - ATOMIC implementation
+    // ------------------------------------------------------------------
+    async fn store_with_quota_check(
+        &self,
+        item: MemoryItem,
+        estimated_size: u64,
+        quota_bytes: u64,
+    ) -> Result<MemoryId, MemoryError> {
+        let id = item.id.clone();
+        let mut conn = self.conn.lock().unwrap();
+
+        // Use a transaction for atomicity
+        let tx = conn
+            .transaction()
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        // Calculate current usage within the transaction
+        let current_usage: i64 = tx
+            .query_row(
+                "SELECT COALESCE(SUM(LENGTH(content) + COALESCE(LENGTH(embedding), 0)), 0)
+                 FROM memory_items WHERE namespace = ?1",
+                params![&item.namespace],
+                |row| row.get(0),
+            )
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        // Check if adding this item would exceed quota
+        let current_usage = current_usage as u64;
+        if current_usage.saturating_add(estimated_size) > quota_bytes {
+            return Err(MemoryError::QuotaExceeded {
+                namespace: item.namespace.clone(),
+                used: current_usage,
+                limit: quota_bytes,
+            });
+        }
+
+        // Within quota - proceed with insert
+        let embedding_json = item
+            .embedding
+            .as_ref()
+            .map(|e| serde_json::to_string(e).unwrap_or_default());
+        let tags_json = serde_json::to_string(&item.tags).unwrap_or_else(|_| "[]".to_string());
+
+        tx.execute(
+            "INSERT OR REPLACE INTO memory_items
+                 (id, namespace, content, embedding, tags,
+                  created_at_ms, accessed_at_ms, importance)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                item.id.0,
+                item.namespace,
+                item.content,
+                embedding_json,
+                tags_json,
+                item.created_at_ms as i64,
+                item.accessed_at_ms as i64,
+                item.importance,
+            ],
+        )
+        .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        // Commit the transaction
+        tx.commit()
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        Ok(id)
     }
 }
 

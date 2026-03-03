@@ -42,23 +42,14 @@ impl Summarizer for SimpleSummarizer {
         summary.push_str("Summary of conversation:\n");
 
         for (i, msg) in messages.iter().enumerate().take(5) {
-            let preview: String = msg
-                .content
-                .chars()
-                .take(100)
-                .collect();
+            let preview: String = msg.content.chars().take(100).collect();
             let preview = if msg.content.len() > 100 {
                 format!("{}...", preview)
             } else {
                 preview
             };
-            
-            summary.push_str(&format!(
-                "[{}] {}: {}\n",
-                i + 1,
-                format!("{:?}", msg.role),
-                preview
-            ));
+
+            summary.push_str(&format!("[{}] {:?}: {}\n", i + 1, msg.role, preview));
         }
 
         if messages.len() > 5 {
@@ -79,7 +70,9 @@ impl Summarizer for SimpleSummarizer {
 /// This provides higher quality summaries but requires an LLM provider
 /// and incurs additional latency/cost.
 pub struct LlmSummarizer<P> {
+    #[allow(dead_code)]
     provider: P,
+    #[allow(dead_code)]
     model: String,
     max_summary_tokens: u32,
 }
