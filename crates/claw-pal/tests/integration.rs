@@ -4,8 +4,8 @@
 //! and ProcessManager interactions.
 
 use claw_pal::{
-    ExitStatus, IpcConnection, IpcError, IpcListener, IpcTransport, ProcessConfig, ProcessManager,
-    ProcessSignal, TokioProcessManager,
+    ExitStatus, IpcConnection, IpcError, IpcListener, IpcTransport, InterprocessTransport,
+    ProcessConfig, ProcessManager, ProcessSignal, TokioProcessManager,
 };
 use std::time::Duration;
 
@@ -43,8 +43,6 @@ async fn test_ipc_empty_endpoint_fails() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_ipc_full_roundtrip() {
-    use claw_pal::ipc::InterprocessTransport;
-
     let sock_path = format!("/tmp/claw_pal_integ_roundtrip_{}.sock", std::process::id());
 
     // Remove stale socket

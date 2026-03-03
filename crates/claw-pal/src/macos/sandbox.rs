@@ -68,12 +68,10 @@ extern "C" {
 ///
 /// # Example
 ///
-/// ```rust,no_run
-/// # #[cfg(target_os = "macos")]
-/// # {
-/// use claw_pal::macos::MacOSSandbox;
-/// use claw_pal::traits::sandbox::{SandboxBackend, SandboxConfig, SyscallPolicy};
-/// use claw_pal::types::ResourceLimits;
+/// ```rust,ignore
+/// // Internal implementation example - platform types are not public API
+/// use claw_pal::SandboxBackend;
+/// use claw_pal::{SandboxConfig, SyscallPolicy, ResourceLimits};
 ///
 /// let config = SandboxConfig::safe_default();
 /// let mut sandbox = MacOSSandbox::create(config).unwrap();
@@ -84,7 +82,6 @@ extern "C" {
 ///
 /// let handle = sandbox.apply().unwrap();
 /// // Sandbox is now active — restricted operations return EPERM
-/// # }
 /// ```
 pub struct MacOSSandbox {
     /// Sandbox configuration (mode, subprocess policy).
