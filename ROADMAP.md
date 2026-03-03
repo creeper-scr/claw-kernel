@@ -3,7 +3,7 @@ title: claw-kernel Roadmap
 description: Milestone-based roadmap for claw-kernel
 status: v0.1.0-released
 version: "0.1.0"
-last_updated: "2026-03-01"
+last_updated: "2026-03-03"
 language: bilingual
 ---
 
@@ -13,7 +13,7 @@ language: bilingual
 
 # claw-kernel Roadmap
 
-> **Current Status: v0.1.0 Released — 9 crates, 670+ tests passing**
+> **Strategy: Fast to v1.0.0 — Capture market share first, add features later.**
 
 ---
 
@@ -26,9 +26,20 @@ language: bilingual
 | Core implementation (9 crates) | ✅ Complete |
 | 670+ unit + integration tests | ✅ All passing |
 | Clippy / fmt / doc checks | ✅ Clean (zero warnings) |
-| Published on crates.io | ⬜ Planned (v0.2.0) |
+| Published on crates.io | ⬜ v1.0.0 target |
 
 See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
+
+---
+
+## Release Strategy
+
+**Core Principle:** Ship v1.0.0 as fast as possible to establish ecosystem presence. Additional providers and features will be delivered through post-v1.0 minor releases.
+
+**v1.0.0 = Minimal Stable Core:**
+- Existing 5 providers are sufficient for launch
+- Focus on documentation, examples, and API stability
+- Sandbox improvements can be incremental
 
 ---
 
@@ -40,12 +51,12 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
 - [x] Platform config directories (`dirs`)
 - [x] Security key validation (`argon2`)
 - [x] Linux and macOS sandbox groundwork
-- [x] Windows IPC skeleton (Named Pipe foundation for v0.2.0)
+- [x] Windows IPC skeleton (Named Pipe foundation)
 
 ### claw-runtime (System Runtime)
 - [x] `EventBus` (Tokio broadcast, capacity 1024)
 - [x] `AgentOrchestrator` (DashMap + AtomicU64 AgentId)
-- [x] `IpcRouter` for inter-agent message routing (Unix Domain Socket)
+- [x] `IpcRouter` for inter-agent message routing
 - [x] `Runtime` unified async entry point
 
 ### claw-provider (LLM Providers)
@@ -93,75 +104,132 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
 
 ## Milestones
 
-### v0.2.0 — Provider Expansion & SQLite History
+### v0.2.0 → v0.5.0 — Stabilization Sprint
 
-**Target:** 2026 Q2
+**Target:** 2026 Q2 (8–10 weeks)
 
-- [ ] Gemini (Google) provider implementation
-- [ ] Mistral provider implementation
-- [ ] Azure OpenAI provider implementation
-- [ ] Local GGUF model support via `llama-cpp-rs` or similar
-- [ ] SQLite history backend for `claw-loop` (optional feature `sqlite`)
-- [ ] Streaming response support across all providers
-- [ ] Publish individual crates to crates.io
+**Goal:** Prepare for v1.0.0 — stabilize API, fill documentation gaps, ensure cross-platform reliability.
 
----
-
-### v0.3.0 — Script Engine Expansion
-
-**Target:** 2026 Q3
-
-- [ ] Deno/V8 engine (`engine-v8` feature, via `deno_core`)
-- [ ] Python engine (`engine-py` feature, via `pyo3`)
-- [ ] Full `RustBridge` API: `llm`, `tools`, `memory`, `events`, `fs`, `net`
-- [ ] Hot-reload: file change → script re-eval without process restart
-
----
-
-### v0.4.0 — Sandbox Hardening
-
-**Target:** 2026 Q3
-
-- [ ] Linux: full seccomp-bpf syscall allowlist
-- [ ] Linux: mount + user namespace isolation
-- [ ] macOS: complete Seatbelt profile (network + file rules)
-- [ ] Windows: AppContainer + Job Objects implementation
-- [ ] Platform integration test suite (`--features sandbox-tests`)
-
----
-
-### v0.5.0 — Channel Expansion
-
-**Target:** 2026 Q4
-
-- [ ] Telegram integration
-- [ ] Slack integration
-- [ ] WebSocket bidirectional channel
-- [ ] Channel multiplexer (fan-out to multiple platforms)
-
----
-
-### v0.9.0-beta — Examples, Benchmarks & Docs
-
-**Target:** 2027 Q1
-
-- [ ] Runnable `simple-agent` example
-- [ ] Runnable `custom-tool` example
-- [ ] Runnable `self-evolving-agent` example
-- [ ] Performance benchmarks (provider latency, tool throughput, memory recall)
-- [ ] Full rustdoc API documentation with doctests
-- [ ] Migration guide for any breaking changes
+- [ ] **Documentation**
+  - [ ] Full rustdoc API documentation with doctests
+  - [ ] Architecture guide for contributors
+  - [ ] Quick-start guide for end users
+  - [ ] Migration guide template (for future breaking changes)
+  
+- [ ] **Examples** (runnable, tested in CI)
+  - [ ] `examples/simple-agent` — basic agent with tools
+  - [ ] `examples/custom-tool` — writing Lua tools
+  - [ ] `examples/memory-agent` — using SqliteMemoryStore
+  
+- [ ] **API Hardening**
+  - [ ] Audit all public APIs for semver compliance
+  - [ ] Hide internal implementation details
+  - [ ] Finalize error type design
+  
+- [ ] **Testing**
+  - [ ] Cross-platform CI (Linux + macOS + Windows)
+  - [ ] Integration test coverage for all providers
+  - [ ] Sandbox integration tests (Linux)
 
 ---
 
 ### v1.0.0 — Stable Release
 
+**Target:** 2026 Q2 (immediately after stabilization)
+
+**Goal:** Establish stable API baseline and ecosystem presence.
+
+- [ ] **crates.io Publication**
+  - [ ] All 9 crates published with stable version
+  - [ ] README, LICENSE, metadata complete
+  - [ ] `claw-kernel` meta-crate ready for `cargo install`
+  
+- [ ] **API Stability Guarantee**
+  - [ ] Semver policy documented
+  - [ ] Public API surface locked
+  - [ ] Deprecation policy established
+  
+- [ ] **Production Readiness**
+  - [ ] Security audit passed
+  - [ ] Performance benchmarks published
+  - [ ] Known issues documented
+
+**What v1.0.0 DOES include:**
+- 5 LLM providers (Anthropic, OpenAI, Ollama, DeepSeek, Moonshot)
+- Lua scripting engine
+- In-memory history (SQLite history deferred to v1.1)
+- Basic sandbox (Linux seccomp stub, macOS Seatbelt stub, Windows skeleton)
+- Hot-loading tools
+- Memory system with SQLite backend
+
+---
+
+## Post-v1.0 Roadmap
+
+**Strategy:** Rapid minor releases adding providers and features. No breaking changes.
+
+### v1.1.0 — SQLite History & Streaming
+
+**Target:** 2026 Q3
+
+- [ ] SQLite history backend for `claw-loop` (`sqlite-history` feature)
+- [ ] Streaming response support across all providers
+- [ ] Performance benchmarks (provider latency, tool throughput)
+
+### v1.2.0 — Additional Providers
+
+**Target:** 2026 Q3
+
+- [ ] Gemini (Google) provider
+- [ ] Mistral provider
+- [ ] Azure OpenAI provider
+
+### v1.3.0 — Enhanced Scripting
+
+**Target:** 2026 Q4
+
+- [ ] Deno/V8 engine (`engine-v8` feature)
+- [ ] Python engine (`engine-py` feature)
+- [ ] Full `RustBridge` API: `llm`, `tools`, `memory`, `events`, `fs`, `net`
+
+### v1.4.0 — Sandbox Hardening
+
+**Target:** 2026 Q4
+
+- [ ] Linux: full seccomp-bpf syscall allowlist
+- [ ] macOS: complete Seatbelt profile
+- [ ] Windows: AppContainer + Job Objects
+
+### v1.5.0 — Local Models
+
 **Target:** 2027 Q1
 
-- [ ] Stable API guarantee (semver)
-- [ ] Cross-platform integration test suite (Linux + macOS + Windows CI)
-- [ ] All crates published on crates.io with stable versions
-- [ ] Security audit
+- [ ] Local GGUF model support via `llama-cpp-rs` (optional feature)
+
+### v1.6.0+ — Channel Expansion
+
+**Target:** 2027 Q1+
+
+- [ ] Telegram integration
+- [ ] Slack integration
+- [ ] WebSocket bidirectional channel
+
+---
+
+## Contributing Priorities
+
+Current priority areas to reach v1.0.0:
+
+1. **Documentation** — examples, guides, rustdoc
+2. **Cross-platform CI** — Windows testing, macOS CI
+3. **API audit** — ensuring semver compliance
+4. **Provider testing** — integration tests for all 5 providers
+
+**Deferred (post-v1.0):**
+- New providers (Gemini, Mistral, Azure)
+- Additional script engines (Deno, Python)
+- GGUF local models
+- Advanced sandbox features
 
 ---
 
@@ -197,7 +265,7 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 # claw-kernel 路线图
 
-> **当前状态：v0.1.0 已发布 —— 9 个 crate，670+ 个测试全部通过**
+> **策略：快速推进至 v1.0.0 —— 先抢占生态位，后完善功能。**
 
 ---
 
@@ -210,19 +278,30 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 | 核心实现（9 个 crate） | ✅ 已完成 |
 | 670+ 个单元+集成测试 | ✅ 全部通过 |
 | Clippy / fmt / 文档检查 | ✅ 干净 |
-| 发布到 crates.io | ⬜ 计划中（v0.2.0） |
+| 发布到 crates.io | ⬜ v1.0.0 目标 |
 
 v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
+## 发布策略
+
+**核心原则：** 以最快速度发布 v1.0.0，建立生态系统影响力。额外的 Provider 和功能将通过 v1.0 之后的次要版本迭代交付。
+
+**v1.0.0 = 最小稳定核心：**
+- 现有的 5 个 Provider 足以启动
+- 重点是文档、示例和 API 稳定性
+- 沙箱改进可以渐进式进行
+
+---
+
 ## 已完成 — v0.1.0（2026-03-01）
 
-### 核心亮点（完整列表见上方英文部分）
+### 核心亮点
 
 - [x] **claw-pal**：Unix Domain Socket IPC + Windows Named Pipe 骨架 + 进程管理 + 安全密钥验证
 - [x] **claw-runtime**：EventBus + AgentOrchestrator + IpcRouter + Runtime
-- [x] **claw-provider**：5 个 LLM Provider（Anthropic/OpenAI/Ollama/DeepSeek/Moonshot）+ Temperature 规范 (0.0–2.0)
+- [x] **claw-provider**：5 个 LLM Provider（Anthropic/OpenAI/Ollama/DeepSeek/Moonshot）
 - [x] **claw-tools**：工具注册表 + 热加载 + JSON Schema 生成
 - [x] **claw-loop**：环形历史 + 三种停止条件 + Builder
 - [x] **claw-memory**：Ngram 嵌入 + SQLite 检索 + 安全配额存储
@@ -234,80 +313,129 @@ v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 里程碑
 
-### v0.2.0 — Provider 扩展 & SQLite 历史
+### v0.2.0 → v0.5.0 — 稳定化冲刺
 
-**目标时间：** 2026 年 Q2
+**目标时间：** 2026 Q2（8–10 周）
 
-- [ ] Gemini（Google）Provider 实现
-- [ ] Mistral Provider 实现
-- [ ] Azure OpenAI Provider 实现
-- [ ] 本地 GGUF 模型支持（`llama-cpp-rs` 等）
-- [ ] `claw-loop` SQLite 历史后端（可选 feature `sqlite`）
-- [ ] 流式响应全面支持
-- [ ] 各 crate 发布到 crates.io
+**目标：** 为 v1.0.0 做准备 —— 稳定 API、完善文档、确保跨平台可靠性。
 
----
-
-### v0.3.0 — 脚本引擎扩展
-
-**目标时间：** 2026 年 Q3
-
-- [ ] Deno/V8 引擎（`engine-v8` feature，`deno_core`）
-- [ ] Python 引擎（`engine-py` feature，`pyo3`）
-- [ ] 完整 `RustBridge` API（llm、tools、memory、events、fs、net）
-- [ ] 热加载：文件变更 → 脚本重新求值（无需重启进程）
-
----
-
-### v0.4.0 — 沙箱加固
-
-**目标时间：** 2026 年 Q3
-
-- [ ] Linux：完整 seccomp-bpf 系统调用白名单 + 命名空间隔离
-- [ ] macOS：完整 Seatbelt profile（网络+文件规则）
-- [ ] Windows：AppContainer + Job Objects 完整实现
-- [ ] 平台沙箱集成测试套件
-
----
-
-### v0.5.0 — 渠道扩展
-
-**目标时间：** 2026 年 Q4
-
-- [ ] Telegram 集成
-- [ ] Slack 集成
-- [ ] WebSocket 双向渠道
-- [ ] 渠道多路复用器（扇出到多平台）
-
----
-
-### v0.9.0-beta — 示例、基准与文档
-
-**目标时间：** 2027 年 Q1
-
-- [ ] 可运行示例（simple-agent、custom-tool、self-evolving-agent）
-- [ ] 性能基准测试（Provider 延迟、工具吞吐量、记忆召回率）
-- [ ] 完整 rustdoc API 文档（含 doctests）
+- [ ] **文档**
+  - [ ] 完整 rustdoc API 文档（含 doctests）
+  - [ ] 贡献者架构指南
+  - [ ] 终端用户快速入门指南
+  - [ ] 破坏性变更迁移指南模板
+  
+- [ ] **示例**（可运行，CI 测试）
+  - [ ] `examples/simple-agent` —— 带工具的基础 Agent
+  - [ ] `examples/custom-tool` —— 编写 Lua 工具
+  - [ ] `examples/memory-agent` —— 使用 SqliteMemoryStore
+  
+- [ ] **API 加固**
+  - [ ] 审计所有公共 API 的 semver 合规性
+  - [ ] 隐藏内部实现细节
+  - [ ] 错误类型设计定稿
+  
+- [ ] **测试**
+  - [ ] 跨平台 CI（Linux + macOS + Windows）
+  - [ ] 所有 Provider 的集成测试覆盖
+  - [ ] 沙箱集成测试（Linux）
 
 ---
 
 ### v1.0.0 — 稳定版发布
 
-**目标时间：** 2027 年 Q1
+**目标时间：** 2026 Q2（稳定化之后立即发布）
 
-- [ ] 稳定 API 保证（语义化版本）
-- [ ] Linux + macOS + Windows 跨平台 CI 集成测试
-- [ ] 所有 crate 发布到 crates.io 稳定版
-- [ ] 安全审计
+**目标：** 建立稳定 API 基线和生态系统影响力。
+
+- [ ] **crates.io 发布**
+  - [ ] 全部 9 个 crate 以稳定版本发布
+  - [ ] README、LICENSE、元数据完整
+  - [ ] `claw-kernel` 元 crate 支持 `cargo install`
+  
+- [ ] **API 稳定性保证**
+  - [ ] Semver 策略文档化
+  - [ ] 公共 API 表面锁定
+  - [ ] 弃用策略确立
+  
+- [ ] **生产就绪**
+  - [ ] 通过安全审计
+  - [ ] 发布性能基准测试
+  - [ ] 已知问题文档化
+
+**v1.0.0 包含内容：**
+- 5 个 LLM Provider（Anthropic、OpenAI、Ollama、DeepSeek、Moonshot）
+- Lua 脚本引擎
+- 内存历史（SQLite 历史推迟到 v1.1）
+- 基础沙箱（Linux seccomp stub、macOS Seatbelt stub、Windows skeleton）
+- 热加载工具
+- 带 SQLite 后端的记忆系统
 
 ---
 
-## 贡献
+## v1.0 之后路线图
 
-想参与构建？请查看 [CONTRIBUTING.md](CONTRIBUTING.md) 了解指南。
+**策略：** 快速次要版本发布，添加 Provider 和功能。无破坏性变更。
 
-**当前优先领域：**
-- 新 LLM Provider：Gemini、Mistral、本地 GGUF
-- Windows 沙箱完整实现
-- Deno/V8 引擎桥接
-- 扩展集成测试覆盖
+### v1.1.0 — SQLite 历史 & 流式响应
+
+**目标时间：** 2026 Q3
+
+- [ ] `claw-loop` SQLite 历史后端（`sqlite-history` feature）
+- [ ] 所有 Provider 的流式响应支持
+- [ ] 性能基准测试（Provider 延迟、工具吞吐量）
+
+### v1.2.0 — 额外 Provider
+
+**目标时间：** 2026 Q3
+
+- [ ] Gemini（Google）Provider
+- [ ] Mistral Provider
+- [ ] Azure OpenAI Provider
+
+### v1.3.0 — 增强脚本
+
+**目标时间：** 2026 Q4
+
+- [ ] Deno/V8 引擎（`engine-v8` feature）
+- [ ] Python 引擎（`engine-py` feature）
+- [ ] 完整 `RustBridge` API：llm、tools、memory、events、fs、net
+
+### v1.4.0 — 沙箱加固
+
+**目标时间：** 2026 Q4
+
+- [ ] Linux：完整 seccomp-bpf 系统调用白名单
+- [ ] macOS：完整 Seatbelt profile
+- [ ] Windows：AppContainer + Job Objects
+
+### v1.5.0 — 本地模型
+
+**目标时间：** 2027 Q1
+
+- [ ] 通过 `llama-cpp-rs` 支持本地 GGUF 模型（可选 feature）
+
+### v1.6.0+ — 渠道扩展
+
+**目标时间：** 2027 Q1+
+
+- [ ] Telegram 集成
+- [ ] Slack 集成
+- [ ] WebSocket 双向渠道
+
+---
+
+## 贡献优先领域
+
+达到 v1.0.0 的当前优先领域：
+
+1. **文档** —— 示例、指南、rustdoc
+2. **跨平台 CI** —— Windows 测试、macOS CI
+3. **API 审计** —— 确保 semver 合规性
+4. **Provider 测试** —— 全部 5 个 Provider 的集成测试
+
+**推迟（v1.0 之后）：**
+- 新 Provider（Gemini、Mistral、Azure）
+- 额外脚本引擎（Deno、Python）
+- GGUF 本地模型
+- 高级沙箱功能
