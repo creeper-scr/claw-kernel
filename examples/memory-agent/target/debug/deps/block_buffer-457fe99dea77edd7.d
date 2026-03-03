@@ -1,0 +1,8 @@
+/Users/ygz/apps/claw-kernel/examples/memory-agent/target/debug/deps/libblock_buffer-457fe99dea77edd7.rmeta: /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/block-buffer-0.10.4/src/lib.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/block-buffer-0.10.4/src/sealed.rs
+
+/Users/ygz/apps/claw-kernel/examples/memory-agent/target/debug/deps/libblock_buffer-457fe99dea77edd7.rlib: /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/block-buffer-0.10.4/src/lib.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/block-buffer-0.10.4/src/sealed.rs
+
+/Users/ygz/apps/claw-kernel/examples/memory-agent/target/debug/deps/block_buffer-457fe99dea77edd7.d: /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/block-buffer-0.10.4/src/lib.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/block-buffer-0.10.4/src/sealed.rs
+
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/block-buffer-0.10.4/src/lib.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/block-buffer-0.10.4/src/sealed.rs:

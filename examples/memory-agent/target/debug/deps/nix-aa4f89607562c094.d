@@ -1,0 +1,14 @@
+/Users/ygz/apps/claw-kernel/examples/memory-agent/target/debug/deps/libnix-aa4f89607562c094.rmeta: /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/lib.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/macros.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/errno.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/fcntl.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sys/mod.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sys/signal.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sys/time.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/unistd.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sched.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sys/wait.rs
+
+/Users/ygz/apps/claw-kernel/examples/memory-agent/target/debug/deps/nix-aa4f89607562c094.d: /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/lib.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/macros.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/errno.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/fcntl.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sys/mod.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sys/signal.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sys/time.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/unistd.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sched.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sys/wait.rs
+
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/lib.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/macros.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/errno.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/fcntl.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sys/mod.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sys/signal.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sys/time.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/unistd.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sched.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/nix-0.27.1/src/sys/wait.rs:

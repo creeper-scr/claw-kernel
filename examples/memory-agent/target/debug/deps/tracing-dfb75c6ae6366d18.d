@@ -1,0 +1,12 @@
+/Users/ygz/apps/claw-kernel/examples/memory-agent/target/debug/deps/libtracing-dfb75c6ae6366d18.rmeta: /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/lib.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/macros.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/dispatcher.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/field.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/instrument.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/level_filters.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/span.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/subscriber.rs
+
+/Users/ygz/apps/claw-kernel/examples/memory-agent/target/debug/deps/tracing-dfb75c6ae6366d18.d: /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/lib.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/macros.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/dispatcher.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/field.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/instrument.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/level_filters.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/span.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/subscriber.rs
+
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/lib.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/macros.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/dispatcher.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/field.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/instrument.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/level_filters.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/span.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/tracing-0.1.44/src/subscriber.rs:

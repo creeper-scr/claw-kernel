@@ -1,0 +1,10 @@
+/Users/ygz/apps/claw-kernel/examples/memory-agent/target/debug/deps/libfutures_channel-e5db8a220d97c389.rmeta: /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/lib.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/lock.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/mpsc/mod.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/mpsc/queue.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/mpsc/sink_impl.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/oneshot.rs
+
+/Users/ygz/apps/claw-kernel/examples/memory-agent/target/debug/deps/futures_channel-e5db8a220d97c389.d: /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/lib.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/lock.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/mpsc/mod.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/mpsc/queue.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/mpsc/sink_impl.rs /Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/oneshot.rs
+
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/lib.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/lock.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/mpsc/mod.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/mpsc/queue.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/mpsc/sink_impl.rs:
+/Users/ygz/.cargo/registry/src/index.crates.io-6f17d22bba15001f/futures-channel-0.3.32/src/oneshot.rs:
