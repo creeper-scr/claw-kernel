@@ -62,7 +62,7 @@ pub enum ProcessError {
 }
 
 /// Unified error type for claw-pal operations.
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum PalError {
     /// Sandbox error.
     #[error("sandbox error: {0}")]
@@ -78,7 +78,7 @@ pub enum PalError {
     PermissionDenied(String),
     /// IO error.
     #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
+    Io(String),
 }
 
 #[cfg(test)]
@@ -191,9 +191,8 @@ mod tests {
     }
 
     #[test]
-    fn test_pal_error_from_io() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
-        let pal_err: PalError = io_err.into();
+    fn test_pal_error_io() {
+        let pal_err = PalError::Io("file not found".to_string());
         assert!(pal_err.to_string().contains("IO error"));
     }
 }

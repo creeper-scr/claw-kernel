@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 /// Errors during script compilation.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum CompileError {
     #[error("syntax error: {0}")]
     Syntax(String),
@@ -10,7 +10,7 @@ pub enum CompileError {
 }
 
 /// All errors that can arise from script execution.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum ScriptError {
     #[error("compile error: {0}")]
     Compile(#[from] CompileError),

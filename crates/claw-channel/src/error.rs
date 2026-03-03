@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum ChannelError {
     #[error("connection failed: {0}")]
     ConnectionFailed(String),

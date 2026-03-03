@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::state_machine::{AgentState, StateEvent};
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum AgentError {
     #[error("provider error: {0}")]
     Provider(String),

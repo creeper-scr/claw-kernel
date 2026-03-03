@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum MemoryError {
     #[error("item not found: {0}")]
     NotFound(String),

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 /// Validation error types for tool validation pipeline.
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum ValidationError {
     /// Syntax error in the tool script.
     #[error("syntax error in {file}: {message}")]
@@ -22,7 +22,7 @@ pub enum ValidationError {
     TimeoutError { file: PathBuf, operation: String },
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum RegistryError {
     #[error("tool not found: {0}")]
     ToolNotFound(String),
@@ -36,7 +36,7 @@ pub enum RegistryError {
     ExecutionFailed(String),
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum LoadError {
     #[error("file not found: {0}")]
     FileNotFound(String),
@@ -48,7 +48,7 @@ pub enum LoadError {
     Io(String),
 }
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone)]
 pub enum WatchError {
     #[error("watch failed: {0}")]
     WatchFailed(String),
