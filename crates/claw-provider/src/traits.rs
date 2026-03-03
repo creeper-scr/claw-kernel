@@ -13,6 +13,85 @@ use crate::{
 ///
 /// Abstracts the message format differences between LLM providers.
 /// OpenAI-compatible providers share the same format, Anthropic uses a different format.
+///
+/// # Examples
+///
+/// This trait is typically implemented for marker types that define the wire format:
+///
+/// ```rust
+/// use claw_provider::{MessageFormat, Message, Options, CompletionResponse, Delta};
+/// use serde::{Serialize, Deserialize};
+///
+/// // Define request/response types for a custom provider
+/// #[derive(Serialize)]
+/// struct CustomRequest {
+///     model: String,
+///     messages: Vec<CustomMessage>,
+/// }
+///
+/// #[derive(Serialize)]
+/// struct CustomMessage {
+///     role: String,
+///     content: String,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct CustomResponse {
+///     text: String,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct CustomChunk;
+///
+/// struct CustomFormat;
+///
+/// #[derive(Debug)]
+/// struct CustomError;
+///
+/// impl std::fmt::Display for CustomError {
+///     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+///         write!(f, "custom format error")
+///     }
+/// }
+///
+/// impl std::error::Error for CustomError {}
+///
+/// impl MessageFormat for CustomFormat {
+///     type Request = CustomRequest;
+///     type Response = CustomResponse;
+///     type StreamChunk = CustomChunk;
+///     type Error = CustomError;
+///
+///     fn build_request(messages: &[Message], opts: &Options) -> Self::Request {
+///         CustomRequest {
+///             model: opts.model.clone(),
+///             messages: messages.iter().map(|m| CustomMessage {
+///                 role: format!("{:?}", m.role).to_lowercase(),
+///                 content: m.content.clone(),
+///             }).collect(),
+///         }
+///     }
+///
+///     fn parse_response(_raw: Self::Response) -> Result<CompletionResponse, Self::Error> {
+///         // Parse provider-specific response into canonical format
+///         unimplemented!()
+///     }
+///
+///     fn parse_stream_chunk(_chunk: &[u8]) -> Result<Option<Delta>, Self::Error> {
+///         // Parse SSE/NDJSON chunk
+///         Ok(None)
+///     }
+///
+///     fn token_count(_messages: &[Message]) -> usize {
+///         // Estimate tokens for the request
+///         0
+///     }
+///
+///     fn endpoint() -> &'static str {
+///         "/v1/chat/completions"
+///     }
+/// }
+/// ```
 pub trait MessageFormat: Send + Sync {
     /// Request type for this format.
     type Request: Serialize;
@@ -44,6 +123,60 @@ pub trait MessageFormat: Send + Sync {
 ///
 /// Implements generic HTTP logic reused by all providers.
 /// This trait is object-safe and can be used with `dyn HttpTransport`.
+///
+/// # Examples
+///
+/// Using the default HTTP transport:
+///
+/// ```rust
+/// use claw_provider::DefaultHttpTransport;
+///
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Create a transport with default settings
+/// let transport = DefaultHttpTransport::new("https://api.example.com");
+///
+/// // Add authentication if needed
+/// let transport = transport.with_auth("your-api-key");
+///
+/// // The transport can now be used with any provider
+/// // let provider = OpenAIProvider::new(transport, "gpt-4o");
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Implementing a custom transport for testing:
+///
+/// ```rust
+/// use claw_provider::{HttpTransport, ProviderError};
+/// use async_trait::async_trait;
+/// use std::pin::Pin;
+/// use futures::Stream;
+///
+/// struct MockTransport;
+///
+/// #[async_trait]
+/// impl HttpTransport for MockTransport {
+///     async fn post_json(
+///         &self,
+///         _url: &str,
+///         _headers: &[(&str, &str)],
+///         _body: &serde_json::Value,
+///     ) -> Result<serde_json::Value, ProviderError> {
+///         // Return mock response for testing
+///         Ok(serde_json::json!({"id": "mock", "content": "test"}))
+///     }
+///
+///     async fn post_stream(
+///         &self,
+///         _url: &str,
+///         _headers: &[(&str, &str)],
+///         _body: &serde_json::Value,
+///     ) -> Result<Pin<Box<dyn Stream<Item = Result<bytes::Bytes, ProviderError>> + Send>>, ProviderError> {
+///         use futures::stream;
+///         Ok(Box::pin(stream::empty()))
+///     }
+/// }
+/// ```
 #[async_trait]
 pub trait HttpTransport: Send + Sync {
     /// POST JSON and return the full response body.
@@ -70,6 +203,33 @@ pub trait HttpTransport: Send + Sync {
 ///
 /// This trait uses generic methods and cannot be made into a trait object.
 /// Use `HttpTransport` for trait objects, and this trait for generic operations.
+///
+/// # Examples
+///
+/// The `HttpTransportExt` trait provides generic request methods that work
+/// with any `MessageFormat` implementation:
+///
+/// ```rust,ignore
+/// use claw_provider::{HttpTransportExt, MessageFormat, Message, Options, CompletionResponse};
+///
+/// // These methods are available on any type implementing HttpTransportExt
+/// async fn example<T, F>(transport: T) -> Result<CompletionResponse, claw_provider::ProviderError>
+/// where
+///     T: HttpTransportExt,
+///     F: MessageFormat,
+///     <F as MessageFormat>::Request: Send,
+///     <F as MessageFormat>::Error: std::error::Error + Send + Sync + 'static,
+/// {
+///     let messages = vec![Message::user("Hello")];
+///     let opts = Options::new("model");
+///     
+///     // Generic request using MessageFormat
+///     let response = transport.request::<F>(&messages, &opts).await?;
+///     
+///     // Streaming request
+///     let _stream = transport.stream_request::<F>(&messages, &opts).await?;///     Ok(response)
+/// }
+/// ```
 pub trait HttpTransportExt: HttpTransport {
     /// Base URL for the provider API.
     fn base_url(&self) -> &str;
@@ -179,6 +339,91 @@ pub trait HttpTransportExt: HttpTransport {
 }
 
 /// High-level LLM provider interface (Level 3: User-facing).
+///
+/// This is the main trait for interacting with LLM providers. Implementations
+/// are provided for OpenAI, Anthropic, Ollama, DeepSeek, and Moonshot.
+///
+/// # Examples
+///
+/// Using a built-in provider:
+///
+/// ```rust,ignore
+/// use claw_provider::{LLMProvider, OllamaProvider, DefaultHttpTransport, Message, Options};
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Create a provider instance
+/// let transport = DefaultHttpTransport::new("http://localhost:11434", "")?;
+/// let provider = OllamaProvider::new(transport, "llama3.2:latest");
+///
+/// // Prepare messages and options
+/// let messages = vec![
+///     Message::system("You are a helpful assistant."),
+///     Message::user("What is Rust?"),
+/// ];
+/// let options = Options::new("llama3.2:latest")
+///     .with_max_tokens(1024)
+///     .with_temperature(0.7)?;
+///
+/// // Get completion
+/// let response = provider.complete(messages, options).await?;
+/// println!("Response: {}", response.message.content);
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Implementing a custom provider:
+///
+/// ```rust
+/// use claw_provider::{LLMProvider, ProviderError, Message, Options, CompletionResponse, Delta};
+/// use claw_provider::{TokenUsage, FinishReason};
+/// use async_trait::async_trait;
+/// use std::pin::Pin;
+/// use futures::Stream;
+///
+/// struct MyProvider {
+///     model: String,
+/// }
+///
+/// #[async_trait]
+/// impl LLMProvider for MyProvider {
+///     fn provider_id(&self) -> &str {
+///         "my_provider"
+///     }
+///
+///     fn model_id(&self) -> &str {
+///         &self.model
+///     }
+///
+///     async fn complete(
+///         &self,
+///         _messages: Vec<Message>,
+///         _options: Options,
+///     ) -> Result<CompletionResponse, ProviderError> {
+///         // Implement API call logic here
+///         Ok(CompletionResponse {
+///             id: "resp-123".to_string(),
+///             model: self.model.clone(),
+///             message: Message::assistant("Hello from my provider!"),
+///             finish_reason: FinishReason::Stop,
+///             usage: TokenUsage::new(10, 5),
+///         })
+///     }
+///
+///     async fn complete_stream(
+///         &self,
+///         _messages: Vec<Message>,
+///         _options: Options,
+///     ) -> Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError> {
+///         // Implement streaming logic here
+///         use futures::stream;
+///         Ok(Box::pin(stream::empty()))
+///     }
+/// }
+///
+/// // The default token_count implementation uses chars/4 estimation
+/// let provider = MyProvider { model: "custom-model".to_string() };
+/// assert_eq!(provider.token_count("Hello world"), 2); // 11 chars / 4 = 2
+/// ```
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
     /// Short identifier for this provider (e.g., "anthropic", "openai").
@@ -208,6 +453,69 @@ pub trait LLMProvider: Send + Sync {
 }
 
 /// Provider that generates embedding vectors.
+///
+/// Embedding providers convert text into dense vector representations
+/// suitable for semantic search and similarity comparisons.
+///
+/// # Examples
+///
+/// Using the built-in n-gram embedding provider:
+///
+/// ```rust
+/// use claw_provider::{EmbeddingProvider, NgramEmbeddingProvider};
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Create a provider with default 64-dimensional embeddings
+/// let provider = NgramEmbeddingProvider::new();
+///
+/// // Embed a single text
+/// let embedding = provider.embed("Hello world").await?;
+/// assert_eq!(embedding.len(), 64);
+///
+/// // Embed multiple texts in batch
+/// let texts = vec![
+///     "First document".to_string(),
+///     "Second document".to_string(),
+/// ];
+/// let embeddings = provider.embed_batch(texts).await?;
+/// assert_eq!(embeddings.len(), 2);
+/// assert_eq!(embeddings[0].len(), 64);
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Implementing a custom embedding provider:
+///
+/// ```rust
+/// use claw_provider::{EmbeddingProvider, ProviderError, Embedding};
+/// use async_trait::async_trait;
+///
+/// struct SimpleEmbeddingProvider;
+///
+/// #[async_trait]
+/// impl EmbeddingProvider for SimpleEmbeddingProvider {
+///     async fn embed(&self, text: &str) -> Result<Embedding, ProviderError> {
+///         // Simple character-based embedding for demonstration
+///         let mut vec = vec![0.0f32; self.dimensions()];
+///         for (i, byte) in text.bytes().enumerate().take(self.dimensions()) {
+///             vec[i] = byte as f32 / 255.0;
+///         }
+///         Ok(vec)
+///     }
+///
+///     async fn embed_batch(&self, texts: Vec<String>) -> Result<Vec<Embedding>, ProviderError> {
+///         let mut results = Vec::new();
+///         for text in texts {
+///             results.push(self.embed(&text).await?);
+///         }
+///         Ok(results)
+///     }
+///
+///     fn dimensions(&self) -> usize {
+///         128
+///     }
+/// }
+/// ```
 #[async_trait]
 pub trait EmbeddingProvider: Send + Sync {
     /// Embed a single text.

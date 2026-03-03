@@ -9,6 +9,124 @@ use crate::types::{PermissionSet, ToolContext, ToolResult, ToolSchema};
 /// Tools can be written in Rust (native) or script languages (via bridge).
 /// The `execute` method receives JSON arguments and a context containing
 /// permissions and agent ID.
+///
+/// # Examples
+///
+/// Implementing a simple native tool:
+///
+/// ```rust
+/// use claw_tools::{Tool, ToolSchema, PermissionSet, ToolContext, ToolResult};
+/// use claw_tools::{ToolError, ToolErrorCode};
+/// use async_trait::async_trait;
+/// use std::time::Duration;
+///
+/// /// A simple tool that echoes back the input
+/// struct EchoTool {
+///     schema: ToolSchema,
+///     permissions: PermissionSet,
+/// }
+///
+/// impl EchoTool {
+///     fn new() -> Self {
+///         Self {
+///             schema: ToolSchema::new(
+///                 "echo",
+///                 "Echoes back the input message",
+///                 serde_json::json!({
+///                     "type": "object",
+///                     "properties": {
+///                         "message": {
+///                             "type": "string",
+///                             "description": "The message to echo"
+///                         }
+///                     },
+///                     "required": ["message"]
+///                 }),
+///             ),
+///             permissions: PermissionSet::minimal(),
+///         }
+///     }
+/// }
+///
+/// #[async_trait]
+/// impl Tool for EchoTool {
+///     fn name(&self) -> &str {
+///         "echo"
+///     }
+///
+///     fn description(&self) -> &str {
+///         "Echoes back the input message"
+///     }
+///
+///     fn schema(&self) -> &ToolSchema {
+///         &self.schema
+///     }
+///
+///     fn permissions(&self) -> &PermissionSet {
+///         &self.permissions
+///     }
+///
+///     // Optional: override the default 30s timeout
+///     fn timeout(&self) -> Duration {
+///         Duration::from_secs(10)
+///     }
+///
+///     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> ToolResult {
+///         // Validate required argument
+///         let message = match args.get("message") {
+///             Some(m) => m.as_str().unwrap_or(""),
+///             None => {
+///                 return ToolResult::err(
+///                     ToolError::invalid_args("Missing 'message' argument"),
+///                     0
+///                 );
+///             }
+///         };
+///
+///         // Build response with agent context
+///         let output = serde_json::json!({
+///             "echo": message,
+///             "agent_id": ctx.agent_id,
+///         });
+///
+///         ToolResult::ok(output, 1)
+///     }
+/// }
+///
+/// # async fn example() {
+/// let tool = EchoTool::new();
+/// let ctx = ToolContext::new("agent-1", PermissionSet::minimal());
+/// let args = serde_json::json!({"message": "Hello!"});
+///
+/// let result = tool.execute(args, &ctx).await;
+/// assert!(result.success);
+/// assert_eq!(result.output.unwrap()["echo"], "Hello!");
+/// # }
+/// ```
+///
+/// Using the tool registry:
+///
+/// ```rust
+/// use claw_tools::ToolRegistry;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Create a registry for managing tools
+/// let registry = ToolRegistry::new();
+///
+/// // Tools can be registered by passing a boxed Tool implementation
+/// // registry.register(Box::new(EchoTool::new()))?;
+///
+/// // Retrieve a tool by name
+/// // let tool = registry.get("echo");
+///
+/// // List all available tool names
+/// let tool_names = registry.tool_names();
+///
+/// // Get count of registered tools
+/// let count = registry.tool_count();
+/// # Ok(())
+/// # }
+/// ```
 #[async_trait]
 pub trait Tool: Send + Sync {
     /// Unique tool name (snake_case).

@@ -3,6 +3,73 @@ use async_trait::async_trait;
 use claw_provider::types::Message;
 
 /// Determines whether the agent loop should stop.
+///
+/// Stop conditions are checked after each turn to determine if the agent
+/// loop should continue or terminate. Multiple stop conditions can be
+/// combined using logical OR semantics.
+///
+/// # Examples
+///
+/// Using built-in stop conditions:
+///
+/// ```rust
+/// use claw_loop::{StopCondition, MaxTurns, TokenBudget, NoToolCall, LoopState};
+/// use claw_provider::Message;
+///
+/// // Stop after 10 turns (tuple struct construction)
+/// let max_turns = MaxTurns(10);
+///
+/// // Stop if token budget exceeds 100,000
+/// let token_budget = TokenBudget(100_000);
+///
+/// // Stop when the LLM returns without making tool calls
+/// let no_tool_call = NoToolCall;
+///
+/// // Check if a condition is met
+/// let mut state = LoopState::new();
+/// state.turn = 5;
+/// assert!(!max_turns.should_stop(&state)); // Not yet at 10 turns
+///
+/// state.turn = 10;
+/// assert!(max_turns.should_stop(&state)); // Now at 10 turns
+///
+/// // Token budget check
+/// let mut state = LoopState::new();
+/// state.usage.total_tokens = 50000;
+/// assert!(!token_budget.should_stop(&state)); // Under budget
+///
+/// state.usage.total_tokens = 100_000;
+/// assert!(token_budget.should_stop(&state)); // At budget
+/// ```
+///
+/// Implementing a custom stop condition:
+///
+/// ```rust
+/// use claw_loop::{StopCondition, LoopState};
+///
+/// /// Stop when a specific keyword appears in the conversation
+/// struct KeywordStopCondition {
+///     keyword: String,
+/// }
+///
+/// impl KeywordStopCondition {
+///     fn new(keyword: impl Into<String>) -> Self {
+///         Self { keyword: keyword.into() }
+///     }
+/// }
+///
+/// impl StopCondition for KeywordStopCondition {
+///     fn should_stop(&self, state: &LoopState) -> bool {
+///         // In a real implementation, you might check the history
+///         // for messages containing the keyword
+///         false
+///     }
+///
+///     fn name(&self) -> &str {
+///         "keyword_stop"
+///     }
+/// }
+/// ```
 pub trait StopCondition: Send + Sync {
     /// Return true if the loop should stop given the current state.
     fn should_stop(&self, state: &LoopState) -> bool;
@@ -15,6 +82,108 @@ pub trait StopCondition: Send + Sync {
 ///
 /// The overflow callback is a closure (not EventBus dependency)
 /// to keep claw-loop decoupled from claw-runtime.
+///
+/// # Examples
+///
+/// Using the built-in in-memory history:
+///
+/// ```rust
+/// use claw_loop::{HistoryManager, InMemoryHistory};
+/// use claw_provider::Message;
+///
+/// // Create a new history manager
+/// let mut history = InMemoryHistory::new(4096); // 4K token limit
+///
+/// // Append messages
+/// history.append(Message::user("Hello!"));
+/// history.append(Message::assistant("Hi there!"));
+///
+/// // Check history state
+/// assert_eq!(history.len(), 2);
+/// assert!(!history.is_empty());
+///
+/// // Access messages
+/// let messages = history.messages();
+/// assert_eq!(messages[0].content, "Hello!");
+/// assert_eq!(messages[1].content, "Hi there!");
+///
+/// // Get token estimate
+/// let tokens = history.token_estimate();
+///
+/// // Clear history when needed
+/// history.clear();
+/// assert!(history.is_empty());
+/// ```
+///
+/// Setting up overflow callback:
+///
+/// ```rust
+/// use claw_loop::{HistoryManager, InMemoryHistory};
+/// use std::sync::atomic::{AtomicUsize, Ordering};
+///
+/// let mut history = InMemoryHistory::new(1000);
+///
+/// // Set up a callback to handle approaching context limit
+/// history.set_overflow_callback(Box::new(|current, limit| {
+///     eprintln!("Warning: History at {}/{} tokens", current, limit);
+/// }));
+/// ```
+///
+/// Implementing a custom history manager:
+///
+/// ```rust
+/// use claw_loop::HistoryManager;
+/// use claw_provider::Message;
+///
+/// /// Simple history that keeps last N messages
+/// struct RingBufferHistory {
+///     messages: Vec<Message>,
+///     max_messages: usize,
+///     overflow_cb: Option<Box<dyn Fn(usize, usize) + Send + Sync>>,
+/// }
+///
+/// impl RingBufferHistory {
+///     fn new(max_messages: usize) -> Self {
+///         Self {
+///             messages: Vec::new(),
+///             max_messages,
+///             overflow_cb: None,
+///         }
+///     }
+/// }
+///
+/// impl HistoryManager for RingBufferHistory {
+///     fn append(&mut self, message: Message) {
+///         if self.messages.len() >= self.max_messages {
+///             self.messages.remove(0); // Remove oldest
+///         }
+///         self.messages.push(message);
+///     }
+///
+///     fn messages(&self) -> &[Message] {
+///         &self.messages
+///     }
+///
+///     fn len(&self) -> usize {
+///         self.messages.len()
+///     }
+///
+///     fn token_estimate(&self) -> usize {
+///         // Simple estimation: 4 characters per token
+///         self.messages.iter()
+///             .map(|m| m.content.len() / 4)
+///             .sum()
+///     }
+///
+///     fn clear(&mut self) {
+///         self.messages.clear();
+///     }
+///
+///     fn set_overflow_callback(&mut self, f: Box<dyn Fn(usize, usize) + Send + Sync>) {
+///         self.overflow_cb = Some(f);
+///     }
+/// }
+/// ```
 pub trait HistoryManager: Send + Sync {
     /// Append a message to history.
     fn append(&mut self, message: Message);
@@ -42,6 +211,80 @@ pub trait HistoryManager: Send + Sync {
 }
 
 /// Summarizes a set of messages into a shorter text.
+///
+/// Summarizers are used to condense conversation history when it grows
+/// too large for the context window. The `SimpleSummarizer` uses the
+/// LLM itself to generate summaries.
+///
+/// # Examples
+///
+/// Using the built-in summarizer:
+///
+/// ```rust,ignore
+/// use claw_loop::{Summarizer, SimpleSummarizer, Message};
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Create a summarizer with a provider
+/// let provider = /* your LLM provider */;
+/// let summarizer = SimpleSummarizer::new(provider);
+///
+/// // Summarize a batch of messages
+/// let messages = vec![
+///     Message::user("What's the weather?"),
+///     Message::assistant("It's sunny today."),
+///     Message::user("Thanks!"),
+/// ];
+///
+/// let summary = summarizer.summarize(&messages).await?;
+/// println!("Summary: {}", summary);
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Implementing a custom summarizer:
+///
+/// ```rust
+/// use claw_loop::{Summarizer, AgentError};
+/// use claw_provider::Message;
+/// use async_trait::async_trait;
+///
+/// /// A simple summarizer that extracts the first sentence of each message
+/// struct ExtractiveSummarizer;
+///
+/// #[async_trait]
+/// impl Summarizer for ExtractiveSummarizer {
+///     async fn summarize(&self, messages: &[Message]) -> Result<String, AgentError> {
+///         let mut summary_parts = Vec::new();
+///
+///         for msg in messages {
+///             // Take first sentence or first 50 chars
+///             let excerpt: String = msg.content
+///                 .split('.')
+///                 .next()
+///                 .unwrap_or(&msg.content)
+///                 .chars()
+///                 .take(50)
+///                 .collect();
+///
+///             summary_parts.push(format!("[{:?}]: {}", msg.role, excerpt));
+///         }
+///
+///         Ok(summary_parts.join("; "))
+///     }
+/// }
+///
+/// # async fn example() -> Result<(), AgentError> {
+/// let summarizer = ExtractiveSummarizer;
+/// let messages = vec![
+///     Message::user("Hello world. This is a test."),
+///     Message::assistant("Hi! Nice to meet you."),
+/// ];
+///
+/// let summary = summarizer.summarize(&messages).await?;
+/// assert!(summary.contains("Hello world"));
+/// # Ok(())
+/// # }
+/// ```
 #[async_trait]
 pub trait Summarizer: Send + Sync {
     /// Summarize the given messages. Returns a concise summary string.
