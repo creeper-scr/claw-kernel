@@ -40,12 +40,11 @@ jobs:
           args: --timeout 60 README.md AGENTS.md CONTRIBUTING.md SECURITY.md
         continue-on-error: true
 
-  # Build job (disabled until implementation begins)
-  # TODO: Enable this job when crates/ directory is populated
+  # Build job (enabled)
   build:
     name: Build
     runs-on: ${{ matrix.os }}
-    if: false # Disabled during design phase
+    if: true
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -70,20 +69,22 @@ jobs:
       - name: Build (all features)
         run: cargo build --workspace --all-features
 
-  # Test job (disabled until implementation begins)
-  # TODO: Enable this job when crates/ directory is populated
+  # Test job (enabled)
   test:
     name: Test
     runs-on: ${{ matrix.os }}
-    if: false # Disabled during design phase
+    if: true
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable, 1.83.0]
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
 
       - name: Install platform dependencies (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
