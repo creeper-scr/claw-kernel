@@ -30,7 +30,7 @@ use interprocess::local_socket::tokio::OwnedWriteHalf;
 ///
 /// A dedicated reader task continuously reads frames from the socket and
 /// sends them into an internal `mpsc` channel.  Callers receive frames by
-/// awaiting [`recv`].  Writes are serialised through a `Mutex`.
+/// awaiting `recv`.  Writes are serialised through a `Mutex`.
 #[cfg(not(windows))]
 pub struct InterprocessTransport {
     writer: Mutex<OwnedWriteHalf>,

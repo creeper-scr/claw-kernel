@@ -1,3 +1,12 @@
+//! Core types for tool registration, execution, permissions, and hot-loading.
+//!
+//! The central data structures are:
+//! - [`ToolSchema`] — JSON schema describing a tool's name, description, and parameters.
+//! - [`ToolResult`] / [`ToolError`] — success/failure output of a tool call.
+//! - [`PermissionSet`] — filesystem, network, and subprocess access policy.
+//! - [`ToolSource`] — origin of a registered tool (native, script, or dynamic).
+//! - [`HotLoadingConfig`] — configuration for the file-watcher hot-loader.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;

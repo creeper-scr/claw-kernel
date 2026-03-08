@@ -20,8 +20,8 @@ use crate::{
 /// the shared `EventBus`.
 ///
 /// Two registration paths exist:
-/// - [`register`] — in-process agents (no OS process spawned).
-/// - [`spawn`] — out-of-process agents backed by a real OS process via PAL.
+/// - [`AgentOrchestrator::register`] — in-process agents (no OS process spawned).
+/// - [`AgentOrchestrator::spawn`] — out-of-process agents backed by a real OS process via PAL.
 pub struct AgentOrchestrator {
     agents: Arc<DashMap<AgentId, AgentInfo>>,
     event_bus: Arc<EventBus>,
@@ -53,7 +53,7 @@ impl AgentOrchestrator {
 
     /// Register a new in-process agent and publish an `AgentStarted` event.
     ///
-    /// Does **not** spawn an OS process; use [`spawn`] for that.
+    /// Does **not** spawn an OS process; use [`AgentOrchestrator::spawn`] for that.
     /// Returns `Err(AgentAlreadyExists)` if an agent with the same ID is
     /// already registered.
     pub fn register(&self, config: AgentConfig) -> Result<AgentHandle, RuntimeError> {

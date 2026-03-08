@@ -1,3 +1,10 @@
+//! Core types for agent loop configuration, state, and results.
+//!
+//! This module defines the configuration and output types used by `AgentLoop`:
+//! [`AgentLoopConfig`] controls runtime behaviour, [`LoopState`] captures
+//! per-turn snapshots, [`AgentResult`] carries the completed-loop summary, and
+//! [`StreamChunk`] is the item type for streaming mode.
+
 use claw_provider::types::{Message, TokenUsage, ToolCall};
 use serde::{Deserialize, Serialize};
 
@@ -35,35 +42,42 @@ impl Default for AgentLoopConfig {
 }
 
 impl AgentLoopConfig {
+    /// Create a new config with default values.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Set the maximum number of turns before the loop stops.
     pub fn with_max_turns(mut self, n: u32) -> Self {
         self.max_turns = n;
         self
     }
 
+    /// Set the maximum token budget for the session (0 = unlimited).
     pub fn with_token_budget(mut self, budget: u64) -> Self {
         self.token_budget = budget;
         self
     }
 
+    /// Set the system prompt (overrides any default persona).
     pub fn with_system(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
     }
 
+    /// Set the per-tool-call execution timeout in seconds.
     pub fn with_tool_timeout_seconds(mut self, seconds: u64) -> Self {
         self.tool_timeout_seconds = seconds;
         self
     }
 
+    /// Set the maximum number of tool calls allowed per turn.
     pub fn with_max_tool_calls_per_turn(mut self, max: usize) -> Self {
         self.max_tool_calls_per_turn = max;
         self
     }
 
+    /// Enable or disable streaming responses from the LLM.
     pub fn with_enable_streaming(mut self, enabled: bool) -> Self {
         self.enable_streaming = enabled;
         self
@@ -100,6 +114,7 @@ pub struct LoopState {
 }
 
 impl LoopState {
+    /// Create a zeroed initial loop state.
     pub fn new() -> Self {
         Self {
             turn: 0,
@@ -116,25 +131,29 @@ impl Default for LoopState {
 }
 
 /// Final result returned by a completed agent loop.
+///
+/// Returned by `AgentLoop::run()`. For streaming mode, the final `StreamChunk::Finish`
+/// variant carries the `FinishReason`; build an `AgentResult` from the accumulated chunks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentResult {
     /// Why the loop finished.
     pub finish_reason: FinishReason,
     /// The last assistant message (None if loop errored before any response).
     pub last_message: Option<Message>,
-    /// Total token usage.
+    /// Total token usage across all turns.
     pub usage: TokenUsage,
     /// Total turns executed.
     pub turns: u32,
-    /// Final text content (convenience for last_message.as_ref().map(|m| m.content.clone()).unwrap_or_default()).
+    /// Convenience accessor for the final assistant text; equivalent to
+    /// `last_message.as_ref().map(|m| m.content.clone()).unwrap_or_default()`.
     pub content: String,
-    /// All tool calls executed across all turns.
+    /// All tool calls executed across all turns, in order.
     pub tool_calls: Vec<ToolCall>,
-    /// Total execution time in milliseconds.
+    /// Wall-clock execution time for the entire loop in milliseconds.
     pub execution_time_ms: u64,
 }
 
-/// A chunk yielded by [`AgentLoop::stream_run`].
+/// A chunk yielded by `AgentLoop::stream_run`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamChunk {

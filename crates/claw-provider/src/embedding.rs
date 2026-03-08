@@ -19,7 +19,7 @@ pub trait Embedder: Send + Sync {
     /// Embed a single text into a fixed-length float vector.
     fn embed(&self, text: &str) -> Vec<f32>;
 
-    /// Embed multiple texts. Default implementation calls [`embed`] sequentially.
+    /// Embed multiple texts. Default implementation calls [`Self::embed`] sequentially.
     fn embed_batch(&self, texts: &[&str]) -> Vec<Vec<f32>> {
         texts.iter().map(|t| self.embed(t)).collect()
     }

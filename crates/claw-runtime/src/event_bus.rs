@@ -149,7 +149,7 @@ impl EventBus {
 
     /// Subscribe to events matching a declarative [`EventFilter`].
     ///
-    /// This is more ergonomic than [`subscribe_filtered`] when the desired
+    /// This is more ergonomic than [`EventBus::subscribe_filtered`] when the desired
     /// event category maps to one of the predefined variants.
     pub fn subscribe_with_filter(&self, filter: EventFilter) -> FilteredReceiver {
         FilteredReceiver {
