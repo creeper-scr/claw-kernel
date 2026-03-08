@@ -61,6 +61,25 @@ impl OllamaProvider {
         self.retry_config.as_ref()
     }
 
+    /// Set a custom HTTP transport for this provider.
+    ///
+    /// This is primarily useful for testing with mock transports.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use claw_provider::{OllamaProvider, HttpTransport};
+    /// use std::sync::Arc;
+    ///
+    /// let mock_transport = Arc::new(MyMockTransport);
+    /// let provider = OllamaProvider::new("llama3.2")
+    ///     .with_transport(mock_transport);
+    /// ```
+    pub fn with_transport(mut self, transport: Arc<dyn HttpTransport>) -> Self {
+        self.transport = transport;
+        self
+    }
+
     fn build_headers(&self) -> Vec<(String, String)> {
         vec![
             // Ollama accepts any non-empty api_key

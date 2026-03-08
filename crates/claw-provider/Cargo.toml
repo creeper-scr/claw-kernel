@@ -6,6 +6,10 @@ authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+test-utils = []
+
 [dependencies]
 async-trait = { workspace = true }
 thiserror = { workspace = true }

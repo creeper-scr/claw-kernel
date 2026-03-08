@@ -32,5 +32,5 @@ pub use traits::{EmbeddingProvider, HttpTransport, LLMProvider, MessageFormat};
 pub use transport::DefaultHttpTransport;
 pub use types::{
     CompletionResponse, Delta, Embedding, FinishReason, Message, Options, Role, TokenUsage,
-    ToolCall, ToolCallResult,
+    ToolCall, ToolCallResult, ToolDef,
 };

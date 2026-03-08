@@ -62,6 +62,13 @@ impl OpenAIProvider {
         self.retry_config.as_ref()
     }
 
+    /// Set a custom HTTP transport (for testing purposes).
+    #[cfg(feature = "test-utils")]
+    pub fn with_transport(mut self, transport: Arc<dyn HttpTransport>) -> Self {
+        self.transport = transport;
+        self
+    }
+
     fn build_headers(&self) -> Vec<(String, String)> {
         vec![
             (
