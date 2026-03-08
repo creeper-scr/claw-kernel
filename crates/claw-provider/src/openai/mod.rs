@@ -69,6 +69,14 @@ impl OpenAIProvider {
         self
     }
 
+    /// Set a custom HTTP transport (internal testing helper).
+    /// Not part of the public API, may change without notice.
+    #[doc(hidden)]
+    pub fn __with_transport(mut self, transport: Arc<dyn HttpTransport>) -> Self {
+        self.transport = transport;
+        self
+    }
+
     fn build_headers(&self) -> Vec<(String, String)> {
         vec![
             (

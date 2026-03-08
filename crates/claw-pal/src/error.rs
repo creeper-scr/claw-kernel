@@ -5,7 +5,7 @@
 use thiserror::Error;
 
 /// Sandbox-related errors.
-#[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum SandboxError {
     /// Failed to create sandbox.
     #[error("sandbox creation failed: {0}")]
@@ -22,7 +22,7 @@ pub enum SandboxError {
 }
 
 /// IPC-related errors.
-#[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum IpcError {
     /// Connection refused.
     #[error("connection refused")]
@@ -42,7 +42,7 @@ pub enum IpcError {
 }
 
 /// Process-related errors.
-#[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ProcessError {
     /// Failed to spawn process.
     #[error("process spawn failed: {0}")]
@@ -62,7 +62,7 @@ pub enum ProcessError {
 }
 
 /// Unified error type for claw-pal operations.
-#[derive(Error, Debug, Clone)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum PalError {
     /// Sandbox error.
     #[error("sandbox error: {0}")]

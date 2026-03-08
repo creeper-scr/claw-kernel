@@ -43,41 +43,132 @@ impl Default for AgentLoopConfig {
 
 impl AgentLoopConfig {
     /// Create a new config with default values.
+    ///
+    /// # Defaults
+    ///
+    /// - `max_turns`: 20
+    /// - `token_budget`: 0 (unlimited)
+    /// - `system_prompt`: None
+    /// - `tool_use_enabled`: true
+    /// - `tool_timeout_seconds`: 30
+    /// - `max_tool_calls_per_turn`: 10
+    /// - `enable_streaming`: false
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_loop::types::AgentLoopConfig;
+    ///
+    /// let config = AgentLoopConfig::new();
+    /// assert_eq!(config.max_turns, 20);
+    /// ```
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set the maximum number of turns before the loop stops.
+    ///
+    /// Each turn consists of one LLM call and any resulting tool executions.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_loop::types::AgentLoopConfig;
+    ///
+    /// let config = AgentLoopConfig::new().with_max_turns(50);
+    /// assert_eq!(config.max_turns, 50);
+    /// ```
     pub fn with_max_turns(mut self, n: u32) -> Self {
         self.max_turns = n;
         self
     }
 
     /// Set the maximum token budget for the session (0 = unlimited).
+    ///
+    /// When the cumulative token usage exceeds this budget, the loop stops
+    /// with `FinishReason::TokenBudget`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_loop::types::AgentLoopConfig;
+    ///
+    /// let config = AgentLoopConfig::new().with_token_budget(100_000);
+    /// assert_eq!(config.token_budget, 100_000);
+    /// ```
     pub fn with_token_budget(mut self, budget: u64) -> Self {
         self.token_budget = budget;
         self
     }
 
     /// Set the system prompt (overrides any default persona).
+    ///
+    /// The system prompt sets the behavior and context for the LLM throughout
+    /// the entire conversation.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_loop::types::AgentLoopConfig;
+    ///
+    /// let config = AgentLoopConfig::new()
+    ///     .with_system("You are a helpful coding assistant.");
+    /// assert_eq!(config.system_prompt, Some("You are a helpful coding assistant.".to_string()));
+    /// ```
     pub fn with_system(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = Some(prompt.into());
         self
     }
 
     /// Set the per-tool-call execution timeout in seconds.
+    ///
+    /// If a tool takes longer than this to execute, it will be cancelled
+    /// and return a timeout error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_loop::types::AgentLoopConfig;
+    ///
+    /// let config = AgentLoopConfig::new().with_tool_timeout_seconds(60);
+    /// assert_eq!(config.tool_timeout_seconds, 60);
+    /// ```
     pub fn with_tool_timeout_seconds(mut self, seconds: u64) -> Self {
         self.tool_timeout_seconds = seconds;
         self
     }
 
     /// Set the maximum number of tool calls allowed per turn.
+    ///
+    /// This prevents runaway tool execution loops. When exceeded,
+    /// the loop stops with an error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_loop::types::AgentLoopConfig;
+    ///
+    /// let config = AgentLoopConfig::new().with_max_tool_calls_per_turn(5);
+    /// assert_eq!(config.max_tool_calls_per_turn, 5);
+    /// ```
     pub fn with_max_tool_calls_per_turn(mut self, max: usize) -> Self {
         self.max_tool_calls_per_turn = max;
         self
     }
 
     /// Enable or disable streaming responses from the LLM.
+    ///
+    /// When enabled, use `AgentLoop::stream_run()` to receive partial
+    /// responses as they are generated.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_loop::types::AgentLoopConfig;
+    ///
+    /// let config = AgentLoopConfig::new().with_enable_streaming(true);
+    /// assert!(config.enable_streaming);
+    /// ```
     pub fn with_enable_streaming(mut self, enabled: bool) -> Self {
         self.enable_streaming = enabled;
         self

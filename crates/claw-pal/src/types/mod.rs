@@ -26,6 +26,25 @@ pub struct PathRule {
 
 impl PathRule {
     /// Create a new path rule with all permissions disabled.
+    ///
+    /// Use the builder methods (`with_read`, `with_write`, `with_execute`)
+    /// to enable specific permissions.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_pal::PathRule;
+    /// use std::path::PathBuf;
+    ///
+    /// let rule = PathRule::new(PathBuf::from("/data/logs"))
+    ///     .with_read()
+    ///     .with_write();
+    ///
+    /// assert_eq!(rule.path, PathBuf::from("/data/logs"));
+    /// assert!(rule.read);
+    /// assert!(rule.write);
+    /// assert!(!rule.execute);
+    /// ```
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
@@ -35,19 +54,49 @@ impl PathRule {
         }
     }
 
-    /// Enable read access.
+    /// Enable read access for this path.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_pal::PathRule;
+    /// use std::path::PathBuf;
+    ///
+    /// let rule = PathRule::new(PathBuf::from("/etc/config")).with_read();
+    /// assert!(rule.read);
+    /// ```
     pub fn with_read(mut self) -> Self {
         self.read = true;
         self
     }
 
-    /// Enable write access.
+    /// Enable write access for this path.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_pal::PathRule;
+    /// use std::path::PathBuf;
+    ///
+    /// let rule = PathRule::new(PathBuf::from("/tmp/output")).with_write();
+    /// assert!(rule.write);
+    /// ```
     pub fn with_write(mut self) -> Self {
         self.write = true;
         self
     }
 
-    /// Enable execute access.
+    /// Enable execute access for this path.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_pal::PathRule;
+    /// use std::path::PathBuf;
+    ///
+    /// let rule = PathRule::new(PathBuf::from("/bin/script.sh")).with_execute();
+    /// assert!(rule.execute);
+    /// ```
     pub fn with_execute(mut self) -> Self {
         self.execute = true;
         self
@@ -68,12 +117,43 @@ pub struct NetRule {
 }
 
 impl NetRule {
-    /// Create a new network rule.
+    /// Create a new network rule with explicit parameters.
+    ///
+    /// For common cases, use the convenience constructors: [`NetRule::allow`],
+    /// [`NetRule::allow_port`], or [`NetRule::deny`].
+    ///
+    /// # Arguments
+    ///
+    /// * `host` - Hostname or IP address
+    /// * `port` - Port number (None = all ports)
+    /// * `allow` - Whether to allow (true) or deny (false) connections
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_pal::NetRule;
+    ///
+    /// let rule = NetRule::new("api.example.com".to_string(), Some(443), true);
+    /// assert_eq!(rule.host, "api.example.com");
+    /// assert_eq!(rule.port, Some(443));
+    /// assert!(rule.allow);
+    /// ```
     pub fn new(host: String, port: Option<u16>, allow: bool) -> Self {
         Self { host, port, allow }
     }
 
-    /// Create an allow rule for a host.
+    /// Create an allow rule for a host (all ports).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_pal::NetRule;
+    ///
+    /// let rule = NetRule::allow("api.openai.com".to_string());
+    /// assert_eq!(rule.host, "api.openai.com");
+    /// assert!(rule.allow);
+    /// assert_eq!(rule.port, None);
+    /// ```
     pub fn allow(host: String) -> Self {
         Self {
             host,
@@ -82,7 +162,18 @@ impl NetRule {
         }
     }
 
-    /// Create an allow rule for a specific host:port.
+    /// Create an allow rule for a specific host:port combination.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_pal::NetRule;
+    ///
+    /// let rule = NetRule::allow_port("localhost".to_string(), 8080);
+    /// assert_eq!(rule.host, "localhost");
+    /// assert_eq!(rule.port, Some(8080));
+    /// assert!(rule.allow);
+    /// ```
     pub fn allow_port(host: String, port: u16) -> Self {
         Self {
             host,
@@ -91,7 +182,18 @@ impl NetRule {
         }
     }
 
-    /// Create a deny rule for a host.
+    /// Create a deny rule for a host (all ports).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_pal::NetRule;
+    ///
+    /// let rule = NetRule::deny("malicious.com".to_string());
+    /// assert_eq!(rule.host, "malicious.com");
+    /// assert!(!rule.allow);
+    /// assert_eq!(rule.port, None);
+    /// ```
     pub fn deny(host: String) -> Self {
         Self {
             host,

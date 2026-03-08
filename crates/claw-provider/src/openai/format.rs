@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::{
     traits::MessageFormat,
-    types::{CompletionResponse, Delta, FinishReason, Message, Options, Role, TokenUsage},
+    types::{CompletionResponse, Delta, FinishReason, Message, Options, Role, TokenUsage, ToolCall},
 };
 
 /// OpenAI Chat Completions API request.
@@ -51,6 +51,25 @@ pub struct OpenAIResponseMessage {
     #[allow(dead_code)]
     pub role: String,
     pub content: String,
+    #[serde(default)]
+    pub tool_calls: Option<Vec<OpenAIToolCall>>,
+}
+
+/// OpenAI tool call format.
+#[derive(Deserialize, Debug)]
+pub struct OpenAIToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    #[allow(dead_code)]
+    pub call_type: String,
+    pub function: OpenAIFunctionCall,
+}
+
+/// OpenAI function call format.
+#[derive(Deserialize, Debug)]
+pub struct OpenAIFunctionCall {
+    pub name: String,
+    pub arguments: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -171,10 +190,25 @@ impl MessageFormat for OpenAIFormat {
             _ => FinishReason::Other("unknown".to_string()),
         };
 
+        // Convert OpenAI tool calls to canonical format
+        let tool_calls = choice.message.tool_calls.map(|calls| {
+            calls
+                .into_iter()
+                .map(|call| ToolCall {
+                    id: call.id,
+                    name: call.function.name,
+                    arguments: call.function.arguments,
+                })
+                .collect()
+        });
+
+        let mut message = Message::assistant(choice.message.content);
+        message.tool_calls = tool_calls;
+
         Ok(CompletionResponse {
             id: raw.id,
             model: raw.model,
-            message: Message::assistant(choice.message.content),
+            message,
             finish_reason,
             usage: TokenUsage {
                 prompt_tokens: raw.usage.prompt_tokens,
@@ -279,6 +313,7 @@ mod tests {
                 message: OpenAIResponseMessage {
                     role: "assistant".to_string(),
                     content: "Hello!".to_string(),
+                    tool_calls: None,
                 },
                 finish_reason: "stop".to_string(),
             }],
@@ -307,6 +342,7 @@ mod tests {
                 message: OpenAIResponseMessage {
                     role: "assistant".to_string(),
                     content: "...".to_string(),
+                    tool_calls: None,
                 },
                 finish_reason: "length".to_string(),
             }],

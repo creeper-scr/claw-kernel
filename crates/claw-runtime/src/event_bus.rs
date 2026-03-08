@@ -133,9 +133,39 @@ impl EventBus {
         }
     }
 
-    /// Subscribe to events matching a filter predicate.
+    /// Subscribe to events matching a custom filter predicate.
     ///
-    /// The returned `FilteredReceiver` skips events that do not satisfy `filter`.
+    /// Returns a `FilteredReceiver` that only yields events satisfying the filter.
+    /// Non-matching events are skipped automatically.
+    ///
+    /// For common filtering patterns, consider using [`EventBus::subscribe_with_filter`]
+    /// with the [`EventFilter`] enum instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `filter` - A closure that returns `true` for events you want to receive
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_runtime::EventBus;
+    /// use claw_runtime::events::Event;
+    ///
+    /// # fn example() {
+    /// let bus = EventBus::new();
+    ///
+    /// // Subscribe only to shutdown events
+    /// let mut receiver = bus.subscribe_filtered(|e| {
+    ///     matches!(e, Event::Shutdown)
+    /// });
+    ///
+    /// // Or subscribe to events from a specific agent
+    /// let agent_id = "agent-123";
+    /// let mut agent_receiver = bus.subscribe_filtered(move |e| {
+    ///     matches!(e, Event::AgentStarted { agent_id: id } if id.as_str() == agent_id)
+    /// });
+    /// # }
+    /// ```
     pub fn subscribe_filtered<F>(&self, filter: F) -> FilteredReceiver
     where
         F: Fn(&Event) -> bool + Send + Sync + 'static,

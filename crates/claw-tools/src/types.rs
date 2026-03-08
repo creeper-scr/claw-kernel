@@ -82,6 +82,25 @@ pub struct ToolResult {
 }
 
 impl ToolResult {
+    /// Create a successful tool result.
+    ///
+    /// # Arguments
+    ///
+    /// * `output` - The JSON-serializable output of the tool execution
+    /// * `duration_ms` - The execution time in milliseconds
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_tools::types::ToolResult;
+    /// use serde_json::json;
+    ///
+    /// let result = ToolResult::ok(json!({"sum": 42}), 15);
+    ///
+    /// assert!(result.success);
+    /// assert_eq!(result.output, Some(json!({"sum": 42})));
+    /// assert_eq!(result.duration_ms, 15);
+    /// ```
     pub fn ok(output: serde_json::Value, duration_ms: u64) -> Self {
         Self {
             success: true,
@@ -90,6 +109,26 @@ impl ToolResult {
             duration_ms,
         }
     }
+
+    /// Create a failed tool result.
+    ///
+    /// # Arguments
+    ///
+    /// * `error` - The `ToolError` describing why the tool failed
+    /// * `duration_ms` - The execution time in milliseconds (until failure)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_tools::types::{ToolResult, ToolError};
+    ///
+    /// let error = ToolError::invalid_args("Missing required parameter 'name'");
+    /// let result = ToolResult::err(error, 5);
+    ///
+    /// assert!(!result.success);
+    /// assert!(result.error.is_some());
+    /// assert_eq!(result.duration_ms, 5);
+    /// ```
     pub fn err(error: ToolError, duration_ms: u64) -> Self {
         Self {
             success: false,
@@ -114,6 +153,40 @@ pub struct ToolSchema {
 }
 
 impl ToolSchema {
+    /// Create a new tool schema.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The tool name (should be snake_case and unique within the registry)
+    /// * `description` - A human-readable description of what the tool does.
+    ///   This is sent to the LLM to help it decide when to use the tool.
+    /// * `parameters` - JSON Schema object describing the tool's parameters.
+    ///   Use `serde_json::json!` to construct this.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_tools::types::ToolSchema;
+    /// use serde_json::json;
+    ///
+    /// let schema = ToolSchema::new(
+    ///     "calculator",
+    ///     "Perform mathematical calculations",
+    ///     json!({
+    ///         "type": "object",
+    ///         "properties": {
+    ///             "expression": {
+    ///                 "type": "string",
+    ///                 "description": "The mathematical expression to evaluate"
+    ///             }
+    ///         },
+    ///         "required": ["expression"]
+    ///     })
+    /// );
+    ///
+    /// assert_eq!(schema.name, "calculator");
+    /// assert_eq!(schema.description, "Perform mathematical calculations");
+    /// ```
     pub fn new(
         name: impl Into<String>,
         description: impl Into<String>,

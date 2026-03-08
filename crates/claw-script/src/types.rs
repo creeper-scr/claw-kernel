@@ -135,6 +135,19 @@ impl Default for ScriptContext {
 }
 
 impl ScriptContext {
+    /// Create a new script context for the given agent.
+    ///
+    /// Initializes with default values: 30s timeout, minimal permissions,
+    /// empty globals, and no bridges enabled.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_script::types::ScriptContext;
+    ///
+    /// let ctx = ScriptContext::new("agent-1");
+    /// assert_eq!(ctx.agent_id, "agent-1");
+    /// ```
     pub fn new(agent_id: impl Into<String>) -> Self {
         Self {
             agent_id: agent_id.into(),
@@ -152,58 +165,204 @@ impl ScriptContext {
     }
 
     /// Set the tool registry for executing tools from scripts.
+    ///
+    /// When set, scripts can call registered tools via the tools bridge.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_script::types::ScriptContext;
+    /// use claw_tools::registry::ToolRegistry;
+    /// use std::sync::Arc;
+    ///
+    /// let registry = Arc::new(ToolRegistry::new());
+    /// let ctx = ScriptContext::new("agent-1")
+    ///     .with_tool_registry(registry);
+    ///
+    /// assert!(ctx.tool_registry.is_some());
+    /// ```
     pub fn with_tool_registry(mut self, registry: Arc<ToolRegistry>) -> Self {
         self.tool_registry = Some(registry);
         self
     }
 
+    /// Add a global variable accessible to the script.
+    ///
+    /// Globals are injected into the script environment before execution.
+    /// Multiple calls with the same key will overwrite previous values.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_script::types::ScriptContext;
+    /// use serde_json::json;
+    ///
+    /// let ctx = ScriptContext::new("agent-1")
+    ///     .with_global("user_name", json!("Alice"))
+    ///     .with_global("max_retries", json!(3));
+    ///
+    /// assert_eq!(ctx.globals.len(), 2);
+    /// ```
     pub fn with_global(mut self, key: impl Into<String>, val: serde_json::Value) -> Self {
         self.globals.insert(key.into(), val);
         self
     }
 
+    /// Set the script execution timeout.
+    ///
+    /// If script execution exceeds this duration, it will be terminated.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_script::types::ScriptContext;
+    /// use std::time::Duration;
+    ///
+    /// let ctx = ScriptContext::new("agent-1")
+    ///     .with_timeout(Duration::from_secs(60));
+    ///
+    /// assert_eq!(ctx.timeout, Duration::from_secs(60));
+    /// ```
     pub fn with_timeout(mut self, d: Duration) -> Self {
         self.timeout = d;
         self
     }
 
     /// Set filesystem bridge configuration.
+    ///
+    /// Controls which paths the script can read from and write to.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_script::types::{ScriptContext, FsBridgeConfig};
+    /// use std::path::PathBuf;
+    /// use std::collections::HashSet;
+    ///
+    /// let fs_config = FsBridgeConfig {
+    ///     allowed_paths: [PathBuf::from("/tmp")].iter().cloned().collect(),
+    ///     base_dir: PathBuf::from("/tmp"),
+    /// };
+    ///
+    /// let ctx = ScriptContext::new("agent-1")
+    ///     .with_fs_config(fs_config);
+    /// ```
     pub fn with_fs_config(mut self, config: FsBridgeConfig) -> Self {
         self.fs_config = config;
         self
     }
 
     /// Set network bridge configuration.
+    ///
+    /// Controls which domains and ports the script can connect to.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_script::types::{ScriptContext, NetBridgeConfig};
+    ///
+    /// let net_config = NetBridgeConfig::with_domains(vec!["api.example.com".to_string()]);
+    /// let ctx = ScriptContext::new("agent-1")
+    ///     .with_net_config(net_config);
+    /// ```
     pub fn with_net_config(mut self, config: NetBridgeConfig) -> Self {
         self.net_config = config;
         self
     }
 
-    /// Set tool permissions.
+    /// Set tool permissions for script execution.
+    ///
+    /// Defines what operations scripts are allowed to perform.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_script::types::ScriptContext;
+    /// use claw_tools::types::PermissionSet;
+    ///
+    /// let ctx = ScriptContext::new("agent-1")
+    ///     .with_permissions(PermissionSet::minimal());
+    /// ```
     pub fn with_permissions(mut self, permissions: PermissionSet) -> Self {
         self.permissions = permissions;
         self
     }
 
-    /// Set the tool registry (builder-style for optional chaining).
+    /// Set the tool registry (alias for `with_tool_registry`).
+    ///
+    /// Provides a builder-style method for optional chaining.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_script::types::ScriptContext;
+    /// use claw_tools::registry::ToolRegistry;
+    /// use std::sync::Arc;
+    ///
+    /// let registry = Arc::new(ToolRegistry::new());
+    /// let ctx = ScriptContext::new("agent-1")
+    ///     .with_registry(registry);
+    /// ```
     pub fn with_registry(mut self, registry: Arc<ToolRegistry>) -> Self {
         self.tool_registry = Some(registry);
         self
     }
 
     /// Set the memory store for the memory bridge.
+    ///
+    /// Allows scripts to store and retrieve memories.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_script::types::ScriptContext;
+    /// use claw_memory::SqliteMemoryStore;
+    /// use std::sync::Arc;
+    ///
+    /// // let store = Arc::new(SqliteMemoryStore::new_in_memory().unwrap());
+    /// // let ctx = ScriptContext::new("agent-1").with_memory_store(store);
+    /// ```
     pub fn with_memory_store(mut self, store: Arc<dyn MemoryStore>) -> Self {
         self.memory_store = Some(store);
         self
     }
 
     /// Set the event bus for the events bridge.
+    ///
+    /// Allows scripts to publish events to the runtime.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_script::types::ScriptContext;
+    /// use claw_runtime::EventBus;
+    /// use std::sync::Arc;
+    ///
+    /// let bus = Arc::new(EventBus::new());
+    /// let ctx = ScriptContext::new("agent-1")
+    ///     .with_event_bus(bus);
+    /// ```
     pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
         self.event_bus = Some(bus);
         self
     }
 
     /// Set the agent orchestrator for the agent bridge.
+    ///
+    /// Allows scripts to spawn and manage other agents.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_script::types::ScriptContext;
+    /// use claw_runtime::{AgentOrchestrator, EventBus};
+    /// use std::sync::Arc;
+    ///
+    /// let bus = Arc::new(EventBus::new());
+    /// let orch = Arc::new(AgentOrchestrator::new(bus));
+    /// let ctx = ScriptContext::new("agent-1")
+    ///     .with_orchestrator(orch);
+    /// ```
     pub fn with_orchestrator(mut self, orc: Arc<AgentOrchestrator>) -> Self {
         self.orchestrator = Some(orc);
         self

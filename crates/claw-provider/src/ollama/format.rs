@@ -65,6 +65,7 @@ mod tests {
                 message: OpenAIResponseMessage {
                     role: "assistant".to_string(),
                     content: "".to_string(),
+                    tool_calls: None,
                 },
                 finish_reason: "tool_calls".to_string(),
             }],

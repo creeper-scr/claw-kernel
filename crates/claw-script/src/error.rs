@@ -1,7 +1,12 @@
+//! Error types for claw-script.
+//!
+//! Provides unified error handling for script compilation and execution across
+//! supported script engines (Lua, V8, Python).
+
 use thiserror::Error;
 
 /// Errors during script compilation.
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum CompileError {
     #[error("syntax error: {0}")]
     Syntax(String),
@@ -10,7 +15,7 @@ pub enum CompileError {
 }
 
 /// All errors that can arise from script execution.
-#[derive(Debug, Error, Clone)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ScriptError {
     #[error("compile error: {0}")]
     Compile(#[from] CompileError),
@@ -27,8 +32,6 @@ pub enum ScriptError {
     #[error("recursion limit exceeded (max {0} levels)")]
     RecursionLimitExceeded(u32),
 }
-
-// ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -70,5 +73,16 @@ mod tests {
 
         let e6 = ScriptError::RecursionLimitExceeded(32);
         assert_eq!(e6.to_string(), "recursion limit exceeded (max 32 levels)");
+    }
+
+    #[test]
+    fn test_error_clone() {
+        let err = CompileError::Syntax("bad".to_string());
+        let cloned = err.clone();
+        assert_eq!(err, cloned);
+
+        let err = ScriptError::Runtime("panic".to_string());
+        let cloned = err.clone();
+        assert_eq!(err, cloned);
     }
 }

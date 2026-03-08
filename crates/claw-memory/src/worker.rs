@@ -1,6 +1,6 @@
 //! Background memory archiving worker.
 //!
-//! MemoryWorker listens on a channel for Vec<MemoryItem> batches,
+//! MemoryWorker listens on a channel for `Vec<MemoryItem>` batches,
 //! persists them to the SqliteMemoryStore, and emits MemoryArchiveComplete
 //! events on the EventBus.
 use crate::{

@@ -33,7 +33,7 @@ impl DeepSeekProvider {
 
     /// Create a new DeepSeekProvider with a custom HTTP transport.
     /// This is primarily used for testing with mock transports.
-    #[doc(hidden)]
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn with_transport(
         api_key: impl Into<String>,
         model: impl Into<String>,

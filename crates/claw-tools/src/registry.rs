@@ -101,13 +101,64 @@ impl ToolRegistry {
         self.tools.len()
     }
 
-    /// Execute a tool with permission checking and timeout.
+    /// Execute a tool with permission checking, timeout, and audit logging.
     ///
-    /// Permission checking:
-    /// - If tool requires `SubprocessPolicy::Allowed` but context grants `Denied` →
-    ///   `RegistryError::PermissionDenied`
+    /// This is the main entry point for tool execution. It performs the following steps:
+    /// 1. Looks up the tool by name
+    /// 2. Validates permissions (filesystem, network, subprocess)
+    /// 3. Executes the tool with a timeout using `JoinSet` for cancellation safety
+    /// 4. Records the execution in the audit log
     ///
-    /// Timeout: uses `tool.timeout()` wrapped in `tokio::time::timeout()`.
+    /// # Permission Checking
+    ///
+    /// - **Subprocess**: If tool requires `SubprocessPolicy::Allowed` but context grants `Denied`,
+    ///   returns `RegistryError::PermissionDenied`
+    /// - **Filesystem**: Tool's read/write paths must be a subset of context's allowed paths
+    /// - **Network**: Tool's allowed domains must be a subset of context's allowed domains
+    ///
+    /// # Timeout Handling
+    ///
+    /// Uses `tool.timeout()` (default 30s) wrapped in `tokio::time::timeout()`.
+    /// When timeout occurs, the task is cancelled via `CancellationToken` and
+    /// a `ToolResult` with `ToolErrorCode::Timeout` is returned.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the tool to execute
+    /// * `args` - JSON value containing the tool arguments
+    /// * `ctx` - Tool context containing agent ID and permissions
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(ToolResult)` - Tool executed (check `ToolResult::success` for outcome)
+    /// - `Err(RegistryError)` - Tool not found or permission denied
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_tools::{registry::ToolRegistry, types::{ToolContext, PermissionSet}};
+    /// use serde_json::json;
+    ///
+    /// async fn example() {
+    ///     let registry = ToolRegistry::new();
+    ///     // ... register tools ...
+    ///
+    ///     let ctx = ToolContext::new("agent-1", PermissionSet::minimal());
+    ///     let result = registry.execute("echo", json!({"message": "hello"}), ctx).await;
+    ///
+    ///     match result {
+    ///         Ok(tool_result) if tool_result.success => {
+    ///             println!("Success: {:?}", tool_result.output);
+    ///         }
+    ///         Ok(tool_result) => {
+    ///             println!("Tool failed: {:?}", tool_result.error);
+    ///         }
+    ///         Err(e) => {
+    ///             println!("Execution error: {}", e);
+    ///         }
+    ///     }
+    /// }
+    /// ```
     pub async fn execute(
         &self,
         name: &str,

@@ -44,6 +44,18 @@ pub struct Message {
 }
 
 impl Message {
+    /// Create a user message.
+    ///
+    /// User messages represent input from the end user or application.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_provider::types::Message;
+    ///
+    /// let msg = Message::user("Hello, how are you?");
+    /// assert_eq!(msg.content, "Hello, how are you?");
+    /// ```
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: Role::User,
@@ -53,6 +65,19 @@ impl Message {
         }
     }
 
+    /// Create an assistant message.
+    ///
+    /// Assistant messages represent responses from the LLM.
+    /// Use this to add previous assistant responses to the conversation history.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_provider::types::Message;
+    ///
+    /// let msg = Message::assistant("I'm doing well, thank you!");
+    /// assert_eq!(msg.content, "I'm doing well, thank you!");
+    /// ```
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: Role::Assistant,
@@ -62,6 +87,19 @@ impl Message {
         }
     }
 
+    /// Create a system message.
+    ///
+    /// System messages set the behavior and context for the LLM.
+    /// They are typically placed at the beginning of the conversation.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_provider::types::Message;
+    ///
+    /// let msg = Message::system("You are a helpful coding assistant.");
+    /// assert_eq!(msg.content, "You are a helpful coding assistant.");
+    /// ```
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: Role::System,
@@ -71,6 +109,25 @@ impl Message {
         }
     }
 
+    /// Create a tool result message.
+    ///
+    /// Tool result messages return the output of a tool call back to the LLM.
+    /// The `tool_call_id` must match the ID from the original tool call request.
+    ///
+    /// # Arguments
+    ///
+    /// * `tool_call_id` - The unique ID of the tool call being responded to
+    /// * `content` - The result/output of the tool execution
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_provider::types::Message;
+    ///
+    /// let msg = Message::tool_result("call-123", "Current weather: 72°F, sunny");
+    /// assert_eq!(msg.content, "Current weather: 72°F, sunny");
+    /// assert_eq!(msg.tool_call_id, Some("call-123".to_string()));
+    /// ```
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: Role::Tool,

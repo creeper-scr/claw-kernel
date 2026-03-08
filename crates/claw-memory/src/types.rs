@@ -53,6 +53,27 @@ pub struct MemoryItem {
 }
 
 impl MemoryItem {
+    /// Create a new memory item.
+    ///
+    /// Automatically generates a unique ID based on the current timestamp.
+    /// Sets default importance to 0.5 and empty tags.
+    ///
+    /// # Arguments
+    ///
+    /// * `namespace` - The agent or namespace that owns this memory
+    /// * `content` - The memory content (text or serialized JSON)
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_memory::types::MemoryItem;
+    ///
+    /// let item = MemoryItem::new("agent-1", "User prefers dark mode");
+    /// assert_eq!(item.namespace, "agent-1");
+    /// assert_eq!(item.content, "User prefers dark mode");
+    /// assert_eq!(item.importance, 0.5);
+    /// assert!(item.id.as_str().starts_with("mem-"));
+    /// ```
     pub fn new(namespace: impl Into<String>, content: impl Into<String>) -> Self {
         let now_ms = current_time_ms();
         Self {
@@ -67,14 +88,66 @@ impl MemoryItem {
         }
     }
 
+    /// Add tags to the memory item.
+    ///
+    /// Tags are used for filtering and categorizing memories.
+    /// Replaces any existing tags.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_memory::types::MemoryItem;
+    ///
+    /// let item = MemoryItem::new("agent-1", "User prefers dark mode")
+    ///     .with_tags(vec!["preference".to_string(), "ui".to_string()]);
+    ///
+    /// assert_eq!(item.tags, vec!["preference", "ui"]);
+    /// ```
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
         self
     }
+
+    /// Set the importance score for this memory.
+    ///
+    /// The score is automatically clamped to the range 0.0–1.0.
+    /// Higher importance memories are more likely to be retained during cleanup.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_memory::types::MemoryItem;
+    ///
+    /// let item = MemoryItem::new("agent-1", "User prefers dark mode")
+    ///     .with_importance(0.9);
+    ///
+    /// assert!((item.importance - 0.9).abs() < 1e-6);
+    ///
+    /// // Values are clamped to 0.0-1.0 range
+    /// let item2 = MemoryItem::new("agent-1", "test").with_importance(5.0);
+    /// assert!((item2.importance - 1.0).abs() < 1e-6);
+    /// ```
     pub fn with_importance(mut self, score: f32) -> Self {
         self.importance = score.clamp(0.0, 1.0);
         self
     }
+
+    /// Set the embedding vector for semantic search.
+    ///
+    /// Embeddings enable similarity-based memory retrieval.
+    /// The vector dimensions should match your embedder's output size.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use claw_memory::types::MemoryItem;
+    ///
+    /// let embedding = vec![0.1_f32, 0.2, 0.3, 0.4];
+    /// let item = MemoryItem::new("agent-1", "User prefers dark mode")
+    ///     .with_embedding(embedding.clone());
+    ///
+    /// assert_eq!(item.embedding, Some(embedding));
+    /// ```
     pub fn with_embedding(mut self, v: Vec<f32>) -> Self {
         self.embedding = Some(v);
         self
