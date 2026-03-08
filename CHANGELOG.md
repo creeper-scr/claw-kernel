@@ -1,10 +1,10 @@
 ---
 title: Changelog
 description: Version history for claw-kernel
-status: v0.1.0
-version: "0.1.0"
-last_updated: "2026-03-01"
-language: bilingual
+status: v0.2.0
+version: "0.2.0"
+last_updated: "2026-03-08"
+language: english
 ---
 
 <!--
@@ -26,23 +26,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- Upgraded `rusqlite` from 0.30.0 to 0.32.1 (bundled SQLite, improved API)
-- Applied `cargo fmt` across all crates (formatting only, no logic changes)
-- Cleaned up bilingual documentation: removed mixed Chinese/English paragraphs in AGENTS.md, CONTRIBUTING.md, ROADMAP.md; English is now the single language per file
-- Removed stale planning artifacts: `BUILD_PLAN.md`, `DOCUMENTATION_AUDIT_REPORT.md`, `TECHNICAL_SPECIFICATION.md`, `.sisyphus/` directory
-- **Documentation Alignment:** Updated all crate documentation to match actual code implementations
-  - `docs/crates/claw-provider.md`: Fixed `HttpTransport` trait API documentation (changed `request`/`stream_request` to `post_json`/`post_stream`)
-  - `docs/crates/claw-tools.md`: Corrected `FsPermissions` documentation (struct with `read_paths`/`write_paths` fields, not enum)
-  - `docs/crates/claw-channel.md`: Expanded with complete type definitions (`ChannelMessage`, `ChannelId`, `Platform`, `MessageDirection`)
-  - `docs/architecture/pal.md` & `README.md`: Added clear platform support statement for IPC (Unix-only in v0.1.0)
+---
+
+## [0.2.0] - 2026-03-08
 
 ### Added
-- `sqlite-vec 0.1.6` dependency (vector search extension for SQLite, activated in memory store)
-- `zerocopy 0.8` dependency (zero-copy byte conversion for future f32 vector serialisation)
+- **Script Bridges**: `DirsBridge`, `MemoryBridge`, `EventsBridge`, `AgentBridge` — expose host
+  capabilities (filesystem paths, memory store, event bus, agent lifecycle) to Lua scripts
+- **SQLite history**: `SqliteHistoryStore` (claw-memory) + `SqliteHistory` (claw-loop) for
+  persistent conversation history backed by SQLite; zero direct rusqlite dependency in claw-loop
+- **`StreamChunk` type** (claw-loop): groundwork type for future streaming API; holds partial
+  token text, tool call deltas, and finish reason
+- **`ExtensionEvent` type** (claw-runtime): hot-loading and script reload events published on the
+  `EventBus`; includes `LoadError` and `ReloadError` thiserror enums
+- **`AgentOrchestrator::spawn()`** (claw-runtime): out-of-process agent management via PAL
+  `TokioProcessManager`; adds `terminate()` and `kill()` lifecycle methods
+- **`AgentStatus` field** on `AgentInfo` (claw-runtime): tracks `Running` / `Stopped` / `Error`
+  states; set automatically by `register`, `spawn`, `terminate`, and `kill`
+- **`AgentResult` convenience fields** (claw-loop): `content`, `tool_calls`,
+  `execution_time_ms` — extracted from `last_message` for ergonomic access without pattern
+  matching
+- **ADR-009** (`docs/adr/009-bridge-roadmap.md`): Lua bridge capability roadmap
+- **ADR-010** (`docs/adr/010-memory-system-boundary.md`): memory system boundary decisions
+- **ADR-011** (`docs/adr/011-multi-language-ipc-daemon.md`): KernelServer / multi-language IPC
+  daemon design
 
-### Security
+### Changed (Breaking)
+- **`NgramEmbedder` + `Embedder` trait moved**: relocated from `claw_memory` to
+  `claw_provider::embedding`.  The `claw_memory::embedding` module and
+  `claw_memory::traits::Embedder` trait have been removed.
+  - **Migration**: replace
+    ```rust
+    use claw_memory::{embedding::NgramEmbedder, traits::Embedder};
+    ```
+    with
+    ```rust
+    use claw_provider::embedding::{Embedder, NgramEmbedder};
+    ```
+- **`AgentOrchestrator::new()` constructor changed** (claw-runtime): now creates an internal
+  `TokioProcessManager`; a new `with_process_manager()` constructor allows injection.  Callers
+  that previously shared a process manager via `Runtime` must use `with_process_manager`.
+- **`AgentInfo` struct extended** (claw-runtime): added `process_handle` and `status` fields;
+  any manual construction of `AgentInfo` must supply these.
+
+### Removed
+- `claw_memory::embedding` module (moved to `claw_provider::embedding`)
+- `claw_memory::traits::Embedder` trait (moved to `claw_provider::embedding::Embedder`)
+- All Chinese `.zh.md` documentation duplicates (English-only documentation going forward)
+- Stale planning artifacts: `BUILD_PLAN.md`, `DOCUMENTATION_AUDIT_REPORT.md`,
+  `TECHNICAL_SPECIFICATION.md`, `.sisyphus/` directory
+
+### Fixed
+- Upgraded `rusqlite` from 0.30.0 to 0.32.1 (bundled SQLite, improved API)
+- `claw-provider/src/embedding.rs`: module is now self-contained; stale module-level doc comment
+  updated to reflect that `NgramEmbedder` is no longer imported from `claw_memory`
 - `claw-pal`: Windows IPC stub now returns `IpcError::ConnectionRefused` instead of panicking
+- Applied `cargo fmt` across all crates (formatting only, no logic changes)
+- All crate documentation updated to match the v0.2.0 API surface
 
 ---
 
@@ -156,5 +196,6 @@ Initial release. **9 crates, 670+ tests passing, zero clippy errors.**
 
 ---
 
-[Unreleased]: https://github.com/claw-project/claw-kernel/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/claw-project/claw-kernel/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/claw-project/claw-kernel/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/claw-project/claw-kernel/releases/tag/v0.1.0
