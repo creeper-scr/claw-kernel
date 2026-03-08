@@ -33,6 +33,21 @@ impl AnthropicProvider {
         }
     }
 
+    /// Create a provider with a custom transport (for testing).
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn with_transport(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        transport: Arc<dyn HttpTransport>,
+    ) -> Self {
+        Self {
+            api_key: api_key.into(),
+            model: model.into(),
+            transport,
+            retry_config: None,
+        }
+    }
+
     pub fn from_env() -> Result<Self, ProviderError> {
         let api_key = std::env::var("ANTHROPIC_API_KEY")
             .map_err(|_| ProviderError::Auth("ANTHROPIC_API_KEY not set".into()))?;

@@ -31,6 +31,22 @@ impl DeepSeekProvider {
         }
     }
 
+    /// Create a new DeepSeekProvider with a custom HTTP transport.
+    /// This is primarily used for testing with mock transports.
+    #[doc(hidden)]
+    pub fn with_transport(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        transport: Arc<dyn HttpTransport>,
+    ) -> Self {
+        Self {
+            api_key: api_key.into(),
+            model: model.into(),
+            transport,
+            retry_config: None,
+        }
+    }
+
     pub fn from_env() -> Result<Self, ProviderError> {
         let api_key = std::env::var("DEEPSEEK_API_KEY")
             .map_err(|_| ProviderError::Auth("DEEPSEEK_API_KEY not set".into()))?;
