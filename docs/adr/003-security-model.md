@@ -4,11 +4,10 @@ description: "Dual-mode security design (Safe Mode and Power Mode)"
 status: accepted
 date: 2026-02-28
 type: adr
-last_updated: "2026-03-01"
+last_updated: "2026-03-08"
 language: en
 ---
 
-[中文版 →](003-security-model.zh.md)
 
 # ADR 003: Dual-Mode Security (Safe/Power)
 
@@ -179,6 +178,34 @@ pub struct SandboxConfig {
     pub allow_subprocess: bool,
 }
 
+/// Network rule - defines allowed/denied network access
+pub struct NetRule {
+    pub host: String,        // Hostname or IP address
+    pub port: Option<u16>,   // Port (None = all ports)
+    pub allow: bool,         // true = allow, false = deny
+}
+
+impl NetRule {
+    pub fn allow(host: String) -> Self { ... }
+    pub fn allow_port(host: String, port: u16) -> Self { ... }
+    pub fn deny(host: String) -> Self { ... }
+}
+
+/// Syscall filtering policy
+pub enum SyscallPolicy {
+    AllowAll,                 // No syscall restrictions
+    DenyAll,                  // Block dangerous syscalls
+    Allowlist(Vec<String>),   // Only allow listed syscalls
+}
+
+/// Resource limits for sandboxed processes
+pub struct ResourceLimits {
+    pub max_memory_bytes: Option<u64>,     // Maximum memory
+    pub max_cpu_percent: Option<u8>,       // CPU limit (0-100)
+    pub max_file_descriptors: Option<u32>, // Max open files
+    pub max_processes: Option<u32>,        // Max processes
+}
+
 impl SandboxConfig {
     pub fn safe_default() -> Self {
         Self {
@@ -187,10 +214,10 @@ impl SandboxConfig {
                 dirs::data_dir().unwrap(),
                 dirs::cache_dir().unwrap(),
             ],
-            network_rules: vec![NetRule::Allow { 
-                domains: vec!["api.openai.com", "api.anthropic.com"],
-                ports: vec![443],
-            }],
+            network_rules: vec![
+                NetRule::allow_port("api.openai.com".to_string(), 443),
+                NetRule::allow_port("api.anthropic.com".to_string(), 443),
+            ],
             allow_subprocess: false,
         }
     }
@@ -199,7 +226,7 @@ impl SandboxConfig {
         Self {
             mode: ExecutionMode::Power,
             filesystem_allowlist: vec![],  // No restriction
-            network_rules: vec![NetRule::AllowAll],
+            network_rules: vec![],         // No restriction
             allow_subprocess: true,
         }
     }

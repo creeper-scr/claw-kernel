@@ -79,13 +79,15 @@ pub mod prelude {
 
     // ── Memory ───────────────────────────────────────────────────────────────
     pub use claw_memory::{
-        embedding::NgramEmbedder,
         error::MemoryError,
         secure::SecureMemoryStore,
         sqlite::SqliteMemoryStore,
-        traits::{Embedder, MemoryStore},
+        traits::MemoryStore,
         types::{MemoryId, MemoryItem},
     };
+
+    // ── Embedding (lives in claw-provider) ────────────────────────────────
+    pub use claw_provider::embedding::{Embedder, NgramEmbedder};
 
     // ── Channel ──────────────────────────────────────────────────────────────
     pub use claw_channel::{

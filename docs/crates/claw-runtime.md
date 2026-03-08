@@ -7,7 +7,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](claw-runtime.zh.md)
 
 
 System runtime with event bus, process management, and multi-agent orchestration.
@@ -32,15 +31,18 @@ claw-runtime = "0.1"
 ```
 
 ```rust
-use claw_runtime::{Runtime, EventBus};
+use claw_runtime::{Runtime, EventBus, EventFilter};
 
-let runtime = Runtime::new().await?;
+let runtime = Runtime::new("/tmp/claw.sock");
 
-// Subscribe to events
-let mut events = runtime.event_bus().subscribe(EventFilter::all());
+// Subscribe to all events
+let mut events = runtime.event_bus.subscribe();
 while let Ok(event) = events.recv().await {
     println!("Event: {:?}", event);
 }
+
+// Or subscribe to a specific category
+let mut tool_events = runtime.event_bus.subscribe_with_filter(EventFilter::ToolCalls);
 ```
 
 ---
@@ -48,18 +50,25 @@ while let Ok(event) = events.recv().await {
 ## Event Bus
 
 ```rust
-use claw_runtime::{EventBus, Event};
+use claw_runtime::{EventBus, Event, EventFilter};
 
 let bus = EventBus::new();
 
-// Subscribe
-let rx = bus.subscribe(EventFilter::ToolCalls);
+// Subscribe to all events
+let mut rx = bus.subscribe();
 
-// Emit
-bus.emit(Event::ToolCalled {
+// Subscribe with a declarative filter
+let mut tool_rx = bus.subscribe_with_filter(EventFilter::ToolCalls);
+
+// Subscribe with a custom closure predicate
+let mut agent_rx = bus.subscribe_filtered(|e| matches!(e, Event::AgentStarted { .. }));
+
+// Publish
+bus.publish(Event::ToolCalled {
+    agent_id: agent_id.clone(),
     tool_name: "calculator".to_string(),
-    params: json!({"a": 1, "b": 2}),
-});
+    call_id: "call-001".to_string(),
+}).unwrap();
 ```
 
 ---
@@ -67,33 +76,30 @@ bus.emit(Event::ToolCalled {
 ## Multi-Agent Orchestration
 
 ```rust
-use claw_runtime::{AgentOrchestrator, AgentConfig};
+use claw_runtime::{AgentOrchestrator, AgentConfig, AgentId, EventBus};
+use claw_pal::{ProcessConfig, TokioProcessManager};
+use std::sync::Arc;
 
-let orchestrator = AgentOrchestrator::new(runtime);
+let bus = Arc::new(EventBus::new());
+let orchestrator = AgentOrchestrator::new(Arc::clone(&bus));
 
-// Spawn subagent
-let config = AgentConfig {
-    name: "searcher".to_string(),
-    provider: ProviderConfig::default(),
-    tools: vec!["web_search".to_string()],
-};
+// Register an in-process agent
+let config = AgentConfig::new("searcher");
+let handle = orchestrator.register(config)?;
 
-let handle = orchestrator.spawn(config).await?;
+// Or spawn an out-of-process agent
+let agent_config = AgentConfig::new("worker");
+let process_config = ProcessConfig::new("worker-bin".to_string())
+    .with_arg("--task".to_string());
+let handle = orchestrator.spawn(agent_config, process_config).await?;
 
-// Send message
-orchestrator.send_message(
-    AgentId::main(),
-    handle.id(),
-    A2AMessage::request("Search for Rust tutorials"),
-).await?;
+// Query agents
+let ids = orchestrator.agent_ids();
+let count = orchestrator.agent_count();
+let info = orchestrator.agent_info(&handle.agent_id);
 
-// List agents
-for agent in orchestrator.list() {
-    println!("{}: {:?}", agent.name, agent.status);
-}
-
-// Terminate
-orchestrator.terminate(handle, Duration::from_secs(5)).await?;
+// Terminate an agent (SIGTERM → SIGKILL after grace period)
+orchestrator.terminate(&handle.agent_id, Duration::from_secs(5)).await?;
 ```
 
 ---
@@ -101,18 +107,27 @@ orchestrator.terminate(handle, Duration::from_secs(5)).await?;
 ## Process Management
 
 ```rust
-use claw_runtime::{ProcessManager, ProcessConfig};
+use claw_runtime::{Runtime, ProcessConfig};
+use claw_pal::TokioProcessManager;
+use claw_pal::traits::ProcessManager as _;
+use std::sync::Arc;
 
-let manager = ProcessManager::new();
+let manager = Arc::new(TokioProcessManager::new());
 
 let handle = manager.spawn(ProcessConfig {
-    command: "worker".to_string(),
+    program: "worker".to_string(),
     args: vec!["--task".to_string(), "1".to_string()],
-    sandbox: Some(sandbox_config),
+    env: std::collections::HashMap::new(),
+    working_dir: None,
 }).await?;
 
-// Monitor
-let status = manager.wait(handle).await?;
+// Wrap in ManagedProcess for ergonomic wait/kill
+use claw_runtime::ManagedProcess;
+let proc = ManagedProcess::new(handle, Arc::clone(&manager));
+let status = proc.wait().await?;
+
+// Or associate a process with an agent via the orchestrator
+let agent_handle = orchestrator.spawn(agent_config, process_config).await?;
 ```
 
 ---

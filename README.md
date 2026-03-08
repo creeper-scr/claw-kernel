@@ -8,8 +8,6 @@
 [![Tests](https://img.shields.io/badge/tests-389+%20passing-brightgreen.svg)](#)
 [![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](CHANGELOG.md)
 
-[中文文档 →](docs/README.zh.md)
-
 ---
 
 Every project in the Claw ecosystem independently reimplements the same primitives: LLM provider HTTP calls, tool-use protocol, agent loop, memory system, channel integrations. **claw-kernel** extracts these into a single, well-tested, cross-platform Rust library.

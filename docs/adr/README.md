@@ -8,7 +8,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](README.zh.md)
 
 # Architecture Decision Records (ADRs)
 
@@ -51,6 +50,9 @@ What becomes easier or more difficult to do because of this change?
 | [006](006-message-format-abstraction.md) | Message Format Abstraction for LLM Providers | Accepted |
 | [007](007-eventbus-implementation.md) | EventBus Implementation Strategy | Accepted |
 | [008](008-hot-loading-file-watcher.md) | Hot-Loading File Watcher Strategy | Accepted |
+| [009](009-bridge-roadmap.md) | claw-script Bridge Roadmap | Accepted |
+| [010](010-memory-system-boundary.md) | Memory System Boundary | Accepted |
+| [011](011-multi-language-ipc-daemon.md) | Multi-Language Support via IPC Daemon | Proposed |
 
 ## Contributing
 

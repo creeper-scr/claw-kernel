@@ -3,11 +3,14 @@
 //! Routes A2A messages between agents, supporting both local (in-process)
 //! and remote (IPC) message delivery.
 
+use claw_pal::{InterprocessTransport, IpcTransport};
+
 use crate::a2a::protocol::{A2AMessage, A2AMessagePayload, A2AMessageType};
 use crate::a2a::routing::{AgentHandle, SimpleRouter};
 use crate::agent_types::AgentId;
 use crate::error::RuntimeError;
 use crate::event_bus::EventBus;
+use crate::events::Event;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -105,13 +108,17 @@ impl IpcRouter {
                 return self.router.route_message(message).await;
             }
 
-            // Check if target is a known remote agent
-            if self.get_remote_endpoint(target).await.is_some() {
-                // In a full implementation, this would serialize and send over IPC
-                // For now, return an error indicating remote delivery not implemented
-                return Err(RuntimeError::IpcError(
-                    "remote delivery not implemented in simplified router".to_string(),
-                ));
+            // Check if target is a known remote agent — use PAL IPC transport.
+            if let Some(remote_endpoint) = self.get_remote_endpoint(target).await {
+                let bytes = Self::encode_message(&message)?;
+                let transport = InterprocessTransport::new_client(&remote_endpoint)
+                    .await
+                    .map_err(|e| RuntimeError::IpcError(e.to_string()))?;
+                transport
+                    .send(&bytes)
+                    .await
+                    .map_err(|e| RuntimeError::IpcError(e.to_string()))?;
+                return Ok(());
             }
 
             // Target not found
@@ -130,6 +137,75 @@ impl IpcRouter {
     /// Get list of all registered local agent IDs.
     pub async fn local_agent_ids(&self) -> Vec<AgentId> {
         self.router.get_agent_ids().await
+    }
+
+    /// Start accepting incoming IPC connections in a background task.
+    ///
+    /// Each accepted connection is handled in a dedicated `tokio::spawn` task
+    /// that reads frames, decodes them as `A2AMessage`, and routes them to
+    /// local agents.
+    ///
+    /// **Note:** Uses `InterprocessTransport::new_server` which binds, accepts
+    /// one connection, then rebinds for the next. On Unix the stale socket file
+    /// is cleaned up before each rebind. On Windows this returns immediately
+    /// with an `IpcError` (Named Pipe support is planned for v0.2.0).
+    pub async fn start_accepting(&self) -> Result<(), RuntimeError> {
+        let endpoint = self.endpoint.clone();
+        let router = Arc::clone(&self.router);
+        let event_bus = Arc::clone(&self.event_bus);
+
+        tokio::spawn(async move {
+            loop {
+                // Remove any stale socket file before rebinding (Unix only).
+                #[cfg(unix)]
+                let _ = std::fs::remove_file(&endpoint);
+
+                let transport =
+                    match InterprocessTransport::new_server(&endpoint).await {
+                        Ok(t) => t,
+                        Err(e) => {
+                            tracing::error!(
+                                "IpcRouter: failed to bind on {}: {}",
+                                endpoint,
+                                e
+                            );
+                            break;
+                        }
+                    };
+
+                let router_clone = Arc::clone(&router);
+                let event_bus_clone = Arc::clone(&event_bus);
+                tokio::spawn(async move {
+                    Self::handle_transport(transport, router_clone, event_bus_clone).await;
+                });
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Drive a single accepted IPC connection until it closes.
+    ///
+    /// Reads length-prefixed frames, decodes each as an `A2AMessage`,
+    /// publishes a `MessageReceived` event, and routes the message locally.
+    async fn handle_transport(
+        transport: InterprocessTransport,
+        router: Arc<SimpleRouter>,
+        event_bus: Arc<EventBus>,
+    ) {
+        while let Ok(bytes) = transport.recv().await {
+            match Self::decode_message(&bytes) {
+                Ok(message) => {
+                    let _ = event_bus.publish(Event::MessageReceived {
+                        agent_id: message.source.clone(),
+                        channel: "ipc".to_string(),
+                        message_type: format!("{:?}", message.message_type),
+                    });
+                    let _ = router.route_message(message).await;
+                }
+                Err(e) => tracing::warn!("IpcRouter: decode error: {e}"),
+            }
+        }
     }
 
     /// Handle a discovery request.

@@ -7,7 +7,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](claw-provider.zh.md)
 
 
 LLM Provider abstraction with a three-tier internal architecture: Message Format → HTTP Transport → Provider Configuration.
@@ -43,9 +42,7 @@ LLM Provider abstraction with a three-tier internal architecture: Message Format
 | OpenAI | OpenAIFormat | ~20 (config only) |
 | DeepSeek | OpenAIFormat | ~20 (config only) |
 | Moonshot | OpenAIFormat | ~20 (config only) |
-| Qwen | OpenAIFormat | ~20 (config only) |
 | Anthropic | AnthropicFormat | ~20 (config only) |
-| Bedrock | AnthropicFormat | ~30 (AWS auth) |
 
 > 90% of LLM providers in the market are compatible with either OpenAI or Anthropic format. This architecture eliminates duplicate HTTP and serialization code.
 
@@ -84,13 +81,6 @@ use claw_provider::AnthropicProvider;
 
 // Anthropic (Claude)
 let provider = AnthropicProvider::from_env()?; // ANTHROPIC_API_KEY
-
-// AWS Bedrock (Claude via AWS)
-use claw_provider::BedrockProvider;
-let provider = BedrockProvider::new(BedrockConfig {
-    region: "us-east-1".to_string(),
-    model: "anthropic.claude-3-opus-20240229-v1:0".to_string(),
-});
 ```
 
 ### OpenAI-Compatible Providers
@@ -108,15 +98,6 @@ let provider = DeepSeekProvider::from_env()?; // DEEPSEEK_API_KEY
 
 // Moonshot (月之暗面)
 let provider = MoonshotProvider::from_env()?; // MOONSHOT_API_KEY
-
-// Qwen (通义千问)
-let provider = QwenProvider::from_env()?; // QWEN_API_KEY
-
-// Grok (xAI)
-let provider = GrokProvider::from_env()?; // GROK_API_KEY
-
-// Azure OpenAI (special auth handling)
-let provider = AzureOpenAIProvider::from_env()?; // AZURE_OPENAI_API_KEY
 ```
 
 ### Local Models
@@ -162,8 +143,8 @@ pub trait MessageFormat: Send + Sync {
 ```
 
 **Built-in formats:**
-- `OpenAIFormat` — Used by OpenAI, DeepSeek, Moonshot, Qwen, Grok, and most cloud providers
-- `AnthropicFormat` — Used by Anthropic (Claude) and AWS Bedrock
+- `OpenAIFormat` — Used by OpenAI, DeepSeek, Moonshot, and most cloud providers
+- `AnthropicFormat` — Used by Anthropic (Claude)
 - `OllamaFormat` — Ollama's OpenAI-compatible variant
 
 ### Tier 2: HttpTransport (Reusable)
@@ -390,20 +371,15 @@ default = ["openai", "anthropic"]
 openai = []
 deepseek = ["openai"]  # Reuses OpenAIFormat
 moonshot = ["openai"]  # Reuses OpenAIFormat
-qwen = ["openai"]      # Reuses OpenAIFormat
-grok = ["openai"]      # Reuses OpenAIFormat
-azure = ["openai"]     # Reuses OpenAIFormat with special auth
 
-# Anthropic-compatible providers
+# Anthropic providers
 anthropic = []
-bedrock = ["anthropic"]  # Reuses AnthropicFormat with AWS auth
 
 # Local models
 ollama = []
 
-# All providers
-full = ["openai", "deepseek", "moonshot", "qwen", "grok", "azure", 
-        "anthropic", "bedrock", "ollama"]
+# All implemented providers
+full = ["openai", "deepseek", "moonshot", "anthropic", "ollama"]
 ```
 
 ---

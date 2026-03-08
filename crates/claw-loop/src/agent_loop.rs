@@ -59,6 +59,8 @@ impl AgentLoop {
         initial_message: impl Into<String>,
     ) -> Result<AgentResult, AgentError> {
         // ── Step 1: Initialize state machine and seed history ───────────────────
+        let start_time = std::time::Instant::now();
+        let mut tool_calls_accumulated: Vec<claw_provider::types::ToolCall> = Vec::new();
         let mut state_machine = StateMachine::new();
 
         // Transition: Idle -> Running
@@ -81,6 +83,9 @@ impl AgentLoop {
                         last_message: self.history.messages().last().cloned(),
                         usage: loop_state.usage,
                         turns: loop_state.turn,
+                        content: self.history.messages().last().map(|m| m.content.clone()).unwrap_or_default(),
+                        tool_calls: tool_calls_accumulated.clone(),
+                        execution_time_ms: start_time.elapsed().as_millis() as u64,
                     });
                 }
             }
@@ -95,6 +100,9 @@ impl AgentLoop {
                     last_message: self.history.messages().last().cloned(),
                     usage: loop_state.usage,
                     turns: loop_state.turn,
+                    content: self.history.messages().last().map(|m| m.content.clone()).unwrap_or_default(),
+                    tool_calls: tool_calls_accumulated.clone(),
+                    execution_time_ms: start_time.elapsed().as_millis() as u64,
                 });
             }
 
@@ -110,6 +118,9 @@ impl AgentLoop {
                     last_message: self.history.messages().last().cloned(),
                     usage: loop_state.usage,
                     turns: loop_state.turn,
+                    content: self.history.messages().last().map(|m| m.content.clone()).unwrap_or_default(),
+                    tool_calls: tool_calls_accumulated.clone(),
+                    execution_time_ms: start_time.elapsed().as_millis() as u64,
                 });
             }
 
@@ -157,6 +168,7 @@ impl AgentLoop {
                 && loop_state.usage.total_tokens >= self.config.token_budget
             {
                 self.history.append(response.message.clone());
+                let content = response.message.content.clone();
                 // Transition: AwaitingLLM -> Completed (via Running)
                 self.transition(&mut state_machine, StateEvent::LLMResponseReceived)
                     .await?;
@@ -167,6 +179,9 @@ impl AgentLoop {
                     last_message: Some(response.message),
                     usage: loop_state.usage,
                     turns: loop_state.turn,
+                    content,
+                    tool_calls: tool_calls_accumulated.clone(),
+                    execution_time_ms: start_time.elapsed().as_millis() as u64,
                 });
             }
 
@@ -184,6 +199,7 @@ impl AgentLoop {
             if has_tool_calls && self.config.tool_use_enabled {
                 if let Some(ref registry) = self.tools {
                     let tool_calls = assistant_msg.tool_calls.as_ref().unwrap().clone();
+                    tool_calls_accumulated.extend(tool_calls.clone());
 
                     // Transition: AwaitingLLM -> ToolExecuting
                     self.transition(&mut state_machine, StateEvent::ToolsRequired)
@@ -226,9 +242,12 @@ impl AgentLoop {
 
             return Ok(AgentResult {
                 finish_reason: FinishReason::Stop,
-                last_message: Some(assistant_msg),
+                last_message: Some(assistant_msg.clone()),
                 usage: loop_state.usage,
                 turns: loop_state.turn,
+                content: assistant_msg.content.clone(),
+                tool_calls: tool_calls_accumulated,
+                execution_time_ms: start_time.elapsed().as_millis() as u64,
             });
         }
     }
@@ -345,6 +364,27 @@ impl AgentLoop {
     /// Inspect the current conversation history.
     pub fn history(&self) -> &[Message] {
         self.history.messages()
+    }
+
+    /// Stream the agent loop execution, yielding chunks as they arrive.
+    ///
+    /// This is a v1 implementation that runs the complete loop and then
+    /// yields chunks. A future version will use `complete_stream()` for
+    /// true token-by-token streaming.
+    pub async fn stream_run(
+        &mut self,
+        initial_message: impl Into<String>,
+    ) -> Result<impl futures::Stream<Item = crate::types::StreamChunk>, crate::error::AgentError> {
+        let result = self.run(initial_message).await?;
+        let chunks = vec![
+            crate::types::StreamChunk::Text {
+                content: result.content.clone(),
+                is_final: true,
+            },
+            crate::types::StreamChunk::UsageUpdate(result.usage.clone()),
+            crate::types::StreamChunk::Finish(result.finish_reason.clone()),
+        ];
+        Ok(futures::stream::iter(chunks))
     }
 }
 

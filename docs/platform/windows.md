@@ -3,11 +3,10 @@ title: Windows Platform Guide
 description: Windows platform guide (AppContainer + Job Objects)
 status: partial-implementation
 version: "0.1.0"
-last_updated: "2026-03-01"
+last_updated: "2026-03-08"
 language: en
 ---
 
-[中文版 →](windows.zh.md)
 
 # Windows Platform Guide
 
@@ -145,20 +144,13 @@ let data_dir = dirs::data_dir();
 
 ## IPC Transport
 
-Windows uses **Named Pipes** for inter-process communication (Layer 0.5 PAL).
+> ⚠️ **v0.1.0 Limitation**: Windows IPC (Named Pipe) is **not implemented**. 
+> Operations return `IpcError::ConnectionRefused`.
+> Full Named Pipe support is planned for v0.2.0.
 
-```rust
-use claw_pal::IpcTransport;
+Windows will use **Named Pipes** for inter-process communication (Layer 0.5 PAL) when implemented.
 
-// Create listener
-let listener = LocalSocketListener::bind("claw-kernel-agent")?;
-// Creates: \\.\pipe\claw-kernel-agent
-
-// Connect
-let stream = LocalSocketStream::connect("claw-kernel-agent")?;
-```
-
-**Characteristics:**
+**Planned Characteristics:**
 - Named pipe: `\\.\pipe\<name>`
 - Performance: ~90% (slightly slower than UDS)
 - Security: Pipe ACLs (Access Control Lists)

@@ -15,4 +15,5 @@
 
 mod sandbox;
 
+#[allow(unused_imports)]
 pub use sandbox::MacOSSandbox;

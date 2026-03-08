@@ -4,6 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use claw_tools::{registry::ToolRegistry, types::PermissionSet};
+use claw_memory::MemoryStore;
+use claw_runtime::{AgentOrchestrator, EventBus};
 use serde::{Deserialize, Serialize};
 
 /// Supported scripting engines.
@@ -87,6 +89,14 @@ pub struct ScriptContext {
     pub permissions: PermissionSet,
     /// Tool registry for executing tools from scripts.
     pub tool_registry: Option<Arc<ToolRegistry>>,
+    /// Memory store for the memory bridge.
+    pub memory_store: Option<Arc<dyn MemoryStore>>,
+    /// Event bus for the events bridge.
+    pub event_bus: Option<Arc<EventBus>>,
+    /// Agent orchestrator for the agent bridge.
+    pub orchestrator: Option<Arc<AgentOrchestrator>>,
+    /// Resource holders to keep background resources alive during script execution.
+    pub(crate) _resource_holders: Vec<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 impl std::fmt::Debug for ScriptContext {
@@ -99,6 +109,9 @@ impl std::fmt::Debug for ScriptContext {
             .field("net_config", &self.net_config)
             .field("permissions", &self.permissions)
             .field("tool_registry", &self.tool_registry.is_some())
+            .field("memory_store", &self.memory_store.is_some())
+            .field("event_bus", &self.event_bus.is_some())
+            .field("orchestrator", &self.orchestrator.is_some())
             .finish()
     }
 }
@@ -113,6 +126,10 @@ impl Default for ScriptContext {
             net_config: NetBridgeConfig::default(),
             permissions: PermissionSet::minimal(),
             tool_registry: None,
+            memory_store: None,
+            event_bus: None,
+            orchestrator: None,
+            _resource_holders: Vec::new(),
         }
     }
 }
@@ -127,6 +144,10 @@ impl ScriptContext {
             net_config: NetBridgeConfig::default(),
             permissions: PermissionSet::minimal(),
             tool_registry: None,
+            memory_store: None,
+            event_bus: None,
+            orchestrator: None,
+            _resource_holders: Vec::new(),
         }
     }
 
@@ -167,6 +188,24 @@ impl ScriptContext {
     /// Set the tool registry (builder-style for optional chaining).
     pub fn with_registry(mut self, registry: Arc<ToolRegistry>) -> Self {
         self.tool_registry = Some(registry);
+        self
+    }
+
+    /// Set the memory store for the memory bridge.
+    pub fn with_memory_store(mut self, store: Arc<dyn MemoryStore>) -> Self {
+        self.memory_store = Some(store);
+        self
+    }
+
+    /// Set the event bus for the events bridge.
+    pub fn with_event_bus(mut self, bus: Arc<EventBus>) -> Self {
+        self.event_bus = Some(bus);
+        self
+    }
+
+    /// Set the agent orchestrator for the agent bridge.
+    pub fn with_orchestrator(mut self, orc: Arc<AgentOrchestrator>) -> Self {
+        self.orchestrator = Some(orc);
         self
     }
 }

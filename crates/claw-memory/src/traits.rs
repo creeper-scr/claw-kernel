@@ -90,23 +90,6 @@ pub trait MemoryStore: Send + Sync {
     }
 }
 
-/// Local (synchronous) text embedding.
-///
-/// The concrete implementation (Phase D) uses n-gram character hashing.
-/// No external API calls — must be fast and deterministic.
-pub trait Embedder: Send + Sync {
-    /// Embed a single text into a fixed-length vector.
-    fn embed(&self, text: &str) -> Vec<f32>;
-
-    /// Embed multiple texts (may be parallelized).
-    fn embed_batch(&self, texts: &[&str]) -> Vec<Vec<f32>> {
-        texts.iter().map(|t| self.embed(t)).collect()
-    }
-
-    /// Number of dimensions in the output vector.
-    fn dimensions(&self) -> usize;
-}
-
 // ============================================================
 // Tests
 // ============================================================

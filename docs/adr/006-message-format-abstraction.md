@@ -8,7 +8,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](006-message-format-abstraction.zh.md)
 
 # ADR 006: Message Format Abstraction for LLM Providers
 

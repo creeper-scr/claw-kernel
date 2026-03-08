@@ -1,3 +1,4 @@
+use claw_pal::ProcessHandle;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -118,12 +119,37 @@ impl AgentConfig {
 
 // ─── AgentInfo ────────────────────────────────────────────────────────────────
 
+/// Lifecycle status of a registered agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentStatus {
+    /// Agent is starting up.
+    Starting,
+    /// Agent is running normally.
+    Running,
+    /// Agent is paused.
+    Paused,
+    /// Agent has stopped.
+    Stopped,
+    /// Agent encountered an error.
+    Error,
+}
+
+impl Default for AgentStatus {
+    fn default() -> Self {
+        Self::Running
+    }
+}
+
 /// Runtime information about a registered agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
     pub config: AgentConfig,
     /// Unix timestamp in milliseconds when the agent was registered.
     pub started_at: u64,
+    /// Process handle if agent is running in a separate OS process.
+    pub process_handle: Option<ProcessHandle>,
+    /// Current lifecycle status.
+    pub status: AgentStatus,
 }
 
 // ─── AgentHandle ─────────────────────────────────────────────────────────────

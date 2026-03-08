@@ -7,7 +7,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](overview.zh.md)
 
 # claw-kernel Architecture Overview
 
@@ -122,10 +121,10 @@ The **trust root** — immutable, never hot-patched, no platform assumptions.
 
 Isolates platform-specific code from the rest of the system.
 
-| Component | Linux | macOS | Windows |
-|-----------|-------|-------|---------|
-| Sandbox | seccomp-bpf + Namespaces | sandbox(7) profile | AppContainer + Job Objects |
-| IPC | Unix Domain Socket | Unix Domain Socket | Named Pipe |
+| Component | Linux | macOS | Windows (v0.1.0) |
+|-----------|-------|-------|-------------------|
+| Sandbox | seccomp-bpf + Namespaces | sandbox(7) profile | AppContainer (stub) |
+| IPC | Unix Domain Socket | Unix Domain Socket | Named Pipe (v0.2.0) |
 | Process | fork()/exec() | fork()/exec() | CreateProcess() |
 | Config | XDG dirs | ~/Library | %APPDATA% |
 
@@ -139,27 +138,46 @@ The async foundation built on Tokio.
 ```rust
 // Central message bus for all components
 pub enum Event {
-    UserInput(Message),
-    AgentOutput(Response),
-    ToolCall(ToolInvocation),
-    ToolResult(ToolOutput),
-    AgentLifecycle(AgentState),
+    // Agent lifecycle
+    AgentStarted { agent_id: AgentId },
+    AgentStopped { agent_id: AgentId, reason: String },
+
+    // LLM interaction
+    LlmRequestStarted { agent_id: AgentId, provider: String },
+    LlmRequestCompleted { agent_id: AgentId, prompt_tokens: u64, completion_tokens: u64 },
+
+    // Message handling
+    MessageReceived { agent_id: AgentId, channel: String, message_type: String },
+
+    // Tool usage
+    ToolCalled { agent_id: AgentId, tool_name: String, call_id: String },
+    ToolResult { agent_id: AgentId, tool_name: String, call_id: String, success: bool },
+
+    // Memory system
+    ContextWindowApproachingLimit { agent_id: AgentId, token_count: u64, token_limit: u64 },
+    MemoryArchiveComplete { agent_id: AgentId, archived_count: usize },
+
+    // Security
+    ModeChanged { agent_id: AgentId, to_power_mode: bool },
+
+    // Extension events
     Extension(ExtensionEvent),
-    A2A(A2AMessage),
+
+    // System
+    Shutdown,
 }
 
 /// Agent-to-Agent message for inter-agent communication
 pub struct A2AMessage {
-    pub from: AgentId,
-    pub to: AgentId,                 // Required: target agent ID
-    pub correlation_id: String,      // For request-response correlation
-    pub payload: serde_json::Value,  // Serialized message payload
-}
-// 注意: 当前代码缺少 message_type, timeout, priority, timestamp 字段
-
-pub enum Payload {
-    Json(serde_json::Value),
-    Cbor(Vec<u8>),
+    pub id: String,
+    pub source: AgentId,
+    pub target: Option<AgentId>,
+    pub message_type: A2AMessageType,
+    pub payload: A2AMessagePayload,
+    pub priority: MessagePriority,
+    pub correlation_id: Option<String>,
+    pub timestamp: u64,
+    pub ttl_secs: Option<u32>,
 }
 
 pub enum MessagePriority {
@@ -170,13 +188,18 @@ pub enum MessagePriority {
     Background = 4,
 }
 
-pub type AgentId = String;
+/// Newtype wrapper for agent identifiers. Provides type safety over raw strings.
+/// The inner string is accessible via `.0`.
+pub struct AgentId(pub String);
 
 pub enum A2AMessageType {
-    Request,    // Expects response
-    Response,   // Response to request
-    Event,      // Fire-and-forget
-    Command,    // Directive (parent to child)
+    Request,          // Expects response
+    Response,         // Response to request
+    Event,            // Fire-and-forget
+    DiscoveryRequest, // Query for available capabilities
+    DiscoveryResponse,// Reply to discovery request
+    Heartbeat,        // Keep-alive
+    Error,            // Indicates a processing error
 }
 
 /// Extension-related events
@@ -326,7 +349,6 @@ pub struct ToolCall {
 | Provider | Format | Code Complexity |
 |----------|--------|-----------------|
 | `AnthropicProvider` | AnthropicFormat | ~20 lines (config) |
-| `BedrockProvider` | AnthropicFormat + AWS auth | ~30 lines (config) |
 | `OpenAIProvider` | OpenAIFormat | ~20 lines (config) |
 | `DeepSeekProvider` | OpenAIFormat | ~20 lines (config) |
 | `MoonshotProvider` | OpenAIFormat | ~20 lines (config) |
@@ -351,7 +373,11 @@ pub trait Tool: Send + Sync {
 }
 
 /// JSON Schema for tool parameters
-pub type ToolSchema = serde_json::Value; // JSON Schema as JSON
+pub struct ToolSchema {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
 
 /// Result of tool execution
 pub struct ToolResult {
@@ -539,28 +565,29 @@ impl AgentLoop {
     pub fn builder() -> AgentLoopBuilder {
         AgentLoopBuilder::new()
     }
-    pub async fn run(&mut self, context: impl Into<ConversationContext>) -> Result<AgentResult>;
-    pub async fn stream_run(&mut self, context: impl Into<ConversationContext>) -> Result<BoxStream<'static, StreamChunk>>;
+    pub async fn run(&mut self, initial_message: impl Into<String>) -> Result<AgentResult>;
     pub fn history(&self) -> &dyn HistoryManager;
     pub fn clear_history(&mut self);
 }
 
 pub struct AgentResult {
-    pub content: String,                    // Final response content
-    pub tool_calls: Vec<ToolCall>,          // All tool call records
-    pub turns: usize,                       // Actual conversation turns
-    pub token_usage: TokenUsage,            // Token usage statistics
-    pub finish_reason: FinishReason,        // Reason for completion
-    pub execution_time: Duration,           // Total execution time
+    /// Why the loop finished.
+    pub finish_reason: FinishReason,
+    /// The last assistant message.
+    pub last_message: Option<Message>,
+    /// Total token usage.
+    pub usage: TokenUsage,
+    /// Total turns executed.
+    pub turns: u32,
 }
 
 pub enum FinishReason {
-    Completed,                               // Normal completion
-    MaxTurnsReached,                         // Hit max turns limit
-    TokenBudgetExceeded,                     // Token budget exceeded
-    StopConditionMet(String),                // Custom stop condition triggered
-    UserInterrupted,                         // Interrupted by user
-    Error(AgentError),                       // Execution error
+    Stop,          // LLM returned stop with no tool calls
+    MaxTurns,      // Reached max_turns limit
+    TokenBudget,   // Exceeded token_budget
+    NoToolCall,    // LLM made no tool calls (stop condition)
+    StopCondition, // Custom stop condition triggered
+    Error,         // Loop stopped due to error
 }
 
 pub enum StreamChunk {

@@ -3,11 +3,10 @@ title: claw-pal
 description: Platform Abstraction Layer (sandbox, IPC, process)
 status: implemented
 version: "0.1.0"
-last_updated: "2026-03-01"
+last_updated: "2026-03-08"
 language: en
 ---
 
-[中文版 →](claw-pal.zh.md)
 
 
 Platform Abstraction Layer — Cross-platform sandbox, IPC, and process management.
@@ -50,19 +49,29 @@ claw-pal = "0.1"
 
 ```rust
 use claw_pal::{SandboxBackend, SandboxConfig, ExecutionMode};
+use claw_pal::types::{NetRule, ResourceLimits};
+use std::path::PathBuf;
 
 // Create safe mode sandbox
-let config = SandboxConfig {
-    mode: ExecutionMode::Safe,
-    filesystem_allowlist: vec![PathBuf::from("/data")],
-    network_rules: vec![NetRule::Allow { 
-        domains: vec!["api.example.com"],
-        ports: vec![443],
-    }],
-};
+let config = SandboxConfig::safe_default();
+let mut sandbox = LinuxSandbox::create(config).unwrap();
 
-let sandbox = claw_pal::create_sandbox(config)?;
-sandbox.apply()?;
+// Configure filesystem restrictions
+sandbox.restrict_filesystem(&[PathBuf::from("/data")]);
+
+// Configure network rules
+sandbox.restrict_network(&[
+    NetRule::allow_port("api.example.com".to_string(), 443),
+]);
+
+// Apply syscall policy
+sandbox.restrict_syscalls(SyscallPolicy::DenyAll);
+
+// Apply resource limits
+sandbox.restrict_resources(ResourceLimits::restrictive());
+
+// Apply the sandbox
+let handle = sandbox.apply()?;
 ```
 
 ---
@@ -73,22 +82,54 @@ sandbox.apply()?;
 
 Cross-platform sandboxing:
 
-| Platform | Implementation |
-|----------|---------------|
-| Linux | seccomp-bpf + namespaces |
-| macOS | sandbox(7) profile |
-| Windows | AppContainer + Job Objects |
+| Platform | Implementation | Status |
+|----------|---------------|--------|
+| Linux | seccomp-bpf + namespaces | ✅ Implemented |
+| macOS | sandbox(7) profile | ✅ Implemented |
+| Windows | AppContainer + Job Objects | ⚠️ Stub (v0.2.0) |
 
 ```rust
-use claw_pal::sandbox::SandboxBackend;
+use claw_pal::traits::SandboxBackend;
+use claw_pal::types::{SandboxConfig, ExecutionMode, ResourceLimits};
+use claw_pal::traits::sandbox::SyscallPolicy;
 
-pub trait SandboxBackend {
+pub trait SandboxBackend: Send + Sync {
     fn create(config: SandboxConfig) -> Result<Self, SandboxError> where Self: Sized;
-    fn restrict_filesystem(&mut self, allowlist: &[PathBuf]) -> &mut Self;
+    fn restrict_filesystem(&mut self, whitelist: &[PathBuf]) -> &mut Self;
     fn restrict_network(&mut self, rules: &[NetRule]) -> &mut Self;
     fn restrict_syscalls(&mut self, policy: SyscallPolicy) -> &mut Self;
     fn restrict_resources(&mut self, limits: ResourceLimits) -> &mut Self;
     fn apply(self) -> Result<SandboxHandle, SandboxError>;
+}
+
+// SandboxConfig fields:
+pub struct SandboxConfig {
+    pub mode: ExecutionMode,                  // Safe or Power
+    pub filesystem_allowlist: Vec<PathBuf>,   // Allowed paths
+    pub network_rules: Vec<NetRule>,          // Network rules
+    pub allow_subprocess: bool,               // Subprocess permission
+}
+
+// Network rule:
+pub struct NetRule {
+    pub host: String,                         // Hostname or IP
+    pub port: Option<u16>,                    // Port (None = all)
+    pub allow: bool,                          // Allow or deny
+}
+
+// Resource limits:
+pub struct ResourceLimits {
+    pub max_memory_bytes: Option<u64>,
+    pub max_cpu_percent: Option<u8>,
+    pub max_file_descriptors: Option<u32>,
+    pub max_processes: Option<u32>,
+}
+
+// Syscall policies:
+pub enum SyscallPolicy {
+    AllowAll,
+    DenyAll,
+    Allowlist(Vec<String>),                   // Syscall names
 }
 ```
 
@@ -96,34 +137,49 @@ pub trait SandboxBackend {
 
 Inter-process communication:
 
+> **v0.1.0**: Unix Domain Sockets only (Linux/macOS). Windows Named Pipe support planned for v0.2.0.
+
 ```rust
-use claw_pal::ipc::IpcTransport;
+use claw_pal::IpcTransport;
+use claw_pal::ipc::InterprocessTransport;
 
 // Server
-let listener = IpcTransport::listen("/tmp/my-socket").await?;
-let conn = listener.accept().await?;
+let transport = InterprocessTransport::new_server("/tmp/my-socket").await?;
 
 // Client  
-let conn = IpcTransport::connect("/tmp/my-socket").await?;
-conn.send(b"hello").await?;
+let transport = InterprocessTransport::new_client("/tmp/my-socket").await?;
+transport.send(b"hello").await?;
+let response = transport.recv().await?;
 ```
+
+**IPC Framing Protocol:**
+- 4-byte Big Endian length prefix
+- Maximum payload: 16 MiB
 
 ### `process`
 
 Process management:
 
 ```rust
-use claw_pal::process::{ProcessManager, ProcessConfig};
+use claw_pal::{ProcessManager, TokioProcessManager};
+use claw_pal::types::process::ProcessConfig;
 
-let manager = ProcessManager::new();
+let manager = TokioProcessManager::new();
 let handle = manager.spawn(ProcessConfig {
-    command: "worker".to_string(),
+    program: "worker".to_string(),
     args: vec!["--task".to_string(), "1".to_string()],
-    sandbox: Some(Box::new(sandbox)),
-    ..Default::default()
+    env: HashMap::new(),
+    working_dir: None,
 }).await?;
 
+// Graceful termination with timeout
 manager.terminate(handle, Duration::from_secs(5)).await?;
+
+// Force kill
+manager.kill(handle).await?;
+
+// Wait for exit
+let status = manager.wait(handle).await?;
 ```
 
 ### `dirs`
@@ -136,17 +192,69 @@ use claw_pal::dirs;
 let config = dirs::config_dir();   // ~/.config/claw-kernel/
 let data = dirs::data_dir();       // ~/.local/share/claw-kernel/
 let cache = dirs::cache_dir();     // ~/.cache/claw-kernel/
+let tools = dirs::tools_dir();     // ~/.local/share/claw-kernel/tools/
+let scripts = dirs::scripts_dir(); // ~/.local/share/claw-kernel/scripts/
+let logs = dirs::logs_dir();       // ~/.local/share/claw-kernel/logs/
+```
+
+### `security`
+
+Power Key management and mode transition guards:
+
+```rust
+use claw_pal::security::{PowerKeyValidator, PowerKeyHash, PowerKeyManager};
+
+// Validate a power key
+PowerKeyValidator::validate("SecureKey123!")?;
+
+// Create a hashed power key
+let hash = PowerKeyHash::new("SecureKey123!")?;
+
+// Save to config file
+PowerKeyManager::save_power_key("SecureKey123!")?;
+```
+
+---
+
+## Error Types
+
+```rust
+// Sandbox errors
+pub enum SandboxError {
+    CreationFailed(String),
+    RestrictFailed(String),
+    AlreadyApplied,
+    NotSupported,
+}
+
+// IPC errors
+pub enum IpcError {
+    ConnectionRefused,
+    Timeout,
+    BrokenPipe,
+    InvalidMessage,
+    PermissionDenied,
+}
+
+// Process errors
+pub enum ProcessError {
+    SpawnFailed(String),
+    SignalFailed(String),
+    NotFound(u32),
+    PermissionDenied,
+    InvalidSignal,
+}
 ```
 
 ---
 
 ## Platform Support
 
-| Feature | Linux | macOS | Windows |
-|---------|:-----:|:-----:|:-------:|
-| Sandbox | Yes Strong | Yes Medium | Yes Medium |
-| IPC | Yes UDS | Yes UDS | Yes Named Pipe |
-| Process | Yes Full | Yes Full | Yes Full |
+| Feature | Linux | macOS | Windows (v0.1.0) |
+|---------|:-----:|:-----:|:----------------:|
+| Sandbox | ✅ Strong | ✅ Medium | ⚠️ Stub |
+| IPC (UDS/NamedPipe) | ✅ UDS | ✅ UDS | ❌ v0.2.0 |
+| Process | ✅ Full | ✅ Full | ✅ Full |
 
 ---
 

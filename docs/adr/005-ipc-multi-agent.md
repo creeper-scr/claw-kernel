@@ -8,7 +8,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](005-ipc-multi-agent.zh.md)
 
 # ADR 005: IPC and Multi-Agent Coordination
 

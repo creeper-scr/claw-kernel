@@ -1,4 +1,5 @@
 use crate::agent_types::AgentId;
+use crate::extension::ExtensionEvent;
 use serde::{Deserialize, Serialize};
 
 /// System-wide lifecycle events broadcast over the EventBus.
@@ -65,6 +66,18 @@ pub enum Event {
         to_power_mode: bool,
     },
 
+    // ── Extension ────────────────────────────────────────────────────────────
+    /// Emitted by the extension subsystem (tool hot-loading, script reloads,
+    /// provider registration).
+    Extension(ExtensionEvent),
+
     // ── System ───────────────────────────────────────────────────────────────
     Shutdown,
+
+    // ── Custom (from scripts) ─────────────────────────────────────────────────
+    /// Emitted by scripts via the events bridge.
+    Custom {
+        event_type: String,
+        data: serde_json::Value,
+    },
 }

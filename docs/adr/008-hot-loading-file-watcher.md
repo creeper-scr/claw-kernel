@@ -8,7 +8,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](008-hot-loading-file-watcher.zh.md)
 
 # ADR 008: Hot-Loading File Watcher Implementation
 

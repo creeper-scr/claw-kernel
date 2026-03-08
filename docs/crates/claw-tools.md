@@ -3,11 +3,10 @@ title: claw-tools
 description: Tool registry, hot-loading, schema generation
 status: implemented
 version: "0.1.0"
-last_updated: "2026-03-01"
+last_updated: "2026-03-08"
 language: en
 ---
 
-[中文版 →](claw-tools.zh.md)
 
 
 Tool registry and hot-loading for agent capabilities.
@@ -34,20 +33,17 @@ claw-tools = { version = "0.1", features = ["hot-loading"] }
 ```rust
 use claw_tools::{ToolRegistry, Tool};
 
-let mut registry = ToolRegistry::new();
+let registry = ToolRegistry::new();
 
-// Load from directory
-registry.load_from_directory("./tools").await?;
-
-// Enable hot-loading
-registry.enable_hot_loading().await?;
+// Register a native tool
+registry.register(Box::new(MyTool::new()))?;
 
 // Execute tool
-let result = registry.execute("calculator", json!({
-    "operation": "add",
-    "a": 1,
-    "b": 2
-})).await?;
+let result = registry.execute(
+    "calculator",
+    json!({"operation": "add", "a": 1, "b": 2}),
+    ToolContext::new("agent-1", PermissionSet::minimal())
+).await?;
 ```
 
 ---
@@ -61,26 +57,25 @@ The core abstraction for executable capabilities:
 ```rust
 #[async_trait]
 pub trait Tool: Send + Sync {
-    /// Tool identifier
+    /// Unique tool name (snake_case).
     fn name(&self) -> &str;
     
-    /// Tool description for LLM
+    /// Human-readable description shown to the LLM.
     fn description(&self) -> &str;
     
-    /// Semantic version, e.g., "1.0.0"
-    fn version(&self) -> &str;
+    /// JSON Schema for input parameters.
+    fn schema(&self) -> &ToolSchema;
     
-    /// JSON Schema for parameter validation
-    fn schema(&self) -> ToolSchema;
+    /// Permissions required by this tool.
+    fn permissions(&self) -> &PermissionSet;
     
-    /// Execute with given parameters
-    async fn execute(&self, params: Value) -> Result<ToolResult, ToolError>;
+    /// Maximum execution time. Default: 30 seconds.
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(30)
+    }
     
-    /// Required permissions
-    fn permissions(&self) -> PermissionSet;
-    
-    /// Default timeout
-    fn timeout(&self) -> Duration { Duration::from_secs(30) }
+    /// Execute the tool with the given JSON arguments.
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> ToolResult;
 }
 ```
 
@@ -89,24 +84,19 @@ pub trait Tool: Send + Sync {
 Central registry for tool discovery and execution:
 
 ```rust
-pub struct ToolRegistry {
-    tools: HashMap<String, Box<dyn Tool>>,
-    hot_loading: Option<HotLoadingWatcher>,
-}
+pub struct ToolRegistry { /* ... */ }
 
 impl ToolRegistry {
     pub fn new() -> Self;
-    pub fn register(&mut self, tool: Box<dyn Tool>);
-    pub fn get(&self, name: &str) -> Option<&dyn Tool>;
-    pub fn list(&self) -> Vec<&ToolMeta>;
-    
-    // Hot-loading support (requires "hot-loading" feature)
-    pub async fn load_from_script(&mut self, path: &Path) -> Result<ToolMeta, LoadError>;
-    pub fn unload(&mut self, name: &str);
-    
-    // Directory loading and auto-reload
-    pub async fn load_from_directory(&mut self, path: &Path) -> Result<()>;
-    pub async fn enable_hot_loading(&mut self) -> Result<()>;
+    pub fn register(&self, tool: Box<dyn Tool>) -> Result<(), RegistryError>;
+    pub fn unregister(&self, name: &str) -> Result<(), RegistryError>;
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>>;
+    pub fn tool_names(&self) -> Vec<String>;
+    pub fn tool_count(&self) -> usize;
+    pub fn tool_meta(&self, name: &str) -> Option<ToolMeta>;
+    pub async fn execute(&self, name: &str, args: serde_json::Value, ctx: ToolContext) 
+        -> Result<ToolResult, RegistryError>;
+    pub async fn recent_log(&self, n: usize) -> Vec<LogEntry>;
 }
 ```
 
@@ -115,6 +105,9 @@ impl ToolRegistry {
 Tools declare their interface via JSON Schema:
 
 ```rust
+use schemars::JsonSchema;
+use serde::Deserialize;
+
 #[derive(JsonSchema, Deserialize)]
 struct SearchParams {
     query: String,
@@ -185,6 +178,17 @@ pub enum SubprocessPolicy {
     Denied,
     Allowed,
 }
+
+impl PermissionSet {
+    /// No permissions (read-only, no network, no subprocess).
+    pub fn minimal() -> Self {
+        Self {
+            filesystem: FsPermissions::none(),
+            network: NetworkPermissions::none(),
+            subprocess: SubprocessPolicy::Denied,
+        }
+    }
+}
 ```
 
 Available permissions:
@@ -199,32 +203,111 @@ Available permissions:
 
 ## Hot-Loading
 
-```rust
-// Watch for file changes and auto-reload
-registry.enable_hot_loading().await?;
+The hot-reload system provides file watching, debouncing, and atomic hot-swapping capabilities.
 
-// Or manually trigger
-registry.load_from_script("./new_tool.lua").await?;
+### Architecture
+
+```text
+File System ──► FileWatcher ──► WatchEvent ──► HotReloadProcessor ──► ToolRegistry
+                   │                              │
+                   └─ debounce (50ms)             └─ compile & hot-swap
 ```
+
+### Configuration
+
+```rust
+use claw_tools::types::HotLoadingConfig;
+
+let config = HotLoadingConfig {
+    watch_dirs: vec![PathBuf::from("./tools")],
+    extensions: vec!["lua".to_string()],
+    debounce_ms: 50,
+    default_timeout_secs: 30,
+    compile_timeout_secs: 10,
+    keep_previous_secs: 300,
+    auto_enable: true,
+};
+
+// Validate configuration
+config.validate()?;
+```
+
+### Usage
+
+```rust
+use std::sync::Arc;
+use claw_tools::hot_reload::{FileWatcher, HotReloadProcessor};
+use claw_tools::{ToolRegistry, HotLoadingConfig};
+use tokio::sync::mpsc;
+
+let registry = Arc::new(ToolRegistry::new());
+let config = HotLoadingConfig::default();
+
+// Create watcher
+let mut watcher = FileWatcher::new(&config)?;
+
+// Channel for events
+let (tx, rx) = mpsc::channel(32);
+
+// Start processor
+let processor = HotReloadProcessor::new(registry, config);
+tokio::spawn(async move {
+    processor.run(rx).await;
+});
+
+// Forward events
+tokio::spawn(async move {
+    while let Some(event) = watcher.recv().await {
+        let _ = tx.send(event).await;
+    }
+});
+```
+
+### Key Components
+
+| Component | Purpose |
+|-----------|---------|
+| `FileWatcher` | Watches directories for file changes with debouncing |
+| `HotReloadProcessor` | Processes watch events and performs hot-swaps |
+| `VersionedModule` | Manages versioned tool modules for atomic swaps |
+| `VersionedToolSet` | Manages a collection of versioned tools |
+| `ToolWatcher` | High-level validation watcher for tool scripts |
 
 ---
 
 ## Custom Tool (Rust)
 
 ```rust
-use claw_tools::{Tool, ToolResult};
+use claw_tools::{Tool, ToolSchema, ToolContext, ToolResult, ToolError};
+use claw_tools::{PermissionSet, FsPermissions, NetworkPermissions};
 use async_trait::async_trait;
-use schemars::JsonSchema;
-use serde::Deserialize;
+use std::time::Duration;
 
-#[derive(JsonSchema, Deserialize)]
-struct CalculatorParams {
-    a: f64,
-    b: f64,
-    operation: String,
+pub struct CalculatorTool {
+    schema: ToolSchema,
+    permissions: PermissionSet,
 }
 
-pub struct CalculatorTool;
+impl CalculatorTool {
+    pub fn new() -> Self {
+        Self {
+            schema: ToolSchema::new(
+                "calculator",
+                "Performs arithmetic operations",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "operation": { "type": "string", "enum": ["add", "subtract"] },
+                        "a": { "type": "number" },
+                        "b": { "type": "number" }
+                    },
+                    "required": ["operation", "a", "b"]
+                }),
+            ),
+            permissions: PermissionSet::minimal(),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for CalculatorTool {
@@ -232,32 +315,53 @@ impl Tool for CalculatorTool {
         "calculator"
     }
     
-    fn schema(&self) -> Value {
-        serde_json::to_value(CalculatorParams::schema()).unwrap()
+    fn description(&self) -> &str {
+        "Performs arithmetic operations"
     }
     
-    fn permissions(&self) -> PermissionSet {
-        PermissionSet::empty()
+    fn schema(&self) -> &ToolSchema {
+        &self.schema
     }
     
-    async fn execute(&self, params: Value) -> Result<ToolResult, ToolError> {
-        let params: CalculatorParams = serde_json::from_value(params)?;
-        
+    fn permissions(&self) -> &PermissionSet {
+        &self.permissions
+    }
+    
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
         let start = Instant::now();
-        let result = match params.operation.as_str() {
-            "add" => params.a + params.b,
-            "subtract" => params.a - params.b,
-            _ => return Err(ToolError::invalid_operation(&params.operation)),
+        
+        let operation = args.get("operation").and_then(|v| v.as_str()).unwrap_or("");
+        let a = args.get("a").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let b = args.get("b").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        
+        let result = match operation {
+            "add" => a + b,
+            "subtract" => a - b,
+            _ => {
+                return ToolResult::err(
+                    ToolError::invalid_args(format!("Unknown operation: {}", operation)),
+                    start.elapsed().as_millis() as u64
+                );
+            }
         };
         
-        Ok(ToolResult {
-            output: Some(json!(result)),
-            error: None,
-            logs: vec![],
-            execution_time_ms: start.elapsed().as_millis() as u64,
-        })
+        ToolResult::ok(serde_json::json!(result), start.elapsed().as_millis() as u64)
     }
 }
+```
+
+---
+
+## Audit Logging
+
+The registry maintains an in-memory audit log of all tool executions:
+
+```rust
+// Get recent log entries
+let recent = registry.recent_log(100).await;
+
+// Configure max audit entries
+let registry = ToolRegistry::new().with_max_audit_entries(10_000);
 ```
 
 ---
@@ -268,7 +372,6 @@ impl Tool for CalculatorTool {
 [features]
 default = ["hot-loading"]
 hot-loading = ["notify"]  # File watching (50ms debounce)
-schema-gen = ["schemars"]
 ```
 
 ---

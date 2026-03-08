@@ -4,6 +4,62 @@ use tokio::sync::broadcast;
 
 const CHANNEL_CAPACITY: usize = 1024;
 
+// ─── EventFilter ──────────────────────────────────────────────────────────────
+
+/// A declarative filter for event subscriptions.
+///
+/// Use with [`EventBus::subscribe_with_filter`] to subscribe to a predefined
+/// category of events without writing a custom closure.  For bespoke predicates
+/// use [`EventBus::subscribe_filtered`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EventFilter {
+    /// Accept every event (no filtering).
+    #[default]
+    All,
+    /// Agent lifecycle events: `AgentStarted`, `AgentStopped`.
+    AgentLifecycle,
+    /// Tool-call events: `ToolCalled`, `ToolResult`.
+    ToolCalls,
+    /// LLM request events: `LlmRequestStarted`, `LlmRequestCompleted`.
+    LlmRequests,
+    /// Memory-related events: `ContextWindowApproachingLimit`, `MemoryArchiveComplete`.
+    MemoryEvents,
+    /// Only the `Shutdown` event.
+    ShutdownOnly,
+    /// Custom function pointer predicate.
+    Custom(fn(&Event) -> bool),
+}
+
+impl EventFilter {
+    /// Returns `true` if `event` passes this filter.
+    pub fn matches(&self, event: &Event) -> bool {
+        match self {
+            EventFilter::All => true,
+            EventFilter::AgentLifecycle => {
+                matches!(event, Event::AgentStarted { .. } | Event::AgentStopped { .. })
+            }
+            EventFilter::ToolCalls => {
+                matches!(event, Event::ToolCalled { .. } | Event::ToolResult { .. })
+            }
+            EventFilter::LlmRequests => {
+                matches!(
+                    event,
+                    Event::LlmRequestStarted { .. } | Event::LlmRequestCompleted { .. }
+                )
+            }
+            EventFilter::MemoryEvents => {
+                matches!(
+                    event,
+                    Event::ContextWindowApproachingLimit { .. }
+                        | Event::MemoryArchiveComplete { .. }
+                )
+            }
+            EventFilter::ShutdownOnly => matches!(event, Event::Shutdown),
+            EventFilter::Custom(f) => f(event),
+        }
+    }
+}
+
 // ─── LagStrategy ──────────────────────────────────────────────────────────────
 
 /// Strategy for handling lagged (dropped) messages in the event bus.
@@ -87,6 +143,18 @@ impl EventBus {
         FilteredReceiver {
             rx: self.tx.subscribe(),
             filter: Box::new(filter),
+            lag_strategy: self.lag_strategy,
+        }
+    }
+
+    /// Subscribe to events matching a declarative [`EventFilter`].
+    ///
+    /// This is more ergonomic than [`subscribe_filtered`] when the desired
+    /// event category maps to one of the predefined variants.
+    pub fn subscribe_with_filter(&self, filter: EventFilter) -> FilteredReceiver {
+        FilteredReceiver {
+            rx: self.tx.subscribe(),
+            filter: Box::new(move |e| filter.matches(e)),
             lag_strategy: self.lag_strategy,
         }
     }

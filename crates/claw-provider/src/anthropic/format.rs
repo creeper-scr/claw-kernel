@@ -88,6 +88,7 @@ pub struct AnthropicStreamUsage {
 /// Anthropic format parsing error.
 #[derive(Debug)]
 pub enum AnthropicError {
+    #[allow(dead_code)]
     MissingField(&'static str),
     InvalidFormat(String),
 }

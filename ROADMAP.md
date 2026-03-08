@@ -22,7 +22,7 @@ language: bilingual
 | Item | Status |
 |------|--------|
 | Architecture design | ✅ Complete |
-| ADRs (001-008) | ✅ All accepted |
+| ADRs (001-011) | ✅ 001-010 accepted, 011 proposed |
 | Core implementation (9 crates) | ✅ Complete |
 | 670+ unit + integration tests | ✅ All passing |
 | Clippy / fmt / doc checks | ✅ Clean (zero warnings) |
@@ -117,9 +117,16 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
   - [ ] Migration guide template (for future breaking changes)
   
 - [ ] **Examples** (runnable, tested in CI)
-  - [ ] `examples/simple-agent` — basic agent with tools
-  - [ ] `examples/custom-tool` — writing Lua tools
-  - [ ] `examples/memory-agent` — using SqliteMemoryStore
+  - [x] `examples/simple-agent` — basic agent with tools
+  - [x] `examples/custom-tool` — writing Lua tools
+  - [x] `examples/memory-agent` — using SqliteMemoryStore with overflow callback
+  - `examples/self-evolving-agent` — **intentionally not implemented here**; self-evolution is the showcase of the evoclaw application, not a kernel concern. The kernel provides the infrastructure (AgentBridge, HotLoader, LuaEngine); evoclaw owns the demo.
+
+- [x] **Script Bridges** — all 4 shipped ahead of schedule in v0.1.0 (see [ADR-009](docs/adr/009-bridge-roadmap.md))
+  - [x] `DirsBridge` — platform config/data/cache/tools paths
+  - [x] `MemoryBridge` — key-value + semantic search for scripts
+  - [x] `EventsBridge` — emit / subscribe to EventBus from Lua
+  - [x] `AgentBridge` — spawn and manage sub-agents from Lua (was P3/v0.3.0)
   
 - [ ] **API Hardening**
   - [ ] Audit all public APIs for semver compliance
@@ -156,11 +163,15 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
 
 **What v1.0.0 DOES include:**
 - 5 LLM providers (Anthropic, OpenAI, Ollama, DeepSeek, Moonshot)
-- Lua scripting engine
+- Lua scripting engine with all 7 bridges: `fs`, `net`, `tools`, `dirs`, `memory`, `events`, `agent`
 - In-memory history (SQLite history deferred to v1.1)
 - Basic sandbox (Linux seccomp stub, macOS Seatbelt stub, Windows skeleton)
 - Hot-loading tools
-- Memory system with SQLite backend
+- `claw-memory` as an optional reference implementation for persistent storage
+
+**What v1.0.0 DOES NOT include (by design, per [ADR-010](docs/adr/010-memory-system-boundary.md)):**
+- Mid/long-term memory built into `AgentLoop` — the kernel manages only the context window (`HistoryManager`). Applications wire mid/long-term storage via `overflow_callback`.
+- Multi-language SDK / KernelServer — deferred to v1.4.0.
 
 ---
 
@@ -190,25 +201,42 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
 
 - [ ] Deno/V8 engine (`engine-v8` feature)
 - [ ] Python engine (`engine-py` feature)
-- [ ] Full `RustBridge` API: `llm`, `tools`, `memory`, `events`, `fs`, `net`
+- [x] `AgentBridge` — shipped ahead of schedule in v0.1.0 (see ADR-009)
+- [x] Full `RustBridge` API: `llm`, `tools`, `memory`, `events`, `fs`, `net`, `agent`, `dirs` — all bridges shipped in v0.1.0
 
-### v1.4.0 — Sandbox Hardening
+### v1.4.0 — KernelServer: Multi-Language IPC Daemon
 
-**Target:** 2026 Q4
+**Target:** 2027 Q1
+
+> See [ADR-011](docs/adr/011-multi-language-ipc-daemon.md) for full protocol spec and rationale.
+
+- [ ] New crate `claw-server`: `KernelServer` over Unix Domain Socket / Named Pipe
+- [ ] JSON-RPC 2.0 protocol: `create_session`, `send_message`, `tool_result`, `destroy_session`
+- [ ] Server → client events: `chunk`, `tool_call`, `finish`
+- [ ] `claw-kernel-server` binary (CLI: `--socket-path`, `--provider`, `--power-key`)
+- [ ] Python SDK (`claw-sdk-python`, ~100 lines)
+- [ ] TypeScript/Node SDK (`claw-sdk-ts`, ~100 lines)
+- [ ] Go SDK (`claw-sdk-go`, ~100 lines)
+
+**Design principle:** IPC overhead (≈ 0.001% of total response time) is negligible vs LLM latency. The Rust performance advantage is preserved — all computation stays in the kernel process. Client language is irrelevant to throughput.
+
+### v1.5.0 — Sandbox Hardening
+
+**Target:** 2027 Q1
 
 - [ ] Linux: full seccomp-bpf syscall allowlist
 - [ ] macOS: complete Seatbelt profile
 - [ ] Windows: AppContainer + Job Objects
 
-### v1.5.0 — Local Models
+### v1.6.0 — Local Models
 
-**Target:** 2027 Q1
+**Target:** 2027 Q2
 
 - [ ] Local GGUF model support via `llama-cpp-rs` (optional feature)
 
-### v1.6.0+ — Channel Expansion
+### v1.7.0+ — Channel Expansion
 
-**Target:** 2027 Q1+
+**Target:** 2027 Q2+
 
 - [ ] Telegram integration
 - [ ] Slack integration
@@ -244,7 +272,10 @@ Key architectural choices are recorded as ADRs in [docs/adr/](docs/adr/):
 | 003 | Security model (Safe/Power dual-mode) |
 | 004 | Hot-loading mechanism |
 | 005 | IPC and multi-agent protocol |
-| 006-008 | Additional accepted decisions |
+| 006–008 | Message format, EventBus, file watcher |
+| 009 | claw-script bridge roadmap (dirs → memory → events → agent) |
+| 010 | Memory boundary: kernel = HistoryManager only; claw-memory = optional |
+| 011 | Multi-language support via KernelServer IPC daemon |
 
 ---
 
@@ -257,6 +288,7 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 - **Windows Named Pipe IPC support (High Priority)**
 - Windows sandbox implementation
 - Deno/V8 engine bridge
+- `claw-server` KernelServer implementation (see ADR-011)
 - Expanded integration test coverage
 
 ---
@@ -274,7 +306,7 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 | 项目 | 状态 |
 |------|------|
 | 架构设计 | ✅ 已完成 |
-| ADR（001-008） | ✅ 全部已接受 |
+| ADR（001-011） | ✅ 001-010 已接受，011 待议 |
 | 核心实现（9 个 crate） | ✅ 已完成 |
 | 670+ 个单元+集成测试 | ✅ 全部通过 |
 | Clippy / fmt / 文档检查 | ✅ 干净 |
@@ -326,9 +358,16 @@ v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
   - [ ] 破坏性变更迁移指南模板
   
 - [ ] **示例**（可运行，CI 测试）
-  - [ ] `examples/simple-agent` —— 带工具的基础 Agent
-  - [ ] `examples/custom-tool` —— 编写 Lua 工具
-  - [ ] `examples/memory-agent` —— 使用 SqliteMemoryStore
+  - [x] `examples/simple-agent` —— 带工具的基础 Agent
+  - [x] `examples/custom-tool` —— 编写 Lua 工具
+  - [x] `examples/memory-agent` —— 使用 SqliteMemoryStore + overflow_callback
+  - `examples/self-evolving-agent` —— **有意不在此实现**；自进化是 evoclaw 应用层的核心卖点，不是内核职责。内核提供基础设施（AgentBridge、HotLoader、LuaEngine），evoclaw 负责展示。
+
+- [x] **脚本 Bridge** —— 全部 4 个在 v0.1.0 提前完成（见 [ADR-009](docs/adr/009-bridge-roadmap.md)）
+  - [x] `DirsBridge` —— 平台配置/数据/缓存/工具目录路径
+  - [x] `MemoryBridge` —— 脚本内键值存储 + 语义搜索
+  - [x] `EventsBridge` —— 从 Lua 发送/订阅 EventBus 事件
+  - [x] `AgentBridge` —— 从 Lua 创建和管理子 Agent（原 P3/v0.3.0，提前完成）
   
 - [ ] **API 加固**
   - [ ] 审计所有公共 API 的 semver 合规性
@@ -365,11 +404,15 @@ v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 **v1.0.0 包含内容：**
 - 5 个 LLM Provider（Anthropic、OpenAI、Ollama、DeepSeek、Moonshot）
-- Lua 脚本引擎
+- Lua 脚本引擎，含全部 7 个 Bridge：`fs`、`net`、`tools`、`dirs`、`memory`、`events`、`agent`
 - 内存历史（SQLite 历史推迟到 v1.1）
 - 基础沙箱（Linux seccomp stub、macOS Seatbelt stub、Windows skeleton）
 - 热加载工具
-- 带 SQLite 后端的记忆系统
+- `claw-memory` 作为持久化存储的可选参考实现
+
+**v1.0.0 设计上不包含（见 [ADR-010](docs/adr/010-memory-system-boundary.md)）：**
+- 内置在 `AgentLoop` 中的中/长期记忆 —— 内核只管理上下文窗口（`HistoryManager`），应用通过 `overflow_callback` 接管中/长期存储。
+- 多语言 SDK / KernelServer —— 推迟到 v1.4.0。
 
 ---
 
@@ -399,25 +442,42 @@ v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 - [ ] Deno/V8 引擎（`engine-v8` feature）
 - [ ] Python 引擎（`engine-py` feature）
-- [ ] 完整 `RustBridge` API：llm、tools、memory、events、fs、net
+- [x] `AgentBridge` —— v0.1.0 已提前完成（见 ADR-009）
+- [x] 完整 `RustBridge` API：全部 7 个 Bridge 已在 v0.1.0 完成
 
-### v1.4.0 — 沙箱加固
+### v1.4.0 — KernelServer：多语言 IPC 守护进程
 
-**目标时间：** 2026 Q4
+**目标时间：** 2027 Q1
+
+> 完整协议规范与设计理由见 [ADR-011](docs/adr/011-multi-language-ipc-daemon.md)。
+
+- [ ] 新 crate `claw-server`：`KernelServer`，通过 Unix Domain Socket / Named Pipe 暴露完整 AgentLoop
+- [ ] JSON-RPC 2.0 协议：`create_session`、`send_message`、`tool_result`、`destroy_session`
+- [ ] 服务器推送事件：`chunk`、`tool_call`、`finish`
+- [ ] `claw-kernel-server` 二进制（CLI：`--socket-path`、`--provider`、`--power-key`）
+- [ ] Python SDK（`claw-sdk-python`，约 100 行）
+- [ ] TypeScript/Node SDK（`claw-sdk-ts`，约 100 行）
+- [ ] Go SDK（`claw-sdk-go`，约 100 行）
+
+**设计原则：** IPC 开销（≈ 总响应时间的 0.001%）相对 LLM 延迟可忽略不计。Rust 性能优势完整保留 —— 所有计算仍在内核进程中完成，客户端语言与吞吐量无关。
+
+### v1.5.0 — 沙箱加固
+
+**目标时间：** 2027 Q1
 
 - [ ] Linux：完整 seccomp-bpf 系统调用白名单
 - [ ] macOS：完整 Seatbelt profile
 - [ ] Windows：AppContainer + Job Objects
 
-### v1.5.0 — 本地模型
+### v1.6.0 — 本地模型
 
-**目标时间：** 2027 Q1
+**目标时间：** 2027 Q2
 
 - [ ] 通过 `llama-cpp-rs` 支持本地 GGUF 模型（可选 feature）
 
-### v1.6.0+ — 渠道扩展
+### v1.7.0+ — 渠道扩展
 
-**目标时间：** 2027 Q1+
+**目标时间：** 2027 Q2+
 
 - [ ] Telegram 集成
 - [ ] Slack 集成
@@ -430,12 +490,14 @@ v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 达到 v1.0.0 的当前优先领域：
 
 1. **文档** —— 示例、指南、rustdoc
-2. **跨平台 CI** —— Windows 测试、macOS CI
-3. **API 审计** —— 确保 semver 合规性
-4. **Provider 测试** —— 全部 5 个 Provider 的集成测试
+2. **脚本 Bridge** —— DirsBridge（P0）、MemoryBridge（P1）、EventsBridge（P2）
+3. **跨平台 CI** —— Windows 测试、macOS CI
+4. **API 审计** —— 确保 semver 合规性
+5. **Provider 测试** —— 全部 5 个 Provider 的集成测试
 
 **推迟（v1.0 之后）：**
 - 新 Provider（Gemini、Mistral、Azure）
-- 额外脚本引擎（Deno、Python）
+- 额外脚本引擎（Deno、Python）+ AgentBridge（v1.3.0）
+- KernelServer 多语言 IPC 守护进程（v1.4.0，见 ADR-011）
 - GGUF 本地模型
 - 高级沙箱功能

@@ -8,7 +8,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](002-script-engine-selection.zh.md)
 
 # ADR 002: Multi-Engine Script Support (Lua Default)
 

@@ -15,6 +15,7 @@ pub use hot_loader::HotLoader;
 pub use registry::ToolRegistry;
 pub use traits::Tool;
 pub use types::{
-    FsPermissions, HotLoadingConfig, LogEntry, NetworkPermissions, PermissionSet, SubprocessPolicy,
-    ToolContext, ToolError, ToolErrorCode, ToolMeta, ToolResult, ToolSchema,
+    FsPermissions, HotLoadingConfig, LogEntry, NetworkPermissions, PermissionSet, ScriptLanguage,
+    SubprocessPolicy, ToolContext, ToolError, ToolErrorCode, ToolMeta, ToolResult, ToolSchema,
+    ToolSource,
 };

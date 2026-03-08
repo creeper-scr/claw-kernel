@@ -87,7 +87,7 @@ impl ToolRegistry {
             schema: t.schema().clone(),
             permissions: t.permissions().clone(),
             timeout: t.timeout(),
-            source_path: None,
+            source: crate::types::ToolSource::Native,
         })
     }
 
@@ -438,7 +438,7 @@ mod tests {
         let meta = reg.tool_meta("echo").expect("should have meta");
         assert_eq!(meta.schema.name, "echo");
         assert_eq!(meta.timeout, Duration::from_secs(30));
-        assert!(meta.source_path.is_none());
+        assert!(matches!(meta.source, crate::types::ToolSource::Native))
     }
 
     #[tokio::test]

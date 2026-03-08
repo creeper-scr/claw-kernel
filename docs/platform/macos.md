@@ -1,13 +1,12 @@
 ---
 title: macOS Platform Guide
 description: macOS platform guide (sandbox profile)
-status: design-phase
+status: implemented
 version: "0.1.0"
-last_updated: "2026-03-01"
+last_updated: "2026-03-08"
 language: en
 ---
 
-[中文版 →](macos.zh.md)
 
 # macOS Platform Guide
 
@@ -111,6 +110,7 @@ codesign -dvv target/debug/my-agent
 ### Config Directory
 
 ```
+~/Library/Preferences/claw-kernel/           # Config
 ~/Library/Application Support/claw-kernel/   # Data
 ~/Library/Caches/claw-kernel/                # Cache
 ```
@@ -165,11 +165,16 @@ Following **macOS File System Guidelines**:
 - `~/Library/Caches/claw-kernel/` — Temporary cache
 
 ```rust
+use claw_pal::dirs;
+
 let config_dir = dirs::config_dir();
 // /Users/<user>/Library/Preferences/claw-kernel/
 
 let data_dir = dirs::data_dir();
 // /Users/<user>/Library/Application Support/claw-kernel/
+
+let cache_dir = dirs::cache_dir();
+// /Users/<user>/Library/Caches/claw-kernel/
 ```
 
 ---

@@ -16,3 +16,6 @@ rusqlite = { workspace = true }
 sqlite-vec = { workspace = true }
 claw-runtime = { path = "../claw-runtime" }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

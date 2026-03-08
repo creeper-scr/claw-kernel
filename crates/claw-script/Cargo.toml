@@ -9,6 +9,9 @@ license.workspace = true
 [dependencies]
 claw-tools = { path = "../claw-tools" }
 claw-pal = { path = "../claw-pal" }
+claw-memory = { path = "../claw-memory" }
+claw-runtime = { path = "../claw-runtime" }
+claw-provider = { path = "../claw-provider" }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

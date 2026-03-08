@@ -482,11 +482,13 @@ name = "claw-loop"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "claw-memory",
  "claw-provider",
  "claw-tools",
  "futures",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -502,6 +504,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlite-vec",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -538,7 +541,6 @@ dependencies = [
  "async-stream",
  "async-trait",
  "bytes",
- "claw-memory",
  "futures",
  "rand",
  "reqwest",
@@ -571,7 +573,10 @@ name = "claw-script"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "claw-memory",
  "claw-pal",
+ "claw-provider",
+ "claw-runtime",
  "claw-tools",
  "mlua",
  "reqwest",

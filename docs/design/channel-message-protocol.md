@@ -8,7 +8,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](channel-message-protocol.zh.md)
 
 # Channel Message Protocol
 

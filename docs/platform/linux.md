@@ -1,13 +1,12 @@
 ---
 title: Linux Platform Guide
 description: Linux platform guide (seccomp-bpf + Namespaces)
-status: design-phase
+status: implemented
 version: "0.1.0"
-last_updated: "2026-03-01"
+last_updated: "2026-03-08"
 language: en
 ---
 
-[中文版 →](linux.zh.md)
 
 # Linux Platform Guide
 
@@ -80,17 +79,32 @@ pivot_root()?;             // filesystem isolation
 Default blocked syscalls in Safe Mode:
 
 ```rust
-let filter = seccomp::Filter::new()
-    .block(Sysno::execve)      // No new processes
-    .block(Sysno::execveat)
-    .block(Sysno::ptrace)       // No debugging
-    .block(Sysno::process_vm_writev)
-    .block(Sysno::open_by_handle_at)
-    .allow(Sysno::read)         // Allowed with FD checks
-    .allow(Sysno::write)
-    // ... etc
-    .build()?;
+const DANGEROUS_SYSCALLS: &[&str] = &[
+    "execve",       // No new processes
+    "execveat",
+    "ptrace",       // No debugging
+    "process_vm_readv",
+    "process_vm_writev",
+    "mount",        // No filesystem changes
+    "umount2",
+    "pivot_root",
+    "chroot",
+    "reboot",       // No system control
+    "kexec_load",
+    "init_module",  // No kernel modules
+    "finit_module",
+    "delete_module",
+];
+
+const NETWORK_SYSCALLS: &[&str] = &[
+    "socket", "connect", "bind", "listen", "accept", "accept4"
+];
+
+const EXEC_SYSCALLS: &[&str] = &["execve", "execveat"];
 ```
+
+Uses `SCMP_ACT_ERRNO(EPERM)` instead of `SCMP_ACT_KILL` to prevent Rust panics
+when thread join detects a killed thread.
 
 ### Namespaces
 
@@ -108,16 +122,26 @@ let filter = seccomp::Filter::new()
 ### Filesystem
 
 ```rust
-SandboxConfig::safe_mode()
-    .allow_directory(PathBuf::from("/home/user/data"))
-    .allow_directory_rw(PathBuf::from("/home/user/output"))
+use claw_pal::{SandboxBackend, SandboxConfig};
+
+let config = SandboxConfig::safe_default();
+let mut sandbox = LinuxSandbox::create(config).unwrap();
+
+sandbox.restrict_filesystem(&[
+    PathBuf::from("/home/user/data"),
+    PathBuf::from("/home/user/output"),
+]);
 ```
 
 ### Network
 
 ```rust
-SandboxConfig::safe_mode()
-    .allow_endpoint("api.openai.com", 443)
+use claw_pal::types::NetRule;
+
+sandbox.restrict_network(&[
+    NetRule::allow_port("api.openai.com".to_string(), 443),
+    NetRule::allow("example.com".to_string()),
+]);
 ```
 
 ---

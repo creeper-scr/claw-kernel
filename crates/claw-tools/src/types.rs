@@ -211,6 +211,40 @@ impl PermissionSet {
     }
 }
 
+// ─── ToolSource ─────────────────────────────────────────────────────────────
+
+/// Script language for script-loaded tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScriptLanguage {
+    Lua,
+    TypeScript,
+    Python,
+}
+
+/// Source / origin of a registered tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToolSource {
+    /// Native Rust implementation compiled into the binary.
+    Native,
+    /// Loaded from a script file at runtime.
+    Script {
+        path: PathBuf,
+        language: ScriptLanguage,
+    },
+    /// Dynamically generated (e.g., by the LLM or external system).
+    Dynamic {
+        id: String,
+    },
+}
+
+impl Default for ToolSource {
+    fn default() -> Self {
+        Self::Native
+    }
+}
+
 // ─── ToolMeta ───────────────────────────────────────────────────────────────
 
 /// Metadata for a registered tool (snapshot — no dyn Tool reference).
@@ -219,8 +253,8 @@ pub struct ToolMeta {
     pub schema: ToolSchema,
     pub permissions: PermissionSet,
     pub timeout: Duration,
-    /// Source file path (for hot-loaded tools).
-    pub source_path: Option<String>,
+    /// How this tool was loaded.
+    pub source: ToolSource,
 }
 
 // ─── Execution context ──────────────────────────────────────────────────────

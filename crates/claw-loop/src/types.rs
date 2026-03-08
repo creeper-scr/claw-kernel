@@ -1,4 +1,4 @@
-use claw_provider::types::{Message, TokenUsage};
+use claw_provider::types::{Message, TokenUsage, ToolCall};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for an agent loop execution.
@@ -126,6 +126,24 @@ pub struct AgentResult {
     pub usage: TokenUsage,
     /// Total turns executed.
     pub turns: u32,
+    /// Final text content (convenience for last_message.as_ref().map(|m| m.content.clone()).unwrap_or_default()).
+    pub content: String,
+    /// All tool calls executed across all turns.
+    pub tool_calls: Vec<ToolCall>,
+    /// Total execution time in milliseconds.
+    pub execution_time_ms: u64,
+}
+
+/// A chunk yielded by [`AgentLoop::stream_run`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StreamChunk {
+    /// Text delta from the LLM.
+    Text { content: String, is_final: bool },
+    /// Token usage update.
+    UsageUpdate(TokenUsage),
+    /// Loop finished.
+    Finish(FinishReason),
 }
 
 #[cfg(test)]

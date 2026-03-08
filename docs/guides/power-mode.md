@@ -3,11 +3,10 @@ title: Power Mode Guide
 description: Power mode activation and security guide
 status: design-phase
 version: "0.1.0"
-last_updated: "2026-03-01"
+last_updated: "2026-03-08"
 language: en
 ---
 
-[中文版 →](power-mode.zh.md)
 
 
 # Power Mode Guide
@@ -67,16 +66,30 @@ my-agent --power-mode --power-key my-secret-key
 ### Programmatic
 
 ```rust
-use claw_kernel::pal::{SandboxConfig, PowerKey};
+use claw_pal::security::{PowerKeyManager, PowerKeyHash};
+use claw_pal::{SandboxBackend, SandboxConfig};
 
-// Load key from secure storage
-let key = PowerKey::from_file("~/.config/claw-kernel/power.key")?;
+// Save a power key (validates and hashes with Argon2)
+PowerKeyManager::save_power_key("my-secure-key-123!")?;
 
-let config = SandboxConfig::power_mode()
-    .with_key(key)
-    .build();
+// Load the stored hash
+let hash = PowerKeyManager::load_stored_hash()?;
 
-let runtime = Runtime::with_sandbox(config)?;
+// Verify a key against the hash
+if hash.verify("my-secure-key-123!") {
+    // Key is valid, can enter power mode
+}
+
+// Create power mode sandbox configuration
+let config = SandboxConfig::power_mode();
+
+// For Linux:
+#[cfg(target_os = "linux")]
+{
+    use claw_pal::LinuxSandbox;
+    let sandbox = LinuxSandbox::create(config)?;
+    let handle = sandbox.apply()?;  // Power mode - no restrictions applied
+}
 ```
 
 ---

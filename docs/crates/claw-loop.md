@@ -1,13 +1,12 @@
 ---
 title: claw-loop
 description: Agent loop engine, history management, stop conditions
-status: design-phase
+status: implemented
 version: "0.1.0"
 last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](claw-loop.zh.md)
 
 
 Agent loop engine for multi-turn conversations.
@@ -63,9 +62,6 @@ let agent = AgentLoop::builder()
     // Stop conditions
     .max_turns(10)
     .token_budget(8000)
-    // History management
-    .history_backend(SqliteHistory::new("./history.db"))
-    .summarizer(SlidingWindowSummarizer::new(4000))
     .build();
 ```
 
@@ -74,21 +70,19 @@ let agent = AgentLoop::builder()
 ## Stop Conditions
 
 ```rust
-use claw_loop::conditions::*;
+use claw_loop::{MaxTurns, TokenBudget, NoToolCall};
 
 let agent = AgentLoop::builder()
-    .stop_condition(MaxTurnsCondition::new(10))
-    .stop_condition(TokenBudgetCondition::new(8000))
-    .stop_condition(NoToolCallCondition::new())
-    .stop_condition(UserInterruptCondition::new(signal_rx))
+    .stop_condition(Box::new(MaxTurns(10)))
+    .stop_condition(Box::new(TokenBudget(8000)))
+    .stop_condition(Box::new(NoToolCall))
     .build();
 ```
 
 Built-in conditions:
-- `MaxTurnsCondition` — Limit conversation turns
-- `TokenBudgetCondition` — Limit total tokens
-- `NoToolCallCondition` — Stop if no tools used in last turn
-- `UserInterruptCondition` — Stop on signal
+- `MaxTurns(n)` — Stop after n turns
+- `TokenBudget(n)` — Stop when total tokens ≥ n (0 = unlimited)
+- `NoToolCall` — Registered for logging; loop handles this exit path directly
 
 Custom condition:
 

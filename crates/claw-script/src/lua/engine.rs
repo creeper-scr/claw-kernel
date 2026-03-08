@@ -3,8 +3,14 @@ use mlua::{Lua, Value as LuaValue};
 use serde_json::{json, Value as JsonValue};
 
 use crate::{
-    bridge::tools::CallerContext,
-    bridge::{register_fs, register_net, register_tools, FsBridge, NetBridge, ToolsBridge},
+    bridge::{
+        agent::AgentBridge,
+        dirs::DirsBridge,
+        memory::MemoryBridge,
+        tools::CallerContext,
+        register_agent, register_dirs, register_events, register_fs, register_memory,
+        register_net, register_tools, EventsBridge, FsBridge, NetBridge, ToolsBridge,
+    },
     error::{CompileError, ScriptError},
     traits::ScriptEngine,
     types::{Script, ScriptContext, ScriptValue},
@@ -176,6 +182,9 @@ impl ScriptEngine for LuaEngine {
         let tool_registry = ctx.tool_registry.clone();
         let permissions = ctx.permissions.clone();
         let max_recursion_depth = self.max_recursion_depth;
+        let memory_store = ctx.memory_store.clone();
+        let event_bus = ctx.event_bus.clone();
+        let orchestrator = ctx.orchestrator.clone();
 
         let task = tokio::task::spawn_blocking(move || -> Result<ScriptValue, ScriptError> {
             let lua = Lua::new();
@@ -222,10 +231,40 @@ impl ScriptEngine for LuaEngine {
 
             // Register Tools bridge if registry is provided
             if let Some(registry) = tool_registry {
-                let caller_context = CallerContext::new(agent_id, permissions);
+                let caller_context = CallerContext::new(agent_id.clone(), permissions);
                 let tools_bridge = ToolsBridge::new(registry, caller_context);
                 register_tools(&lua, tools_bridge).map_err(|e| {
                     ScriptError::Runtime(format!("Failed to register tools bridge: {}", e))
+                })?;
+            }
+
+            // Register Dirs bridge (always available)
+            register_dirs(&lua, DirsBridge).map_err(|e| {
+                ScriptError::Runtime(format!("Failed to register dirs bridge: {}", e))
+            })?;
+
+            // Register Memory bridge if store is provided
+            if let Some(store) = memory_store {
+                let memory_bridge = MemoryBridge::new(store, agent_id.clone());
+                register_memory(&lua, memory_bridge).map_err(|e| {
+                    ScriptError::Runtime(format!("Failed to register memory bridge: {}", e))
+                })?;
+            }
+
+            // Register Events bridge if event bus is provided
+            if let Some(bus) = event_bus {
+                let events_bridge = EventsBridge::new(&lua, bus, agent_id.clone())
+                    .map_err(|e| ScriptError::Runtime(format!("Failed to create events bridge: {}", e)))?;
+                register_events(&lua, events_bridge).map_err(|e| {
+                    ScriptError::Runtime(format!("Failed to register events bridge: {}", e))
+                })?;
+            }
+
+            // Register Agent bridge if orchestrator is provided
+            if let Some(orc) = orchestrator {
+                let agent_bridge = AgentBridge::new(orc, agent_id);
+                register_agent(&lua, agent_bridge).map_err(|e| {
+                    ScriptError::Runtime(format!("Failed to register agent bridge: {}", e))
                 })?;
             }
 

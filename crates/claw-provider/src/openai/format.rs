@@ -48,6 +48,7 @@ pub struct OpenAIChoice {
 
 #[derive(Deserialize, Debug)]
 pub struct OpenAIResponseMessage {
+    #[allow(dead_code)]
     pub role: String,
     pub content: String,
 }
@@ -76,6 +77,7 @@ pub struct OpenAIStreamChoice {
 pub struct OpenAIDelta {
     #[serde(default)]
     pub content: Option<String>,
+    #[allow(dead_code)]
     #[serde(default)]
     pub role: Option<String>,
 }

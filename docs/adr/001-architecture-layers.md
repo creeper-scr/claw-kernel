@@ -8,7 +8,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](001-architecture-layers.zh.md)
 
 # ADR 001: Five-Layer Architecture with PAL
 

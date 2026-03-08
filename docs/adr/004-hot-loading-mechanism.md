@@ -8,7 +8,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](004-hot-loading-mechanism.zh.md)
 
 # ADR 004: Tool Hot-Loading as Extension Infrastructure
 

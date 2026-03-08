@@ -17,4 +17,3 @@ futures = { workspace = true }
 bytes = "1"
 rand = "0.8"
 async-stream = "0.3"
-claw-memory = { path = "../claw-memory" }

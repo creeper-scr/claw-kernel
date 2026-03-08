@@ -1,20 +1,19 @@
 ---
 title: Safe Mode Guide
 description: Safe mode configuration and sandboxing guide
-status: design-phase
+status: implemented
 version: "0.1.0"
-last_updated: "2026-03-01"
+last_updated: "2026-03-08"
 language: en
 ---
 
-[中文版 →](safe-mode.zh.md)
 
 
 # Safe Mode Guide
 
 Safe Mode is the kernel's sandbox feature (Layer 0.5). It provides sandboxed execution suitable for running LLM-generated code safely.
 
-> [Warning]  **Note**: This guide shows the **target API design**. The `claw-kernel` crate is not yet implemented.
+> **Note**: This guide describes the current PAL (Platform Abstraction Layer) implementation in `claw-pal` crate.
 
 ---
 
@@ -209,20 +208,35 @@ Allowed domains (default):
 ### Programmatic Configuration
 
 ```rust
-use claw_kernel::pal::{SandboxConfig, ExecutionMode};
+use claw_pal::{SandboxBackend, SandboxConfig};
+use claw_pal::types::{NetRule, ResourceLimits};
+use claw_pal::traits::sandbox::SyscallPolicy;
 use std::path::PathBuf;
 
-let config = SandboxConfig::safe_mode()
-    // Add custom directory
-    .allow_directory(PathBuf::from("/home/user/projects"))
-    // Add read-write permission (default is read-only)
-    .allow_directory_rw(PathBuf::from("/home/user/output"))
-    // Add network endpoint
-    .allow_endpoint("api.example.com", 443)
-    // Build config
-    .build();
+// Create a safe mode configuration
+let config = SandboxConfig::safe_default();
 
-let runtime = Runtime::with_sandbox(config)?;
+// Create platform-specific sandbox (Linux example)
+#[cfg(target_os = "linux")]
+use claw_pal::LinuxSandbox;
+#[cfg(target_os = "linux")]
+let mut sandbox = LinuxSandbox::create(config)?;
+
+// Configure restrictions using builder pattern
+sandbox
+    .restrict_filesystem(&[
+        PathBuf::from("/home/user/projects"),
+        PathBuf::from("/home/user/output"),
+    ])
+    .restrict_network(&[
+        NetRule::allow_port("api.example.com".to_string(), 443),
+        NetRule::allow("internal.company.net".to_string()),
+    ])
+    .restrict_syscalls(SyscallPolicy::DenyAll)
+    .restrict_resources(ResourceLimits::restrictive());
+
+// Apply the sandbox
+let handle = sandbox.apply()?;
 ```
 
 ### Configuration File
@@ -281,12 +295,15 @@ Uses native macOS sandbox:
 
 ### Windows (AppContainer)
 
-Uses Windows AppContainer:
+> **v0.1.0**: Windows sandbox is a **stub implementation**.
+> It stores configuration but does not enforce actual restrictions.
+> Full AppContainer support is planned for v0.2.0.
 
 ```rust
-// Creates low-integrity process
-// Applies capability SIDs
-// Uses Job Objects for resource limits
+// v0.1.0 stub - returns handle without actual sandboxing
+// Full implementation will use:
+// - AppContainer for isolation
+// - Job Objects for resource limits
 ```
 
 ---

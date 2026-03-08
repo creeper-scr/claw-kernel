@@ -1,13 +1,12 @@
 ---
 title: claw-script
-description: Embedded script engines (Lua default, Deno/V8, PyO3)
-status: design-phase
+description: Embedded script engines (Lua default, Deno/V8 and Python planned)
+status: implemented
 version: "0.1.0"
 last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](claw-script.zh.md)
 
 
 Embedded script engines (Lua, Deno/V8, Python) with unified RustBridge API.
@@ -30,9 +29,9 @@ Embedded script engines (Lua, Deno/V8, Python) with unified RustBridge API.
 ## Overview
 
 `claw-script` embeds scripting languages:
-- **Lua** (default): Fast, zero dependencies
-- **Deno/V8**: Full TypeScript/JavaScript
-- **Python**: ML ecosystem access
+- **Lua** (default, implemented): Fast, zero dependencies
+- **Deno/V8** (planned): Full TypeScript/JavaScript support
+- **Python** (planned): ML ecosystem access
 
 ---
 
@@ -43,28 +42,30 @@ Embedded script engines (Lua, Deno/V8, Python) with unified RustBridge API.
 # Lua only (default)
 claw-script = "0.1"
 
-# With Deno/V8
-claw-script = { version = "0.1", features = ["engine-v8"] }
+# With Deno/V8 (planned)
+# claw-script = { version = "0.1", features = ["engine-v8"] }
 
-# With Python
-claw-script = { version = "0.1", features = ["engine-py"] }
+# With Python (planned)
+# claw-script = { version = "0.1", features = ["engine-py"] }
 ```
 
 ```rust
 use claw_script::{ScriptEngine, LuaEngine};
+use claw_script::types::{Script, ScriptContext};
 
-let engine = LuaEngine::new()?;
+let engine = LuaEngine::new();
 
-// Compile and execute
-let script = engine.compile(r#"
+// Execute a script
+let script = Script::lua("example", r#"
     local M = {}
     function M.greet(name)
         return "Hello, " .. name
     end
-    return M
-"#)?;
+    return M.greet("World")
+"#);
 
-let result: String = engine.call(&script, "greet", ("World",))?;
+let ctx = ScriptContext::new("agent-1");
+let result = engine.execute(&script, &ctx).await?;
 ```
 
 ---
@@ -76,33 +77,27 @@ Exposed to all script engines:
 ```typescript
 // Available in all engines
 interface RustBridge {
-  // LLM
-  llm: {
-    complete(messages: Message[]): Promise<Response>;
-    stream(messages: Message[]): AsyncIterable<Delta>;
-  };
-  
-  // Tools
+  // Tools ✅ Implemented
   tools: {
-    register(def: ToolDef): void;
-    call(name: string, params: any): Promise<any>;
-    list(): ToolMeta[];
+    call(name: string, params: any): Promise<ToolResult>;
+    list(): ToolInfo[];
+    exists(name: string): boolean;
   };
-  
-  // Memory (Key-value storage with search)
+
+  // Memory 🚧 Not implemented (planned for v0.2)
   memory: {
     get(key: string): Promise<any>;
     set(key: string, value: any): Promise<void>;
     search(query: string, topK: number): Promise<MemoryItem[]>;
   };
-  
-  // Events
+
+  // Events 🚧 Not implemented (planned for v0.2)
   events: {
     emit(event: string, data: any): void;
     on(event: string, handler: (data: any) => void): void;
   };
-  
-  // Filesystem
+
+  // Filesystem ✅ Implemented
   fs: {
     read(path: string): Promise<Uint8Array>;
     write(path: string, data: Uint8Array): Promise<void>;
@@ -110,28 +105,28 @@ interface RustBridge {
     listDir(path: string): DirEntry[];
     glob(pattern: string): string[];
   };
-  
-  // Network
+
+  // Network ✅ Implemented
   net: {
     get(url: string, headers?: Headers): Promise<Response>;
     post(url: string, headers: Headers, body: string): Promise<Response>;
   };
-  
-  // JSON
+
+  // JSON (native Lua support)
   json: {
     parse(text: string): any;
     stringify(value: any, opts?: { pretty?: boolean }): string;
   };
-  
-  // Directories
+
+  // Directories 🚧 Not implemented (planned for v0.1.1)
   dirs: {
     configDir(): string;
     dataDir(): string;
     cacheDir(): string;
     toolsDir(): string;
   };
-  
-  // Agent
+
+  // Agent 🚧 Not implemented (planned for v0.2)
   agent: {
     spawn(config: AgentConfig): Promise<AgentHandle>;
     kill(handle: AgentHandle): Promise<void>;
@@ -145,24 +140,43 @@ interface RustBridge {
 ## Lua Example
 
 ```lua
+-- Example: Tool script using Filesystem, Network and Tools bridges
 local M = {}
 
 function M.execute(params)
-    -- Read file
+    -- Check if file exists
+    if not rust.fs.exists(params.path) then
+        return {
+            success = false,
+            error = "File not found: " .. params.path
+        }
+    end
+
+    -- Read file content
     local content = rust.fs.read(params.path)
-    
-    -- Call LLM
-    local response = rust.llm.complete({
-        { role = "user", content = "Summarize: " .. content }
+
+    -- Fetch additional data from web
+    local response = rust.net.get("https://api.example.com/data")
+    if response.status == 200 then
+        content = content .. "\n" .. response.body
+    end
+
+    -- Call a registered tool (via tools bridge)
+    local result = rust.tools:call("summarize", {
+        text = content
     })
-    
-    -- Store result
-    rust.memory.set("last_summary", response.content)
-    
-    return {
-        success = true,
-        result = response.content
-    }
+
+    if result:success() then
+        return {
+            success = true,
+            summary = result:output()
+        }
+    else
+        return {
+            success = false,
+            error = result:error()
+        }
+    end
 end
 
 return M
@@ -170,11 +184,13 @@ return M
 
 ---
 
-## TypeScript Example (Deno)
+## TypeScript Example (Deno) 🚧 Planned
+
+> **Note:** Deno/V8 engine support is planned but not yet implemented.
 
 ```typescript
 // @name summarizer
-// @permissions fs.read, memory.write
+// @permissions fs.read, tools.call
 
 interface Params {
     path: string;
@@ -183,38 +199,34 @@ interface Params {
 export async function execute(params: Params) {
     const content = await rust.fs.read(params.path);
     const text = new TextDecoder().decode(content);
-    
-    const response = await rust.llm.complete([
-        { role: "user", content: `Summarize: ${text}` }
-    ]);
-    
-    await rust.memory.set("last_summary", response.content);
-    
-    return { success: true, result: response.content };
+
+    const result = await rust.tools.call("summarize", { text });
+
+    return { success: result.success, result: result.output };
 }
 ```
 
 ---
 
-## Python Example
+## Python Example 🚧 Planned
+
+> **Note:** Python engine support is planned but not yet implemented.
 
 ```python
 # @name data_analyzer
-# @permissions fs.read, memory.write
+# @permissions fs.read, tools.call
 
 import json
 
 async def execute(params):
     content = await rust.fs.read(params["path"])
     data = json.loads(content)
-    
+
     # Use Python ecosystem
     import numpy as np
     values = np.array([d["value"] for d in data])
     mean = np.mean(values)
-    
-    await rust.memory.set("analysis", {"mean": mean})
-    
+
     return {"success": True, "result": {"mean": float(mean)}}
 ```
 
@@ -225,29 +237,27 @@ async def execute(params):
 ```toml
 [features]
 default = ["engine-lua"]
-engine-lua = ["mlua"]          # Zero deps, fast compile
-engine-v8 = ["deno_core"]      # Full JS/TS, ~100MB
-engine-py = ["pyo3"]           # Python ecosystem
+engine-lua = ["mlua"]          # Zero deps, fast compile ✅
+# engine-v8 = ["deno_core"]    # Full JS/TS, ~100MB 🚧 Planned
+# engine-py = ["pyo3"]         # Python ecosystem 🚧 Planned
 ```
 
 ---
 
 ## Engine Selection
 
+Currently only Lua engine is available:
+
 ```rust
-use claw_script::{ScriptEngine, EngineType};
+use claw_script::{ScriptEngine, LuaEngine};
 
-// Auto-detect from file extension
-let engine = ScriptEngine::for_file("tool.lua")?;  // LuaEngine
-let engine = ScriptEngine::for_file("tool.ts")?;   // V8Engine (if enabled)
-let engine = ScriptEngine::for_file("tool.py")?;   // PythonEngine (if enabled)
+// Create Lua engine
+let engine = LuaEngine::new();
 
-// Create from EngineType
-let engine = ScriptEngine::new(EngineType::Lua)?;
-#[cfg(feature = "engine-v8")]
-let engine = ScriptEngine::new(EngineType::V8)?;
-#[cfg(feature = "engine-py")]
-let engine = ScriptEngine::new(EngineType::Python)?;
+// Planned: Auto-detect from file extension
+// let engine = ScriptEngine::for_file("tool.lua")?;  // LuaEngine
+// let engine = ScriptEngine::for_file("tool.ts")?;   // V8Engine (planned)
+// let engine = ScriptEngine::for_file("tool.py")?;   // PythonEngine (planned)
 ```
 
 ---

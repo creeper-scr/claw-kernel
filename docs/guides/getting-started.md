@@ -7,7 +7,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](getting-started.zh.md)
 
 
 # Getting Started with claw-kernel

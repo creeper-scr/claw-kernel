@@ -14,4 +14,6 @@ pub enum RuntimeError {
     ShuttingDown,
     #[error("operation timed out")]
     Timeout,
+    #[error("process error: {0}")]
+    ProcessError(String),
 }

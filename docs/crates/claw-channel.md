@@ -7,7 +7,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](claw-channel.zh.md)
 
 # claw-channel
 
@@ -67,14 +66,23 @@ pub enum Platform {
 ```rust
 #[async_trait]
 pub trait Channel: Send + Sync {
-    /// Receive the next message from this channel.
-    async fn recv(&mut self) -> Result<ChannelMessage, ChannelError>;
+    /// Platform name (e.g., "discord", "webhook", "stdin").
+    fn platform(&self) -> Platform;
+
+    /// Unique channel identifier.
+    fn channel_id(&self) -> &ChannelId;
 
     /// Send a message through this channel.
     async fn send(&mut self, message: ChannelMessage) -> Result<(), ChannelError>;
 
-    /// Get the platform type.
-    fn platform(&self) -> Platform;
+    /// Receive the next message from this channel.
+    async fn recv(&mut self) -> Result<ChannelMessage, ChannelError>;
+
+    /// Connect / authenticate with the external platform.
+    async fn connect(&self) -> Result<(), ChannelError>;
+
+    /// Gracefully disconnect.
+    async fn disconnect(&self) -> Result<(), ChannelError>;
 }
 ```
 

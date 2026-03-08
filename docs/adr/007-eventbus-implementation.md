@@ -8,7 +8,6 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-[中文版 →](007-eventbus-implementation.zh.md)
 
 # ADR 007: EventBus Implementation Strategy
 

@@ -17,4 +17,4 @@ pub use lua::LuaEngine;
 
 // Re-export bridge types for configuration
 pub use bridge::tools::CallerContext;
-pub use bridge::{FsBridge, NetBridge, ToolsBridge};
+pub use bridge::{AgentBridge, DirsBridge, EventsBridge, FsBridge, MemoryBridge, NetBridge, ToolsBridge};

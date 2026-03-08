@@ -204,8 +204,8 @@ impl HotReloadProcessor {
         // Find the tool by source path
         for name in self.registry.tool_names() {
             if let Some(meta) = self.registry.tool_meta(&name) {
-                if let Some(source) = meta.source_path {
-                    if source == path_str {
+                if let crate::types::ToolSource::Script { path: ref source_path, .. } = meta.source {
+                    if source_path.to_string_lossy() == path_str {
                         match self.registry.unregister(&name) {
                             Ok(()) => {
                                 return ProcessResult::Removed { tool_name: name };
@@ -274,7 +274,6 @@ impl HotReloadProcessor {
             .map_err(|_| LoadError::CompileError("compilation timed out".to_string()))??;
 
         let tool_name = compiled.name().to_string();
-        let _source_path = Some(path.to_path_buf());
 
         self.registry
             .update(&tool_name, compiled)
