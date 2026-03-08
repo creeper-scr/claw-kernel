@@ -186,4 +186,62 @@ mod tests {
         let p = DeepSeekProvider::new("ds-key", "deepseek-chat").with_retry(config);
         assert_eq!(p.retry_config().unwrap().max_retries, 3);
     }
+
+    /// 验证 DeepSeek base URL 固定为 api.deepseek.com
+    #[test]
+    fn test_deepseek_base_url() {
+        let p = DeepSeekProvider::new("key", "deepseek-reasoner");
+        assert_eq!(p.base_url(), "https://api.deepseek.com");
+    }
+
+    /// 验证请求头包含 Bearer token 和 Content-Type
+    #[test]
+    fn test_deepseek_build_headers() {
+        let p = DeepSeekProvider::new("my-secret-key", "deepseek-chat");
+        let headers = p.build_headers();
+        let auth = headers
+            .iter()
+            .find(|(k, _)| k == "Authorization")
+            .map(|(_, v)| v.as_str());
+        let content_type = headers
+            .iter()
+            .find(|(k, _)| k == "Content-Type")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(auth, Some("Bearer my-secret-key"));
+        assert_eq!(content_type, Some("application/json"));
+    }
+
+    /// 验证 provider_id 固定为 "deepseek"（不随 model 变化）
+    #[test]
+    fn test_deepseek_provider_id_is_stable() {
+        let p1 = DeepSeekProvider::new("key", "deepseek-chat");
+        let p2 = DeepSeekProvider::new("key", "deepseek-reasoner");
+        assert_eq!(p1.provider_id(), "deepseek");
+        assert_eq!(p2.provider_id(), "deepseek");
+    }
+
+    /// 验证 model_id 返回构造时传入的模型名
+    #[test]
+    fn test_deepseek_model_id() {
+        let p = DeepSeekProvider::new("key", "deepseek-reasoner");
+        assert_eq!(p.model_id(), "deepseek-reasoner");
+    }
+
+    /// 验证 from_env 在缺少环境变量时返回 Auth 错误
+    #[test]
+    fn test_deepseek_from_env_missing_key() {
+        // 确保环境变量未设置
+        unsafe {
+            std::env::remove_var("DEEPSEEK_API_KEY");
+        }
+        let result = DeepSeekProvider::from_env();
+        assert!(result.is_err());
+        match result {
+            Err(crate::error::ProviderError::Auth(msg)) => {
+                assert!(msg.contains("DEEPSEEK_API_KEY"));
+            }
+            Err(other) => panic!("expected Auth error, got a different ProviderError: {other}"),
+            Ok(_) => panic!("expected Err, got Ok"),
+        }
+    }
 }

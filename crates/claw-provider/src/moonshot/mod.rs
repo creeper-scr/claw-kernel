@@ -181,4 +181,72 @@ mod tests {
         let p = MoonshotProvider::new("ms-key", "moonshot-v1-8k").with_retry(config);
         assert_eq!(p.retry_config().unwrap().max_retries, 3);
     }
+
+    /// 验证 Moonshot base URL 包含 /v1 路径前缀（与 DeepSeek 不同）
+    #[test]
+    fn test_moonshot_base_url_includes_v1() {
+        let p = MoonshotProvider::new("key", "moonshot-v1-128k");
+        assert_eq!(p.base_url(), "https://api.moonshot.cn/v1");
+    }
+
+    /// 验证请求头包含 Bearer token 和 Content-Type
+    #[test]
+    fn test_moonshot_build_headers() {
+        let p = MoonshotProvider::new("moonshot-secret", "moonshot-v1-8k");
+        let headers = p.build_headers();
+        let auth = headers
+            .iter()
+            .find(|(k, _)| k == "Authorization")
+            .map(|(_, v)| v.as_str());
+        let content_type = headers
+            .iter()
+            .find(|(k, _)| k == "Content-Type")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(auth, Some("Bearer moonshot-secret"));
+        assert_eq!(content_type, Some("application/json"));
+    }
+
+    /// 验证 provider_id 固定为 "moonshot"
+    #[test]
+    fn test_moonshot_provider_id_is_stable() {
+        let p1 = MoonshotProvider::new("key", "moonshot-v1-8k");
+        let p2 = MoonshotProvider::new("key", "moonshot-v1-128k");
+        assert_eq!(p1.provider_id(), "moonshot");
+        assert_eq!(p2.provider_id(), "moonshot");
+    }
+
+    /// 验证 model_id 返回构造时传入的模型名
+    #[test]
+    fn test_moonshot_model_id_variants() {
+        let p8k = MoonshotProvider::new("key", "moonshot-v1-8k");
+        let p32k = MoonshotProvider::new("key", "moonshot-v1-32k");
+        let p128k = MoonshotProvider::new("key", "moonshot-v1-128k");
+        assert_eq!(p8k.model_id(), "moonshot-v1-8k");
+        assert_eq!(p32k.model_id(), "moonshot-v1-32k");
+        assert_eq!(p128k.model_id(), "moonshot-v1-128k");
+    }
+
+    /// 验证 from_env 在缺少环境变量时返回 Auth 错误
+    #[test]
+    fn test_moonshot_from_env_missing_key() {
+        unsafe {
+            std::env::remove_var("MOONSHOT_API_KEY");
+        }
+        let result = MoonshotProvider::from_env();
+        assert!(result.is_err());
+        match result {
+            Err(crate::error::ProviderError::Auth(msg)) => {
+                assert!(msg.contains("MOONSHOT_API_KEY"));
+            }
+            Err(other) => panic!("expected Auth error, got a different ProviderError: {other}"),
+            Ok(_) => panic!("expected Err, got Ok"),
+        }
+    }
+
+    /// 验证 retry_config 在未设置时为 None
+    #[test]
+    fn test_moonshot_no_retry_by_default() {
+        let p = MoonshotProvider::new("key", "moonshot-v1-8k");
+        assert!(p.retry_config().is_none());
+    }
 }

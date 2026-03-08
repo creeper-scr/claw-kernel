@@ -216,4 +216,100 @@ mod tests {
         let provider = NgramEmbeddingProvider::new();
         assert_eq!(provider.dimensions(), 64);
     }
+
+    /// 相同输入必须产生完全相同的向量（确定性）
+    #[tokio::test]
+    async fn test_ngram_embed_deterministic() {
+        let provider = NgramEmbeddingProvider::new();
+        let v1 = provider
+            .embed("deterministic input text")
+            .await
+            .expect("first embed should succeed");
+        let v2 = provider
+            .embed("deterministic input text")
+            .await
+            .expect("second embed should succeed");
+        assert_eq!(v1, v2, "same input must always produce the same embedding");
+    }
+
+    /// 不同文本必须产生不同向量
+    #[tokio::test]
+    async fn test_ngram_embed_different_texts() {
+        let provider = NgramEmbeddingProvider::new();
+        let v1 = provider
+            .embed("rust programming language")
+            .await
+            .expect("embed should succeed");
+        let v2 = provider
+            .embed("python scripting environment")
+            .await
+            .expect("embed should succeed");
+        assert_ne!(
+            v1, v2,
+            "different texts must produce different embedding vectors"
+        );
+    }
+
+    /// 非空文本的 L2 范数应约等于 1.0（已归一化）
+    #[tokio::test]
+    async fn test_ngram_embed_normalized() {
+        let provider = NgramEmbeddingProvider::new();
+        let embedding = provider
+            .embed("the quick brown fox jumps over the lazy dog")
+            .await
+            .expect("embed should succeed");
+        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-5,
+            "embedding should be L2-normalized, got norm={norm}"
+        );
+    }
+
+    /// batch 输出长度必须与输入长度一致
+    #[tokio::test]
+    async fn test_batch_embed_length() {
+        let provider = NgramEmbeddingProvider::new();
+        let texts = vec![
+            "first text".to_string(),
+            "second text".to_string(),
+            "third text".to_string(),
+            "fourth text".to_string(),
+            "fifth text".to_string(),
+        ];
+        let embeddings = provider
+            .embed_batch(texts.clone())
+            .await
+            .expect("embed_batch should succeed");
+        assert_eq!(
+            embeddings.len(),
+            texts.len(),
+            "batch output count must equal input count"
+        );
+        for emb in &embeddings {
+            assert_eq!(emb.len(), 64, "each embedding must be 64-dimensional");
+        }
+    }
+
+    /// 空 batch 应返回空向量列表，不 panic
+    #[tokio::test]
+    async fn test_batch_embed_empty() {
+        let provider = NgramEmbeddingProvider::new();
+        let embeddings = provider
+            .embed_batch(vec![])
+            .await
+            .expect("empty embed_batch should succeed");
+        assert!(embeddings.is_empty(), "empty batch must return empty vec");
+    }
+
+    /// Default trait 实现应与 new() 行为一致
+    #[tokio::test]
+    async fn test_ngram_embedding_provider_default() {
+        let provider = NgramEmbeddingProvider::default();
+        assert_eq!(provider.dimensions(), 64);
+        let emb = provider
+            .embed("test")
+            .await
+            .expect("default provider embed should succeed");
+        assert_eq!(emb.len(), 64);
+    }
 }
