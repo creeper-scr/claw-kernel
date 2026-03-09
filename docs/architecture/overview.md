@@ -2,8 +2,8 @@
 title: claw-kernel Architecture Overview
 description: Complete 5-layer architecture documentation for claw-kernel
 status: implemented
-version: "0.1.0"
-last_updated: "2026-03-01"
+version: "1.0.0"
+last_updated: "2026-03-09"
 language: en
 ---
 
@@ -221,7 +221,7 @@ pub enum ExtensionEvent {
 - Health checking and auto-restart
 - Resource quotas (CPU/memory)
 
-> **注意**: IPC 远程消息投递当前未实现，仅支持本地进程内通信。Windows IPC 计划在 v0.2.0 中实现。
+> **注意**: IPC 远程消息投递和 Windows Named Pipe 已在 v1.0.0 中完全实现。通过 `InterprocessTransport` 支持跨进程 A2A 通信。
 
 ### Layer 2: Agent Kernel Protocol
 

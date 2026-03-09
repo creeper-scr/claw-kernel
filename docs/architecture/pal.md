@@ -239,10 +239,11 @@ pub struct IpcMessage {
 
 Platform-specific implementation backing the `IpcTransport` trait:
 
-| Platform | Backend | Notes |
-|----------|---------|-------|
-| Linux/macOS | `interprocess` crate (UDS) | Unix Domain Sockets |
-| Windows | `tokio::net::windows::named_pipe` | Named Pipes (fully implemented v1.0.0) |
+| Platform | Backend | Status | Notes |
+|----------|---------|--------|-------|
+| Linux | `interprocess` crate | ✅ v1.0.0 | Unix Domain Sockets |
+| macOS | `interprocess` crate | ✅ v1.0.0 | Unix Domain Sockets |
+| Windows | `tokio::net::windows::named_pipe` | ✅ v1.0.0 | Named Pipes with full bidirectional support |
 
 ```rust
 pub struct InterprocessTransport {
@@ -709,7 +710,7 @@ pub enum PalError {
 | Component | Linux | macOS | Windows |
 |-----------|:-----:|:-----:|:-------:|
 | `LinuxSandbox`/`MacOSSandbox`/`WindowsSandbox` | ✅ Full | ✅ Full | ⚠️ Stub |
-| `InterprocessTransport` | ✅ UDS | ✅ UDS | ✅ Named Pipes |
+| `InterprocessTransport` | ✅ UDS (Unix Domain Socket) | ✅ UDS | ✅ Named Pipes (v1.0.0) |
 | `TokioProcessManager` | ✅ Full | ✅ Full | ✅ Full |
 
 ---
@@ -759,13 +760,20 @@ cargo test --features sandbox-tests
 ### Windows
 
 **Status for v1.0.0:**
-- AppContainer sandbox: **Stub implementation** (returns handle without actual sandbox)
-- Named Pipe IPC: **Fully implemented** via `tokio::net::windows::named_pipe`
-- Process management: **Full implementation** via Tokio
+- **Named Pipe IPC**: ✅ **Fully implemented** via `tokio::net::windows::named_pipe`
+- **Process management**: ✅ **Full implementation** via Tokio
+- **AppContainer sandbox**: ⚠️ **Stub implementation** — returns handle without actual sandbox enforcement
+
+**Windows Sandbox Limitations:**
+The Windows sandbox is currently a stub that stores configuration but does not enforce restrictions.
+For production use on Windows, additional security measures are recommended:
+- Use Power Mode only in trusted environments
+- Consider third-party sandboxing solutions
+- Run agents in Windows containers or VMs for isolation
 
 **Planned for future versions:**
 - Full AppContainer implementation with `CreateAppContainerProfile()`
-- Job Objects for resource limits
+- Job Objects for resource limits enforcement
 
 **Gotchas:**
 - MSVC toolchain required (not GNU)

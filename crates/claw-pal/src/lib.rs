@@ -82,4 +82,4 @@ pub use types::{NetRule, PathRule, ResourceLimits};
 pub use manager::TokioProcessManager;
 
 // Security types
-pub use security::{PowerKey, PowerKeyHash, PowerKeyManager, PowerKeyValidator, SecurityError};
+pub use security::{ModeTransitionGuard, PowerKey, PowerKeyHash, PowerKeyManager, PowerKeyValidator, SecurityError};

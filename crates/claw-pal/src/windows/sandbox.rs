@@ -1,23 +1,36 @@
-//! Windows sandbox implementation using AppContainer (stub).
+//! Windows sandbox implementation using AppContainer (STUB — NOT PRODUCTION READY).
 //!
-//! Implements [`SandboxBackend`] for Windows using:
-//! - **AppContainer API** for process-level sandboxing (stub implementation)
-//! - **Job Objects** for resource limits (stub implementation)
+//! ⚠️ **WARNING**: This is a STUB implementation. It stores configuration but does NOT
+//! enforce any actual sandbox restrictions. Use with caution in production environments.
 //!
-//! # Design Decisions
+//! Implements [`SandboxBackend`] for Windows (partially):
+//! - **AppContainer API**: ❌ NOT implemented — returns stub handle only
+//! - **Job Objects**: ❌ NOT implemented — resource limits stored but not enforced
 //!
-//! - This is a stub implementation for Windows sandbox support.
-//! - All methods return `Ok(...)` or `Err(SandboxError::NotImplemented)` as appropriate.
-//! - The `WindowsSandbox` struct stores configuration for future implementation.
-//! - Power mode skips sandbox application entirely (returns handle immediately).
-//! - Resource limits are stored but NOT enforced (stub).
+//! # Current Behavior
 //!
-//! # Future Implementation
+//! - `create()`: Initializes configuration storage
+//! - `restrict_filesystem()`: Stores paths for future implementation
+//! - `restrict_network()`: Stores rules for future implementation
+//! - `restrict_syscalls()`: Stores policy for future implementation (no syscall filtering on Windows)
+//! - `restrict_resources()`: Stores limits for future implementation
+//! - `apply()`: Returns `SandboxHandle` WITHOUT applying any actual restrictions
 //!
-//! When fully implemented, this will use:
-//! - `CreateAppContainerProfile()` for AppContainer creation
-//! - `CreateProcessAsUser()` with AppContainer SID for process creation
-//! - `CreateJobObject()` and `SetInformationJobObject()` for resource limits
+//! # Safety Considerations
+//!
+//! Since this is a stub, agents running on Windows have FULL system access even in
+//! "Safe Mode". For production deployments on Windows:
+//! - Use Power Mode only in fully trusted environments
+//! - Consider running agents in Windows containers or VMs
+//! - Implement additional application-level security controls
+//!
+//! # Future Implementation Roadmap
+//!
+//! Full Windows sandbox implementation requires:
+//! - `CreateAppContainerProfile()` / `DeleteAppContainerProfile()` for container creation
+//! - `CreateProcessAsUser()` with AppContainer SID for process isolation
+//! - `CreateJobObject()` / `SetInformationJobObject()` for resource limits
+//! - Capability-based policy translation from our NetRule/PathRule to AppContainer capabilities
 
 use crate::error::SandboxError;
 use crate::traits::sandbox::{
