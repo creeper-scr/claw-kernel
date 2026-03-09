@@ -26,7 +26,7 @@ pub use claw_memory as memory;
 pub use claw_provider as provider;
 pub use claw_tools as tools;
 
-// ── Layer 2.5: Channels ──────────────────────────────────────────────────────
+// ── Layer 2: Channels (part of Agent Kernel Protocol) ───────────────────────
 pub use claw_channel as channel;
 
 // ── Layer 3: Script engines ──────────────────────────────────────────────────

@@ -24,6 +24,8 @@ pub enum EventFilter {
     LlmRequests,
     /// Memory-related events: `ContextWindowApproachingLimit`, `MemoryArchiveComplete`.
     MemoryEvents,
+    /// A2A messaging events.
+    A2A,
     /// Only the `Shutdown` event.
     ShutdownOnly,
     /// Custom function pointer predicate.
@@ -36,7 +38,10 @@ impl EventFilter {
         match self {
             EventFilter::All => true,
             EventFilter::AgentLifecycle => {
-                matches!(event, Event::AgentStarted { .. } | Event::AgentStopped { .. })
+                matches!(
+                    event,
+                    Event::AgentStarted { .. } | Event::AgentStopped { .. }
+                )
             }
             EventFilter::ToolCalls => {
                 matches!(event, Event::ToolCalled { .. } | Event::ToolResult { .. })
@@ -54,6 +59,7 @@ impl EventFilter {
                         | Event::MemoryArchiveComplete { .. }
                 )
             }
+            EventFilter::A2A => matches!(event, Event::A2A(..)),
             EventFilter::ShutdownOnly => matches!(event, Event::Shutdown),
             EventFilter::Custom(f) => f(event),
         }
@@ -107,6 +113,7 @@ impl EventBus {
     /// Create a new `EventBus` with custom capacity and lag strategy.
     ///
     /// 用于测试滞后行为（需要小容量来模拟滞后场景）
+    #[doc(hidden)]
     pub fn with_capacity_and_strategy(capacity: usize, lag_strategy: LagStrategy) -> Self {
         let (tx, _) = broadcast::channel(capacity);
         Self { tx, lag_strategy }
@@ -612,14 +619,13 @@ mod tests {
         assert_eq!(bus.lag_strategy(), LagStrategy::Error);
     }
 
-    // ─── LagStrategy 行为测试 (Agent 4: Red Phase) ────────────────────────────
+    // ─── LagStrategy 行为测试 ─────────────────────────────────────────────────
 
     use tokio::time::{sleep, Duration};
 
     /// Test: LagStrategy::Skip - 滞后消息被跳过，能继续接收后续消息
     ///
-    /// 注意：这是一个设计验证测试（Red Phase）。当前实现返回错误而不是跳过。
-    /// 当 Agent 2/3 实现 Skip 策略后，此测试应该通过。
+    /// 验证 Skip 策略在接收者滞后时跳过丢失的消息并继续接收后续消息。
     #[tokio::test]
     async fn test_event_receiver_lag_skip() {
         // 创建一个小容量 EventBus（容量为2）
@@ -638,12 +644,8 @@ mod tests {
         sleep(Duration::from_millis(50)).await;
 
         // 现在尝试接收 - 使用 Skip 策略应该能继续接收最新消息
-        // 预期（当前失败）：当前实现返回错误，但 Skip 策略应该返回最新消息
         let result = rx.recv().await;
 
-        // TODO(Agent 2/3): 当 Skip 策略实现后，此行应通过
-        // 当前：返回 Err(Lagged)
-        // 期望：返回 Ok(AgentStarted("agent-3"))
         assert!(
             result.is_ok(),
             "Skip 策略不应返回错误，而是跳过滞后消息并返回最新消息"
@@ -669,7 +671,7 @@ mod tests {
 
     /// Test: LagStrategy::Warn - 滞后时记录警告并继续
     ///
-    /// 注意：这是一个设计验证测试（Red Phase）。当前实现返回错误而不是警告后继续。
+    /// 验证 Warn 策略在接收者滞后时记录警告后继续接收，不返回错误。
     #[tokio::test]
     async fn test_event_receiver_lag_warn() {
         // 创建一个小容量 EventBus
@@ -688,7 +690,6 @@ mod tests {
         // 慢订阅者开始接收 - 使用 Warn 策略应该记录警告并返回最新消息
         let result = rx.recv().await;
 
-        // TODO(Agent 2/3): 当 Warn 策略实现后，此行应通过
         assert!(result.is_ok(), "Warn 策略不应返回错误，应记录警告后继续");
 
         // 验证收到的是滞后后保留的消息
@@ -703,7 +704,7 @@ mod tests {
 
     /// Test: FilteredReceiver 的 lag 行为 - Skip 策略
     ///
-    /// 注意：这是一个设计验证测试（Red Phase）。
+    /// 验证 FilteredReceiver 在 Skip 策略下能跳过滞后消息并正确接收匹配事件。
     #[tokio::test]
     async fn test_filtered_receiver_lag_skip() {
         // 创建一个小容量 EventBus
@@ -723,9 +724,6 @@ mod tests {
         // 过滤订阅者应该能收到 Shutdown 消息（跳过滞后的非匹配消息）
         let result = filtered_rx.recv().await;
 
-        // TODO(Agent 2/3): 当 Skip 策略在 FilteredReceiver 中实现后，此行应通过
-        // 当前：返回 Err(Lagged)
-        // 期望：返回 Ok(Shutdown)
         assert!(result.is_ok(), "FilteredReceiver Skip 策略不应返回错误");
         assert!(
             matches!(result.unwrap(), Event::Shutdown),

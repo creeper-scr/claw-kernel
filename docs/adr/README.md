@@ -52,7 +52,7 @@ What becomes easier or more difficult to do because of this change?
 | [008](008-hot-loading-file-watcher.md) | Hot-Loading File Watcher Strategy | Accepted |
 | [009](009-bridge-roadmap.md) | claw-script Bridge Roadmap | Accepted |
 | [010](010-memory-system-boundary.md) | Memory System Boundary | Accepted |
-| [011](011-multi-language-ipc-daemon.md) | Multi-Language Support via IPC Daemon | Proposed |
+| [011](011-multi-language-ipc-daemon.md) | Multi-Language Support via IPC Daemon | Accepted |
 
 ## Contributing
 

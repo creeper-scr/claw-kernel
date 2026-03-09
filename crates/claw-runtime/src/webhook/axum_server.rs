@@ -1,0 +1,439 @@
+//! Axum-based implementation of the WebhookServer trait.
+
+use super::{
+    EndpointConfig, HmacConfig, HttpMethod, WebhookConfig, WebhookError, WebhookRequest,
+    WebhookResponse, WebhookServer, WebhookStats,
+};
+use axum::{
+    body::Bytes,
+    extract::{Path, Query, State},
+    http::{HeaderMap, Method, StatusCode},
+    response::{IntoResponse, Response},
+    routing::any,
+    Router,
+};
+use dashmap::DashMap;
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinHandle;
+
+/// Internal endpoint state.
+struct EndpointState {
+    config: EndpointConfig,
+    stats: RwLock<WebhookStats>,
+}
+
+/// Axum-based webhook server implementation.
+pub struct AxumWebhookServer {
+    config: WebhookConfig,
+    endpoints: Arc<DashMap<String, Arc<EndpointState>>>,
+    server_handle: Mutex<Option<JoinHandle<()>>>,
+    shutdown_tx: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    local_addr: RwLock<Option<SocketAddr>>,
+    running: AtomicUsize,
+}
+
+impl AxumWebhookServer {
+    /// Create a new AxumWebhookServer with the given configuration.
+    pub fn new(config: WebhookConfig) -> Self {
+        Self {
+            config,
+            endpoints: Arc::new(DashMap::new()),
+            server_handle: Mutex::new(None),
+            shutdown_tx: Mutex::new(None),
+            local_addr: RwLock::new(None),
+            running: AtomicUsize::new(0),
+        }
+    }
+
+    /// Build the Axum router.
+    fn build_router(&self) -> Router {
+        let endpoints = Arc::clone(&self.endpoints);
+
+        Router::new()
+            .route("/*path", any(Self::handle_request))
+            .route("/", any(Self::handle_root))
+            .with_state(endpoints)
+    }
+
+    /// Handle incoming webhook requests.
+    async fn handle_request(
+        State(endpoints): State<Arc<DashMap<String, Arc<EndpointState>>>>,
+        Path(path): Path<String>,
+        method: Method,
+        headers: HeaderMap,
+        Query(query): Query<HashMap<String, String>>,
+        body: Bytes,
+    ) -> Response {
+        let full_path = format!("/{}", path);
+        Self::process_webhook(endpoints, full_path, method, headers, query, body).await
+    }
+
+    /// Handle root path requests.
+    async fn handle_root(
+        State(endpoints): State<Arc<DashMap<String, Arc<EndpointState>>>>,
+        method: Method,
+        headers: HeaderMap,
+        Query(query): Query<HashMap<String, String>>,
+        body: Bytes,
+    ) -> Response {
+        Self::process_webhook(endpoints, "/".to_string(), method, headers, query, body).await
+    }
+
+    /// Process webhook request.
+    async fn process_webhook(
+        endpoints: Arc<DashMap<String, Arc<EndpointState>>>,
+        path: String,
+        method: Method,
+        headers: HeaderMap,
+        query: HashMap<String, String>,
+        body: Bytes,
+    ) -> Response {
+        // Find matching endpoint
+        let state = match endpoints.get(&path) {
+            Some(s) => Arc::clone(&*s),
+            None => {
+                return (StatusCode::NOT_FOUND, "Endpoint not found").into_response();
+            }
+        };
+
+        // Check HTTP method
+        let http_method = Self::convert_method(&method);
+        if !state.config.methods.contains(&http_method) {
+            return (StatusCode::METHOD_NOT_ALLOWED, "Method not allowed").into_response();
+        }
+
+        // Check body size
+        if body.len() > state.config.max_body_size {
+            return (StatusCode::PAYLOAD_TOO_LARGE, "Request body too large").into_response();
+        }
+
+        // Convert headers
+        let header_map: HashMap<String, String> = headers
+            .iter()
+            .filter_map(|(k, v)| {
+                v.to_str()
+                    .ok()
+                    .map(|v| (k.as_str().to_lowercase(), v.to_string()))
+            })
+            .collect();
+
+        // Verify HMAC if configured
+        if let HmacConfig::Sha256 { secret, header, prefix } = &state.config.hmac {
+            let sig_header = header_map
+                .get(&header.to_lowercase())
+                .cloned()
+                .unwrap_or_default();
+
+            let sig = prefix
+                .as_ref()
+                .and_then(|p| sig_header.strip_prefix(p))
+                .unwrap_or(&sig_header);
+
+            if let Err(e) = super::verification::verify_hmac_sha256(secret, &body, sig) {
+                // Update HMAC failure stats
+                let mut stats = state.stats.write().await;
+                stats.hmac_failures += 1;
+                return (StatusCode::UNAUTHORIZED, e.to_string()).into_response();
+            }
+        }
+
+        // Build request
+        let request = WebhookRequest {
+            path: path.clone(),
+            method: http_method,
+            headers: header_map,
+            body: body.to_vec(),
+            remote_addr: None, // Could extract from extensions
+            query,
+        };
+
+        // Execute handler
+        let start = SystemTime::now();
+        let handler = Arc::clone(&state.config.handler);
+
+        let response = match handler(request).await {
+            Ok(resp) => resp,
+            Err(e) => WebhookResponse::error(500, e.to_string()),
+        };
+
+        // Update stats
+        let elapsed = SystemTime::now()
+            .duration_since(start)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        {
+            let mut stats = state.stats.write().await;
+            stats.requests_total += 1;
+            stats.last_request = Some(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
+            );
+
+            if response.status >= 200 && response.status < 300 {
+                stats.requests_success += 1;
+            } else {
+                stats.requests_error += 1;
+            }
+
+            // Update average response time
+            stats.avg_response_time_ms =
+                (stats.avg_response_time_ms * (stats.requests_total - 1) + elapsed)
+                    / stats.requests_total;
+        }
+
+        // Build response
+        let mut axum_response = Response::builder().status(response.status);
+
+        for (k, v) in response.headers {
+            axum_response = axum_response.header(k, v);
+        }
+
+        axum_response
+            .body(axum::body::Body::from(response.body))
+            .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response())
+            .into_response()
+    }
+
+    /// Convert Axum Method to our HttpMethod.
+    fn convert_method(method: &Method) -> HttpMethod {
+        match method.as_str() {
+            "GET" => HttpMethod::Get,
+            "POST" => HttpMethod::Post,
+            "PUT" => HttpMethod::Put,
+            "PATCH" => HttpMethod::Patch,
+            _ => HttpMethod::Post,
+        }
+    }
+
+    /// Get statistics for an endpoint.
+    pub async fn stats(&self, path: &str) -> Option<WebhookStats> {
+        self.endpoints.get(path).map(|e| {
+            let rt = tokio::runtime::Handle::current();
+            rt.block_on(async { e.stats.read().await.clone() })
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl WebhookServer for AxumWebhookServer {
+    async fn register(&self, config: EndpointConfig) -> Result<(), WebhookError> {
+        if self.endpoints.contains_key(&config.path) {
+            return Err(WebhookError::HandlerAlreadyExists(config.path));
+        }
+
+        let state = Arc::new(EndpointState {
+            config,
+            stats: RwLock::new(WebhookStats::default()),
+        });
+
+        self.endpoints.insert(state.config.path.clone(), state);
+        Ok(())
+    }
+
+    async fn unregister(&self, path: &str) -> Result<(), WebhookError> {
+        self.endpoints
+            .remove(path)
+            .ok_or_else(|| WebhookError::HandlerNotFound(path.to_string()))?;
+        Ok(())
+    }
+
+    async fn is_registered(&self, path: &str) -> bool {
+        self.endpoints.contains_key(path)
+    }
+
+    async fn list_endpoints(&self) -> Vec<String> {
+        self.endpoints.iter().map(|e| e.key().clone()).collect()
+    }
+
+    async fn start(&self) -> Result<(), WebhookError> {
+        // Check if already running
+        if self.running.load(Ordering::SeqCst) != 0 {
+            return Err(WebhookError::AlreadyRunning);
+        }
+
+        let app = self.build_router();
+        let addr: SocketAddr = format!("{}:{}", self.config.bind_addr, self.config.port)
+            .parse()
+            .map_err(|e| WebhookError::InvalidConfig(format!("Invalid address: {}", e)))?;
+
+        let listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|e| WebhookError::BindFailed(e.to_string()))?;
+
+        let local_addr = listener.local_addr().ok();
+        *self.local_addr.write().await = local_addr;
+
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        *self.shutdown_tx.lock().await = Some(shutdown_tx);
+
+        let server = axum::serve(listener, app);
+
+        let handle = tokio::spawn(async move {
+            let _ = server.await;
+        });
+
+        *self.server_handle.lock().await = Some(handle);
+        self.running.store(1, Ordering::SeqCst);
+
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<(), WebhookError> {
+        if self.running.load(Ordering::SeqCst) == 0 {
+            return Err(WebhookError::NotRunning);
+        }
+
+        // Send shutdown signal
+        if let Some(tx) = self.shutdown_tx.lock().await.take() {
+            let _ = tx.send(());
+        }
+
+        // Wait for server to stop
+        if let Some(handle) = self.server_handle.lock().await.take() {
+            let _ = handle.await;
+        }
+
+        self.running.store(0, Ordering::SeqCst);
+        *self.local_addr.write().await = None;
+
+        Ok(())
+    }
+
+    async fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst) != 0
+    }
+
+    async fn local_addr(&self) -> Result<String, WebhookError> {
+        match *self.local_addr.read().await {
+            Some(addr) => Ok(addr.to_string()),
+            None => Err(WebhookError::NotRunning),
+        }
+    }
+}
+
+impl Default for AxumWebhookServer {
+    fn default() -> Self {
+        Self::new(WebhookConfig::new("127.0.0.1", 8080))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_axum_webhook_server_new() {
+        let config = WebhookConfig::new("127.0.0.1", 0);
+        let server = AxumWebhookServer::new(config);
+        assert!(!server.is_running().await);
+        assert!(server.list_endpoints().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_register_endpoint() {
+        let config = WebhookConfig::new("127.0.0.1", 0);
+        let server = AxumWebhookServer::new(config);
+
+        server
+            .register(EndpointConfig::new("/test", |_req| async {
+                Ok(WebhookResponse::ok())
+            }))
+            .await
+            .unwrap();
+
+        assert!(server.is_registered("/test").await);
+        assert!(!server.is_registered("/other").await);
+    }
+
+    #[tokio::test]
+    async fn test_register_duplicate_fails() {
+        let config = WebhookConfig::new("127.0.0.1", 0);
+        let server = AxumWebhookServer::new(config);
+
+        server
+            .register(EndpointConfig::new("/dup", |_req| async { Ok(WebhookResponse::ok()) }))
+            .await
+            .unwrap();
+
+        let result = server
+            .register(EndpointConfig::new("/dup", |_req| async { Ok(WebhookResponse::ok()) }))
+            .await;
+
+        assert!(matches!(result, Err(WebhookError::HandlerAlreadyExists(_))));
+    }
+
+    #[tokio::test]
+    async fn test_unregister_endpoint() {
+        let config = WebhookConfig::new("127.0.0.1", 0);
+        let server = AxumWebhookServer::new(config);
+
+        server
+            .register(EndpointConfig::new("/unreg", |_req| async { Ok(WebhookResponse::ok()) }))
+            .await
+            .unwrap();
+
+        assert!(server.is_registered("/unreg").await);
+
+        server.unregister("/unreg").await.unwrap();
+
+        assert!(!server.is_registered("/unreg").await);
+    }
+
+    #[tokio::test]
+    async fn test_list_endpoints() {
+        let config = WebhookConfig::new("127.0.0.1", 0);
+        let server = AxumWebhookServer::new(config);
+
+        for i in 0..3 {
+            server
+                .register(EndpointConfig::new(
+                    format!("/ep{}", i),
+                    |_req| async { Ok(WebhookResponse::ok()) },
+                ))
+                .await
+                .unwrap();
+        }
+
+        let endpoints = server.list_endpoints().await;
+        assert_eq!(endpoints.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_start_stop_server() {
+        let config = WebhookConfig::new("127.0.0.1", 0);
+        let server = AxumWebhookServer::new(config);
+
+        // Start
+        server.start().await.unwrap();
+        assert!(server.is_running().await);
+
+        // Get address
+        let addr = server.local_addr().await;
+        assert!(addr.is_ok());
+
+        // Stop
+        server.stop().await.unwrap();
+        assert!(!server.is_running().await);
+    }
+
+    #[tokio::test]
+    async fn test_start_already_running_fails() {
+        let config = WebhookConfig::new("127.0.0.1", 0);
+        let server = AxumWebhookServer::new(config);
+
+        server.start().await.unwrap();
+
+        let result = server.start().await;
+        assert!(matches!(result, Err(WebhookError::AlreadyRunning)));
+
+        server.stop().await.unwrap();
+    }
+}

@@ -11,22 +11,43 @@ members = [
     "crates/claw-memory",
     "crates/claw-channel",
     "crates/claw-script",
+    "crates/claw-server",
     "claw-kernel",  # meta-crate
+    "claw-kernel-server",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 authors = ["claw-project contributors"]
 edition = "2021"
 rust-version = "1.83"  # 已验证：PyO3 0.28+ 需要 1.83+
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/claw-project/claw-kernel"
+description = "Modular AI agent kernel for Rust — 5-layer architecture, 5 LLM providers, Lua scripting"
+keywords = ["ai", "agent", "llm", "lua", "async"]
+categories = ["asynchronous", "science", "api-bindings"]
+readme = "README.md"
+documentation = "https://docs.rs/claw-kernel"
+homepage = "https://github.com/claw-project/claw-kernel"
+
+# ============================================
+# 内部 crates (Internal Crates) - 发布到 crates.io
+# ============================================
+[workspace.dependencies]
+claw-pal = { path = "crates/claw-pal", version = "1.0.0" }
+claw-runtime = { path = "crates/claw-runtime", version = "1.0.0" }
+claw-provider = { path = "crates/claw-provider", version = "1.0.0" }
+claw-tools = { path = "crates/claw-tools", version = "1.0.0" }
+claw-loop = { path = "crates/claw-loop", version = "1.0.0" }
+claw-memory = { path = "crates/claw-memory", version = "1.0.0" }
+claw-channel = { path = "crates/claw-channel", version = "1.0.0" }
+claw-script = { path = "crates/claw-script", version = "1.0.0" }
+claw-server = { path = "crates/claw-server", version = "1.0.0" }
 
 # ============================================
 # 核心依赖 (Core Dependencies) - 已验证兼容
 # ============================================
-[workspace.dependencies]
 # 异步运行时 (Async Runtime) - 兼容 Rust 1.83+
 tokio = { version = "1.35.0", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "io-util"] }
 tokio-util = { version = "0.7.10", features = ["rt"] }
@@ -36,6 +57,7 @@ async-trait = "0.1.77"
 dashmap = "5.5.3"
 futures = "0.3"
 rand = "0.8"
+uuid = { version = "1.7", features = ["v4"] }
 
 # HTTP 客户端 (HTTP Client) - 兼容 Tokio 1.35+
 reqwest = { version = "0.11.23", features = ["json", "stream", "rustls-tls"], default-features = false }

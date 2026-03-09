@@ -178,6 +178,7 @@ impl AgentLoopConfig {
 /// Why the agent loop finished.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum FinishReason {
     /// LLM returned finish_reason = stop with no tool calls.
     Stop,
@@ -250,10 +251,20 @@ pub struct AgentResult {
 pub enum StreamChunk {
     /// Text delta from the LLM.
     Text { content: String, is_final: bool },
+    /// Tool call started (id + name available).
+    ToolStart { id: String, name: String },
+    /// Streaming tool arguments (accumulate across chunks).
+    ToolArguments { id: String, arguments: String },
+    /// Tool call completed with result.
+    ToolComplete { id: String, result: serde_json::Value },
+    /// Tool call failed.
+    ToolError { id: String, error: String },
     /// Token usage update.
     UsageUpdate(TokenUsage),
     /// Loop finished.
     Finish(FinishReason),
+    /// Error occurred during streaming.
+    Error(String),
 }
 
 #[cfg(test)]

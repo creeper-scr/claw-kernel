@@ -3,7 +3,7 @@ title: claw-script
 description: Embedded script engines (Lua default, Deno/V8 and Python planned)
 status: implemented
 version: "0.1.0"
-last_updated: "2026-03-01"
+last_updated: "2026-03-08"
 language: en
 ---
 
@@ -84,17 +84,20 @@ interface RustBridge {
     exists(name: string): boolean;
   };
 
-  // Memory 🚧 Not implemented (planned for v0.2)
+  // Memory ✅ Implemented (namespace-isolated, key-value + semantic search)
   memory: {
     get(key: string): Promise<any>;
     set(key: string, value: any): Promise<void>;
+    delete(key: string): Promise<void>;
     search(query: string, topK: number): Promise<MemoryItem[]>;
   };
 
-  // Events 🚧 Not implemented (planned for v0.2)
+  // Events ✅ Implemented (EventBus pub/sub, lifecycle-bound)
   events: {
     emit(event: string, data: any): void;
     on(event: string, handler: (data: any) => void): void;
+    once(event: string, handler: (data: any) => void): void;
+    poll(): void;
   };
 
   // Filesystem ✅ Implemented
@@ -118,19 +121,23 @@ interface RustBridge {
     stringify(value: any, opts?: { pretty?: boolean }): string;
   };
 
-  // Directories 🚧 Not implemented (planned for v0.1.1)
+  // Directories ✅ Implemented (platform-aware paths)
   dirs: {
-    configDir(): string;
-    dataDir(): string;
-    cacheDir(): string;
-    toolsDir(): string;
+    configDir(): string | null;
+    dataDir(): string | null;
+    cacheDir(): string | null;
+    toolsDir(): string | null;
+    scriptsDir(): string | null;
+    logsDir(): string | null;
   };
 
-  // Agent 🚧 Not implemented (planned for v0.2)
+  // Agent ✅ Implemented (in-process lifecycle, auto-cleanup on script end)
   agent: {
-    spawn(config: AgentConfig): Promise<AgentHandle>;
-    kill(handle: AgentHandle): Promise<void>;
-    list(): AgentInfo[];
+    spawn(name: string): AgentId;
+    status(id: AgentId): string;  // "running" | "stopped" | "unknown"
+    kill(id: AgentId): void;
+    list(): AgentId[];
+    info(id: AgentId): AgentInfo | null;
   };
 }
 ```
@@ -140,46 +147,38 @@ interface RustBridge {
 ## Lua Example
 
 ```lua
--- Example: Tool script using Filesystem, Network and Tools bridges
-local M = {}
+-- Example: Using all available bridges
 
-function M.execute(params)
-    -- Check if file exists
-    if not rust.fs.exists(params.path) then
-        return {
-            success = false,
-            error = "File not found: " .. params.path
-        }
-    end
+-- Dirs bridge: platform-aware paths (always available)
+local cfg = dirs:config_dir()
+local data = dirs:data_dir()
 
-    -- Read file content
-    local content = rust.fs.read(params.path)
+-- Memory bridge: namespace-isolated key-value store (requires ScriptContext with memory_store)
+memory:set("user_pref", "dark_mode")
+local pref = memory:get("user_pref")   -- "dark_mode"
+local items = memory:search("dark", 5) -- semantic search, returns array of strings
 
-    -- Fetch additional data from web
-    local response = rust.net.get("https://api.example.com/data")
-    if response.status == 200 then
-        content = content .. "\n" .. response.body
-    end
+-- Events bridge: EventBus pub/sub (requires ScriptContext with event_bus)
+events:on("task_done", function(data)
+    -- handle event
+end)
+events:emit("task_started", { name = "my_task" })
+events:poll()  -- process pending events and invoke callbacks
 
-    -- Call a registered tool (via tools bridge)
-    local result = rust.tools:call("summarize", {
-        text = content
-    })
+-- Agent bridge: spawn child agents (requires ScriptContext with orchestrator)
+local child_id = agent:spawn("worker")
+local status = agent:status(child_id)  -- "running"
+agent:kill(child_id)
 
-    if result:success() then
-        return {
-            success = true,
-            summary = result:output()
-        }
-    else
-        return {
-            success = false,
-            error = result:error()
-        }
-    end
-end
+-- Tools bridge (always available if ToolRegistry provided)
+local result = tools:call("summarize", { text = "..." })
 
-return M
+-- Filesystem bridge
+local content = fs:read("/path/to/file.txt")
+fs:write("/path/to/out.txt", content)
+
+-- Network bridge
+local resp = net:get("https://api.example.com/data")
 ```
 
 ---

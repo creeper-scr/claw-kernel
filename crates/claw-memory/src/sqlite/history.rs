@@ -85,7 +85,11 @@ impl SqliteHistoryStore {
             for r in raw {
                 let (role, content, tool_calls_json) =
                     r.map_err(|e| MemoryError::Storage(format!("sqlite row error: {e}")))?;
-                rows.push(HistoryRow { role, content, tool_calls_json });
+                rows.push(HistoryRow {
+                    role,
+                    content,
+                    tool_calls_json,
+                });
             }
             rows
         };
@@ -155,8 +159,8 @@ mod tests {
 
     #[test]
     fn test_sqlite_history_store_open_in_memory() {
-        let mut store = SqliteHistoryStore::open(":memory:", "agent-1")
-            .expect("should open in-memory db");
+        let mut store =
+            SqliteHistoryStore::open(":memory:", "agent-1").expect("should open in-memory db");
 
         assert!(store.is_empty());
         store.append(HistoryRow::new("user", "hello"));
@@ -170,8 +174,7 @@ mod tests {
 
     #[test]
     fn test_sqlite_history_store_clear() {
-        let mut store = SqliteHistoryStore::open(":memory:", "agent-1")
-            .expect("should open");
+        let mut store = SqliteHistoryStore::open(":memory:", "agent-1").expect("should open");
 
         store.append(HistoryRow::new("user", "msg1"));
         store.append(HistoryRow::new("user", "msg2"));

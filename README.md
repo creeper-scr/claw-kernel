@@ -21,11 +21,9 @@ It is a **shared infrastructure library**, not a standalone agent — think of i
 │              Layer 3: Extension Foundation          │
 │    Lua (default) · Deno/V8 · PyO3                   │
 ├─────────────────────────────────────────────────────┤
-│             Layer 2.5: Channel Foundation           │
-│    Discord · HTTP Webhook · Stdin                   │
-├─────────────────────────────────────────────────────┤
 │              Layer 2: Agent Kernel Protocol         │
 │    Provider · ToolRegistry · AgentLoop · Memory     │
+│    Channel (Discord · HTTP Webhook · Stdin)         │
 ├─────────────────────────────────────────────────────┤
 │              Layer 1: System Runtime                │
 │    EventBus · AgentOrchestrator · IpcRouter         │
@@ -77,7 +75,7 @@ See [`examples/`](examples/) for `simple-agent`, `custom-tool`, and `self-evolvi
 | [`claw-tools`](docs/crates/claw-tools.md) | 2 | Tool registry, JSON Schema gen, hot-loading (50ms debounce) |
 | [`claw-loop`](docs/crates/claw-loop.md) | 2 | Agent loop engine, history, stop conditions |
 | [`claw-memory`](docs/crates/claw-memory.md) | 2 | Ngram embedder, SQLite store, SecureMemoryStore (50 MB) |
-| [`claw-channel`](docs/crates/claw-channel.md) | 2.5 | Channel trait: Discord, HTTP Webhook, Stdin |
+| [`claw-channel`](docs/crates/claw-channel.md) | 2 | Channel trait: Discord, HTTP Webhook, Stdin |
 | [`claw-script`](docs/crates/claw-script.md) | 3 | Script engines: Lua (default), Deno/V8, PyO3 |
 | `claw-kernel` | meta | Re-exports all of the above + prelude |
 

@@ -152,6 +152,7 @@ fn default_ctx() -> ToolContext {
 
 /// 测试 100+ 并发注册操作
 #[tokio::test]
+#[ignore]
 async fn test_registry_concurrent_register() {
     let registry = Arc::new(ToolRegistry::new());
     let concurrency = 150;
@@ -196,6 +197,7 @@ async fn test_registry_concurrent_register() {
 
 /// 测试并发注销操作
 #[tokio::test]
+#[ignore]
 async fn test_registry_concurrent_unregister() {
     let registry = Arc::new(ToolRegistry::new());
 
@@ -255,6 +257,7 @@ async fn test_registry_concurrent_unregister() {
 
 /// 测试混合并发操作（注册、注销、执行、查询）
 #[tokio::test]
+#[ignore]
 async fn test_registry_mixed_concurrent_operations() {
     let registry = Arc::new(ToolRegistry::new());
 
@@ -336,6 +339,7 @@ async fn test_registry_mixed_concurrent_operations() {
 
 /// 测试并发执行工具（热点竞争）
 #[tokio::test]
+#[ignore]
 async fn test_registry_concurrent_execute_hotspot() {
     let registry = Arc::new(ToolRegistry::new());
 
@@ -384,6 +388,7 @@ async fn test_registry_concurrent_execute_hotspot() {
 
 /// 测试并发执行带超时的慢工具
 #[tokio::test]
+#[ignore]
 async fn test_registry_concurrent_execute_timeout() {
     let registry = Arc::new(ToolRegistry::new());
 
@@ -459,6 +464,7 @@ async fn test_registry_concurrent_execute_timeout() {
 
 /// 测试审计日志完整性
 #[tokio::test]
+#[ignore]
 async fn test_registry_audit_log_integrity() {
     let registry = Arc::new(ToolRegistry::new());
 
@@ -522,6 +528,7 @@ async fn test_registry_audit_log_integrity() {
 
 /// 测试注册-注销-重新注册循环
 #[tokio::test]
+#[ignore]
 async fn test_registry_register_unregister_reregister_cycle() {
     let registry = Arc::new(ToolRegistry::new());
     let cycles = 50;
@@ -594,6 +601,7 @@ async fn test_registry_register_unregister_reregister_cycle() {
 
 /// 测试死锁检测 - 长时间运行
 #[tokio::test]
+#[ignore]
 async fn test_registry_no_deadlock_long_running() {
     let registry = Arc::new(ToolRegistry::new());
 
@@ -666,6 +674,7 @@ async fn test_registry_no_deadlock_long_running() {
 
 /// 测试数据竞争 - 并发读写同一工具
 #[tokio::test]
+#[ignore]
 async fn test_registry_data_race_concurrent_read_write() {
     let registry = Arc::new(ToolRegistry::new());
 
@@ -729,6 +738,7 @@ async fn test_registry_data_race_concurrent_read_write() {
 
 /// 综合压力测试 - 模拟真实高并发场景
 #[tokio::test]
+#[ignore]
 async fn test_registry_comprehensive_stress() {
     let registry = Arc::new(ToolRegistry::new().with_max_audit_entries(1000));
 

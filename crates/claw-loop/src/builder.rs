@@ -34,6 +34,24 @@ pub struct AgentLoopBuilder {
 
 impl AgentLoopBuilder {
     /// Create a new builder with default settings.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use claw_loop::AgentLoopBuilder;
+    /// use claw_provider::AnthropicProvider;
+    /// use std::sync::Arc;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let provider = Arc::new(AnthropicProvider::from_env()?);
+    /// let loop_ = AgentLoopBuilder::new()
+    ///     .with_provider(provider)
+    ///     .with_max_turns(10)
+    ///     .build()?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn new() -> Self {
         Self {
             provider: None,

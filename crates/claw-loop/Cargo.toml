@@ -5,11 +5,13 @@ edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Agent loop engine with FSM, history management, and stop conditions"
+repository.workspace = true
 
 [dependencies]
-claw-provider = { path = "../claw-provider" }
-claw-tools = { path = "../claw-tools" }
-claw-memory = { path = "../claw-memory" }
+claw-provider = { workspace = true }
+claw-tools = { workspace = true }
+claw-memory = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

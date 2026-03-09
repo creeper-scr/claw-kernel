@@ -316,9 +316,7 @@ pub enum ToolSource {
         language: ScriptLanguage,
     },
     /// Dynamically generated (e.g., by the LLM or external system).
-    Dynamic {
-        id: String,
-    },
+    Dynamic { id: String },
 }
 
 impl Default for ToolSource {
@@ -610,4 +608,60 @@ mod tests {
         assert!(config.is_watched_extension("js"));
         assert!(!config.is_watched_extension("py"));
     }
+}
+
+// =============================================================================
+// Error Types for Hot-loading
+// =============================================================================
+
+/// Error type for tool loading operations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum LoadError {
+    IoError(String),
+    ParseError { path: String, message: String },
+    InvalidSchema(String),
+    PermissionValidationFailed(String),
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadError::IoError(e) => write!(f, "IO error: {}", e),
+            LoadError::ParseError { path, message } => {
+                write!(f, "Parse error in {}: {}", path, message)
+            }
+            LoadError::InvalidSchema(msg) => write!(f, "Invalid schema: {}", msg),
+            LoadError::PermissionValidationFailed(msg) => {
+                write!(f, "Permission validation failed: {}", msg)
+            }
+        }
+    }
+}
+
+impl std::error::Error for LoadError {}
+
+/// Error type for hot-loading watch operations.
+#[derive(Debug, Clone)]
+pub enum WatchError {
+    InvalidConfig(String),
+    WatchInitFailed(String),
+}
+
+impl std::fmt::Display for WatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WatchError::InvalidConfig(msg) => write!(f, "Invalid config: {}", msg),
+            WatchError::WatchInitFailed(msg) => write!(f, "Watch init failed: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for WatchError {}
+
+/// Metadata for a loaded script tool.
+#[derive(Debug, Clone)]
+pub struct LoadedToolMeta {
+    pub name: String,
+    pub source: ToolSource,
+    pub loaded_at: std::time::SystemTime,
 }

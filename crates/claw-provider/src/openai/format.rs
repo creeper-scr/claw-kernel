@@ -3,7 +3,9 @@ use serde_json::Value;
 
 use crate::{
     traits::MessageFormat,
-    types::{CompletionResponse, Delta, FinishReason, Message, Options, Role, TokenUsage, ToolCall},
+    types::{
+        CompletionResponse, Delta, FinishReason, Message, Options, Role, TokenUsage, ToolCall,
+    },
 };
 
 /// OpenAI Chat Completions API request.

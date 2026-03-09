@@ -184,7 +184,10 @@ mod tests {
         let e = NgramEmbedder::new();
         let v = e.embed("");
         assert_eq!(v.len(), 64);
-        assert!(v.iter().all(|&x| x == 0.0), "empty string should produce zero vector");
+        assert!(
+            v.iter().all(|&x| x == 0.0),
+            "empty string should produce zero vector"
+        );
     }
 
     // NgramEmbeddingProvider tests
@@ -205,7 +208,10 @@ mod tests {
     async fn test_ngram_embedding_provider_embed_batch() {
         let provider = NgramEmbeddingProvider::new();
         let texts = vec!["a".to_string(), "b".to_string()];
-        let embeddings = provider.embed_batch(texts).await.expect("embed_batch should succeed");
+        let embeddings = provider
+            .embed_batch(texts)
+            .await
+            .expect("embed_batch should succeed");
         assert_eq!(embeddings.len(), 2);
         assert_eq!(embeddings[0].len(), 64);
         assert_eq!(embeddings[1].len(), 64);

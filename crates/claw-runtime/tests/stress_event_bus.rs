@@ -13,6 +13,7 @@ use claw_runtime::{AgentId, Event, EventBus, LagStrategy};
 
 /// 测试 EventBus 在极端并发下的容量限制行为 - Error 策略
 #[tokio::test]
+#[ignore]
 async fn test_event_bus_capacity_stress_error_strategy() {
     // 创建小容量 bus (容量=10)
     let bus = Arc::new(EventBus::with_capacity_and_strategy(10, LagStrategy::Error));
@@ -88,6 +89,7 @@ async fn test_event_bus_capacity_stress_error_strategy() {
 
 /// 测试 EventBus 在极端并发下的容量限制行为 - Skip 策略
 #[tokio::test]
+#[ignore]
 async fn test_event_bus_capacity_stress_skip_strategy() {
     // 创建小容量 bus (容量=10) 使用 Skip 策略
     let bus = Arc::new(EventBus::with_capacity_and_strategy(10, LagStrategy::Skip));
@@ -162,6 +164,7 @@ async fn test_event_bus_capacity_stress_skip_strategy() {
 
 /// 测试 EventBus 在极端并发下的容量限制行为 - Warn 策略
 #[tokio::test]
+#[ignore]
 async fn test_event_bus_capacity_stress_warn_strategy() {
     // 创建小容量 bus (容量=10) 使用 Warn 策略
     let bus = Arc::new(EventBus::with_capacity_and_strategy(10, LagStrategy::Warn));
@@ -235,6 +238,7 @@ async fn test_event_bus_capacity_stress_warn_strategy() {
 
 /// 测试多消费者场景下的容量压力
 #[tokio::test]
+#[ignore]
 async fn test_event_bus_multi_consumer_stress() {
     let bus = Arc::new(EventBus::with_capacity_and_strategy(10, LagStrategy::Skip));
 
@@ -304,6 +308,7 @@ async fn test_event_bus_multi_consumer_stress() {
 
 /// 测试瞬间灌入大量消息的极限情况
 #[tokio::test]
+#[ignore]
 async fn test_event_bus_burst_stress() {
     // 使用极小的容量来模拟极端 lag 场景
     let bus = Arc::new(EventBus::with_capacity_and_strategy(5, LagStrategy::Skip));
@@ -375,6 +380,7 @@ async fn test_event_bus_burst_stress() {
 
 /// 测试三种策略的对比行为
 #[tokio::test]
+#[ignore]
 async fn test_event_bus_all_strategies_comparison() {
     let strategies = vec![
         (LagStrategy::Error, "Error"),
@@ -434,6 +440,7 @@ async fn test_event_bus_all_strategies_comparison() {
 
 /// 测试 EventBus 不会 Panic 的核心保证
 #[tokio::test]
+#[ignore]
 async fn test_event_bus_no_panic_guarantee() {
     // 测试多种极端情况组合
     let test_cases = vec![

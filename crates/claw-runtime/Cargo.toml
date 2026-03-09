@@ -5,9 +5,11 @@ edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Agent runtime — EventBus, AgentOrchestrator, IpcRouter, Schedule, Webhook"
+repository.workspace = true
 
 [dependencies]
-claw-pal = { path = "../claw-pal" }
+claw-pal = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
@@ -18,6 +20,15 @@ tracing = { workspace = true }
 dirs = "5.0"
 toml = "0.8"
 serde_yaml = "0.9"
+
+# Schedule & Webhook dependencies
+axum = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+sha2 = { workspace = true }
+
+[features]
+default = ["webhook"]
+webhook = ["dep:axum", "dep:tower"]
 
 [dev-dependencies]
 tempfile = "=3.10.0"

@@ -6,6 +6,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ProviderError {
     #[error("HTTP error: {status} — {message}")]
     Http { status: u16, message: String },

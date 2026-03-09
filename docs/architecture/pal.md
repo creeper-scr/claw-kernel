@@ -1,16 +1,36 @@
 ---
 title: Platform Abstraction Layer (PAL)
-description: PAL architecture, core traits, and platform-specific implementations
+description: PAL architecture, core traits, and platform-specific implementations for cross-platform sandboxing, IPC, and process management
 status: implemented
-version: "0.1.0"
-last_updated: "2026-03-08"
+version: "1.0.0"
+last_updated: "2026-03-09"
+version: "1.0.0"
 language: en
 ---
-
 
 # Platform Abstraction Layer (PAL)
 
 The Platform Abstraction Layer (`claw-pal`) isolates all platform-specific code, enabling claw-kernel to run on Linux, macOS, and Windows with minimal platform-specific logic in the upper layers.
+
+---
+
+## Table of Contents
+
+- [Philosophy](#philosophy)
+- [Architecture Overview](#architecture-overview)
+- [Quick Start](#quick-start)
+- [Core Traits](#core-traits)
+  - [SandboxBackend](#sandboxbackend)
+  - [IpcTransport](#ipctransport)
+  - [ProcessManager](#processmanager)
+- [Policy Types](#policy-types)
+- [Configuration Directories](#configuration-directories)
+- [Security Module](#security-module)
+- [Error Handling](#error-handling)
+- [Platform Capability Matrix](#platform-capability-matrix)
+- [Platform-Specific Considerations](#platform-specific-considerations)
+- [Adding a New Platform](#adding-a-new-platform)
+- [See Also](#see-also)
 
 ---
 
@@ -24,7 +44,7 @@ The Platform Abstraction Layer (`claw-pal`) isolates all platform-specific code,
 
 ---
 
-## Architecture
+## Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -41,11 +61,83 @@ The Platform Abstraction Layer (`claw-pal`) isolates all platform-specific code,
 │  ├── IpcTransport                                       │
 │  └── ProcessManager                                     │
 ├─────────────────────────────────────────────────────────┤
+│  Policy Types                                           │
+│  ├── NetRule, PathRule, ResourceLimits                  │
+│  └── ExecutionMode, SyscallPolicy                       │
+├─────────────────────────────────────────────────────────┤
 │  Platform Implementations                               │
-│  ├── linux/   → seccomp, UDS, fork/exec                 │
+│  ├── linux/   → seccomp-bpf, UDS, fork/exec             │
 │  ├── macos/   → sandbox(7), UDS, fork/exec              │
 │  └── windows/ → AppContainer, Named Pipe, CreateProcess │
 └─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Quick Start
+
+### Creating a Sandboxed Environment
+
+```rust
+use claw_pal::{SandboxBackend, SandboxConfig, SyscallPolicy, ResourceLimits, NetRule};
+use std::path::PathBuf;
+
+// Create a safe default configuration
+let config = SandboxConfig::safe_default();
+
+// Platform-specific sandbox implementations are available via cfg flags
+// On Linux:
+#[cfg(target_os = "linux")]
+{
+    use claw_pal::LinuxSandbox;
+    let sandbox = LinuxSandbox::create(config)?
+        .restrict_filesystem(&[PathBuf::from("/data")])
+        .restrict_network(&[NetRule::allow("api.example.com".to_string())])
+        .restrict_syscalls(SyscallPolicy::DenyAll)
+        .restrict_resources(ResourceLimits::restrictive())
+        .apply()?;
+}
+
+// On macOS:
+#[cfg(target_os = "macos")]
+{
+    use claw_pal::MacOSSandbox;
+    let sandbox = MacOSSandbox::create(config)?
+        .restrict_filesystem(&[PathBuf::from("/data")])
+        .restrict_network(&[NetRule::allow("api.example.com".to_string())])
+        .restrict_resources(ResourceLimits::restrictive())
+        .apply()?;
+}
+```
+
+### IPC Communication
+
+```rust
+use claw_pal::{IpcTransport, InterprocessTransport};
+
+// Server side
+let server = InterprocessTransport::new_server("/tmp/claw.sock").await?;
+let msg = server.recv().await?;
+server.send(b"response").await?;
+
+// Client side
+let client = InterprocessTransport::new_client("/tmp/claw.sock").await?;
+client.send(b"hello").await?;
+let response = client.recv().await?;
+```
+
+### Process Management
+
+```rust
+use claw_pal::{ProcessManager, TokioProcessManager, ProcessConfig};
+
+let manager = TokioProcessManager::new();
+let config = ProcessConfig::new("echo".to_string())
+    .with_arg("hello".to_string())
+    .with_env("KEY".to_string(), "value".to_string());
+
+let handle = manager.spawn(config).await?;
+let status = manager.wait(handle).await?;
 ```
 
 ---
@@ -54,7 +146,7 @@ The Platform Abstraction Layer (`claw-pal`) isolates all platform-specific code,
 
 ### `SandboxBackend`
 
-Abstracts platform-specific sandboxing mechanisms.
+Abstracts platform-specific sandboxing mechanisms. Implemented by `LinuxSandbox`, `MacOSSandbox`, and `WindowsSandbox`.
 
 ```rust
 pub trait SandboxBackend: Send + Sync {
@@ -65,7 +157,13 @@ pub trait SandboxBackend: Send + Sync {
     fn restrict_resources(&mut self, limits: ResourceLimits) -> &mut Self;
     fn apply(self) -> Result<SandboxHandle, SandboxError>;
 }
+```
 
+#### Configuration Types
+
+**`SandboxConfig`** — Base configuration for sandbox creation:
+
+```rust
 pub struct SandboxConfig {
     pub mode: ExecutionMode,                  // Safe or Power
     pub filesystem_allowlist: Vec<PathBuf>,   // Paths allowed for file access
@@ -73,154 +171,28 @@ pub struct SandboxConfig {
     pub allow_subprocess: bool,               // Whether subprocess spawning is allowed
 }
 
+impl SandboxConfig {
+    pub fn safe_default() -> Self;    // Safe mode, no subprocess
+    pub fn power_mode() -> Self;      // Power mode, all permissions
+}
+```
+
+**`SandboxHandle`** — Opaque handle representing an applied sandbox:
+
+```rust
 pub struct SandboxHandle {
     pub platform_handle: PlatformHandle,
 }
 
 pub enum PlatformHandle {
-    #[cfg(target_os = "linux")]
-    Linux(i32),                               // Process ID with seccomp applied
-    #[cfg(target_os = "macos")]
-    MacOs(String),                            // Sandbox profile identifier
-    #[cfg(target_os = "windows")]
-    Windows(u32),                             // AppContainer SID (stub in v0.1)
-    Unsupported,                              // Fallback for unknown platforms
-}
-```
-
-#### Network Rules
-
-```rust
-pub struct NetRule {
-    pub host: String,                         // Hostname or IP address
-    pub port: Option<u16>,                    // Port number (None = all ports)
-    pub allow: bool,                          // Allow (true) or deny (false)
-}
-
-impl NetRule {
-    pub fn allow(host: String) -> Self;
-    pub fn allow_port(host: String, port: u16) -> Self;
-    pub fn deny(host: String) -> Self;
-}
-```
-
-#### Syscall Policy
-
-```rust
-pub enum SyscallPolicy {
-    AllowAll,                                 // Allow all syscalls
-    DenyAll,                                  // Deny dangerous syscalls
-    Allowlist(Vec<String>),                   // Allow only specific syscalls by name
-}
-```
-
-#### Resource Limits
-
-```rust
-pub struct ResourceLimits {
-    pub max_memory_bytes: Option<u64>,        // Maximum memory in bytes
-    pub max_cpu_percent: Option<u8>,          // Maximum CPU usage (0-100)
-    pub max_file_descriptors: Option<u32>,    // Maximum number of open FDs
-    pub max_processes: Option<u32>,           // Maximum number of processes
-}
-
-impl ResourceLimits {
-    pub fn unlimited() -> Self;
-    pub fn restrictive() -> Self;             // 256MB, 50% CPU, 256 FDs, 10 procs
-}
-```
-
-### Platform Implementations
-
-| Capability | Linux | macOS | Windows |
-|------------|-------|-------|---------|
-| Filesystem | seccomp + mount namespace | sandbox(7) profile | AppContainer capabilities |
-| Network | network namespace | Socket filter (limited) | WFP (Windows Filtering Platform) |
-| Syscalls | seccomp-bpf filter | Limited (SBPL operations) | Limited (API hooking) |
-| Process | pid namespace | Standard | Job Objects |
-
-**Linux Implementation:**
-```rust
-#[cfg(target_os = "linux")]
-pub struct LinuxSandbox {
-    config: SandboxConfig,
-    filesystem_rules: Vec<PathBuf>,
-    network_rules: Vec<NetRule>,
-    syscall_policy: Option<SyscallPolicy>,
-    resource_limits: Option<ResourceLimits>,
-}
-
-impl SandboxBackend for LinuxSandbox {
-    fn apply(self) -> Result<SandboxHandle, SandboxError> {
-        // 1. In Power mode: skip all restrictions
-        // 2. Attempt mount namespace isolation (non-fatal)
-        // 3. Apply resource limits via setrlimit(2)
-        // 4. Build and load seccomp-bpf filter with SCMP_ACT_ERRNO(EPERM)
-        
-        Ok(SandboxHandle {
-            platform_handle: PlatformHandle::Linux(std::process::id() as i32),
-        })
-    }
-}
-```
-
-**macOS Implementation:**
-```rust
-#[cfg(target_os = "macos")]
-pub struct MacOSSandbox {
-    config: SandboxConfig,
-    filesystem_rules: Vec<PathBuf>,
-    network_rules: Vec<NetRule>,
-    syscall_policy: Option<SyscallPolicy>,
-    resource_limits: Option<ResourceLimits>,
-}
-
-impl SandboxBackend for MacOSSandbox {
-    fn apply(self) -> Result<SandboxHandle, SandboxError> {
-        // macOS uses declarative sandbox profiles (SBPL)
-        let profile_str = self.generate_profile()?;
-        
-        // Apply via sandbox_init() FFI — this is IRREVERSIBLE
-        Self::apply_sandbox_profile(&profile_str)?;
-        
-        Ok(SandboxHandle {
-            platform_handle: PlatformHandle::MacOs("safe-mode-sandboxed".to_string()),
-        })
-    }
-}
-
-// Example generated SBPL profile:
-// (version 1)
-// (deny default)
-// (allow sysctl-read)
-// (allow mach-lookup)
-// (allow file-read* (subpath "/allowed/path"))
-// (allow network-outbound (remote tcp "example.com:443"))
-```
-
-**Windows Implementation (Stub for v0.1.0):**
-```rust
-#[cfg(target_os = "windows")]
-pub struct WindowsSandbox {
-    config: SandboxConfig,
-    filesystem_rules: Vec<PathBuf>,
-    network_rules: Vec<NetRule>,
-    syscall_policy: Option<SyscallPolicy>,
-    resource_limits: Option<ResourceLimits>,
-}
-
-impl SandboxBackend for WindowsSandbox {
-    fn apply(self) -> Result<SandboxHandle, SandboxError> {
-        // v0.1.0: Stub implementation
-        // Returns handle without actual AppContainer creation
-        // Full implementation planned for v0.2.0
-        
-        Ok(SandboxHandle {
-            platform_handle: PlatformHandle::Windows(
-                if self.config.mode == ExecutionMode::Power { 0 } else { 1 }
-            ),
-        })
-    }
+    /// Linux seccomp-bpf filter ID
+    Linux(i32),
+    /// macOS sandbox profile identifier
+    MacOs(String),
+    /// Windows AppContainer SID
+    Windows(u32),
+    /// Unsupported platform fallback
+    Unsupported,
 }
 ```
 
@@ -228,28 +200,21 @@ impl SandboxBackend for WindowsSandbox {
 
 ### `IpcTransport`
 
-Cross-platform inter-process communication.
-
-> **v0.1.0 Limitation:** IPC is currently only supported on Unix-like systems (Linux, macOS).
-> Windows Named Pipe support is planned for v0.2.0. On Windows, IPC operations will return
-> `IpcError::ConnectionRefused`.
+Cross-platform inter-process communication. Fully implemented on Linux, macOS, and Windows.
 
 ```rust
 #[async_trait]
 pub trait IpcTransport: Send + Sync {
-    /// Connect to an IPC endpoint (returns metadata only)
     async fn connect(endpoint: &str) -> Result<IpcConnection, IpcError>;
-    
-    /// Listen on an IPC endpoint (returns metadata only)
     async fn listen(endpoint: &str) -> Result<IpcListener, IpcError>;
-    
-    /// Send a message
     async fn send(&self, msg: &[u8]) -> Result<(), IpcError>;
-    
-    /// Receive a message
     async fn recv(&self) -> Result<Vec<u8>, IpcError>;
 }
+```
 
+#### Core Types
+
+```rust
 pub struct IpcConnection {
     pub endpoint: String,
 }
@@ -270,7 +235,37 @@ pub struct IpcMessage {
 }
 ```
 
-**IPC Framing Protocol:**
+#### Implementation: `InterprocessTransport`
+
+Platform-specific implementation backing the `IpcTransport` trait:
+
+| Platform | Backend | Notes |
+|----------|---------|-------|
+| Linux/macOS | `interprocess` crate (UDS) | Unix Domain Sockets |
+| Windows | `tokio::net::windows::named_pipe` | Named Pipes (fully implemented v1.0.0) |
+
+```rust
+pub struct InterprocessTransport {
+    // Platform-specific writer: OwnedWriteHalf on Unix, PipeWriter enum on Windows
+    writer: Mutex<WriterType>,
+    // Channel for receiving frames from the background reader task
+    recv_rx: Mutex<mpsc::Receiver<Result<Vec<u8>, IpcError>>>,
+    // Keeps the reader task alive for the lifetime of this transport
+    _reader_task: tokio::task::JoinHandle<()>,
+}
+
+impl InterprocessTransport {
+    /// Connect as a client
+    pub async fn new_client(endpoint: &str) -> Result<Self, IpcError>;
+    
+    /// Create server and accept one connection
+    pub async fn new_server(endpoint: &str) -> Result<Self, IpcError>;
+}
+```
+
+**Design Pattern:** Uses a single background reader task that continuously reads frames and forwards them via an mpsc channel. This avoids concurrent bi-directional split I/O issues (known to panic on macOS with `interprocess` 1.2.1).
+
+#### IPC Framing Protocol
 
 Wire format: **4-byte Big Endian (BE)** length prefix followed by payload bytes.
 Maximum frame payload size: 16 MiB (0x100_0000 bytes).
@@ -289,32 +284,17 @@ pub async fn read_frame<R: AsyncRead + Unpin>(
 ) -> Result<Vec<u8>, IpcError>;
 ```
 
-**Implementation Strategy:**
+#### Testing: `MockIpcTransport`
 
-We use the [`interprocess`](https://crates.io/crates/interprocess) crate which provides:
-- **Unix:** Unix Domain Sockets (highest performance) — ✅ **Implemented in v0.1.0**
-- **Windows:** Named Pipes (native equivalent) — 🚫 **Planned for v0.2.0**
+For unit testing without actual IPC infrastructure:
 
 ```rust
-// Unix implementation (v0.1.0)
-pub struct InterprocessTransport {
-    writer: Mutex<OwnedWriteHalf>,
-    recv_rx: Mutex<mpsc::Receiver<Result<Vec<u8>, IpcError>>>,
-    _reader_task: tokio::task::JoinHandle<()>,
-}
+use claw_pal::traits::ipc::MockIpcTransport;
 
-impl InterprocessTransport {
-    /// Connect as a client to the given endpoint path.
-    pub async fn new_client(endpoint: &str) -> Result<Self, IpcError>;
-    
-    /// Bind a listener, accept exactly one incoming connection.
-    pub async fn new_server(endpoint: &str) -> Result<Self, IpcError>;
-}
+let transport = MockIpcTransport::new("/tmp/test".to_string());
+transport.send(b"test message").await?;
+let msg = transport.recv().await?;
 ```
-
-**Design Note:** The implementation uses a single background reader task that continuously
-reads frames from the socket and forwards them via an mpsc channel. This avoids concurrent
-bi-directional split I/O on the same socket (which panics on macOS with interprocess 1.2.1).
 
 ---
 
@@ -331,12 +311,24 @@ pub trait ProcessManager: Send + Sync {
     async fn wait(&self, handle: ProcessHandle) -> Result<ExitStatus, ProcessError>;
     async fn signal(&self, handle: ProcessHandle, signal: ProcessSignal) -> Result<(), ProcessError>;
 }
+```
 
+#### Configuration Types
+
+```rust
 pub struct ProcessConfig {
     pub program: String,                      // Program name or path
     pub args: Vec<String>,                    // Command-line arguments
     pub env: HashMap<String, String>,         // Environment variables
     pub working_dir: Option<PathBuf>,         // Working directory
+}
+
+impl ProcessConfig {
+    pub fn new(program: String) -> Self;
+    pub fn with_arg(self, arg: String) -> Self;
+    pub fn with_args(self, args: Vec<String>) -> Self;
+    pub fn with_env(self, key: String, value: String) -> Self;
+    pub fn with_working_dir(self, dir: PathBuf) -> Self;
 }
 
 pub struct ProcessHandle {
@@ -356,39 +348,23 @@ pub enum ProcessSignal {
 }
 ```
 
-**Tokio-based Implementation:**
+#### Implementation: `TokioProcessManager`
 
 ```rust
 pub struct TokioProcessManager {
     children: Arc<DashMap<u32, Mutex<Child>>>,
 }
 
+impl TokioProcessManager {
+    pub fn new() -> Self;
+}
+
 impl ProcessManager for TokioProcessManager {
-    async fn spawn(&self, config: ProcessConfig) -> Result<ProcessHandle, ProcessError> {
-        // Uses tokio::process::Command
-        // Stores Child in DashMap keyed by PID
-    }
-    
-    async fn terminate(&self, handle: ProcessHandle, grace_period: Duration) -> Result<(), ProcessError> {
-        // 1. Send SIGTERM (Unix) or skip (Windows)
-        // 2. Wait up to grace_period
-        // 3. If timeout, send SIGKILL/TerminateProcess
-    }
-    
-    async fn kill(&self, handle: ProcessHandle) -> Result<(), ProcessError> {
-        // Send SIGKILL (Unix) or TerminateProcess (Windows)
-        // Reap the zombie via wait()
-    }
-    
-    async fn wait(&self, handle: ProcessHandle) -> Result<ExitStatus, ProcessError> {
-        // Block until process exits
-        // Return ExitStatus with code and success flag
-    }
-    
-    async fn signal(&self, handle: ProcessHandle, signal: ProcessSignal) -> Result<(), ProcessError> {
-        // Map ProcessSignal to platform-specific signal
-        // On Windows: Term/Interrupt fall back to kill()
-    }
+    async fn spawn(&self, config: ProcessConfig) -> Result<ProcessHandle, ProcessError>;
+    async fn terminate(&self, handle: ProcessHandle, grace_period: Duration) -> Result<(), ProcessError>;
+    async fn kill(&self, handle: ProcessHandle) -> Result<(), ProcessError>;
+    async fn wait(&self, handle: ProcessHandle) -> Result<ExitStatus, ProcessError>;
+    async fn signal(&self, handle: ProcessHandle, signal: ProcessSignal) -> Result<(), ProcessError>;
 }
 ```
 
@@ -396,16 +372,98 @@ impl ProcessManager for TokioProcessManager {
 
 | Concept | Linux/macOS | Windows |
 |---------|-------------|---------|
-| Graceful stop | SIGTERM | Ctrl+C event → TerminateProcess |
+| Graceful stop | SIGTERM | Ctrl+C → TerminateProcess |
 | Force kill | SIGKILL | TerminateProcess |
 | Interrupt | SIGINT | TerminateProcess (fallback) |
 | Status check | waitpid | GetExitCodeProcess |
 
 ---
 
+## Policy Types
+
+### Network Rules
+
+```rust
+pub struct NetRule {
+    pub host: String,                         // Hostname or IP address
+    pub port: Option<u16>,                    // Port number (None = all ports)
+    pub allow: bool,                          // Allow (true) or deny (false)
+}
+
+impl NetRule {
+    pub fn new(host: String, port: Option<u16>, allow: bool) -> Self;
+    pub fn allow(host: String) -> Self;
+    pub fn allow_port(host: String, port: u16) -> Self;
+    pub fn deny(host: String) -> Self;
+}
+```
+
+### Filesystem Rules
+
+```rust
+pub struct PathRule {
+    pub path: PathBuf,
+    pub read: bool,
+    pub write: bool,
+    pub execute: bool,
+}
+
+impl PathRule {
+    pub fn new(path: PathBuf) -> Self;        // All permissions disabled
+    pub fn with_read(self) -> Self;
+    pub fn with_write(self) -> Self;
+    pub fn with_execute(self) -> Self;
+}
+```
+
+### Resource Limits
+
+```rust
+pub struct ResourceLimits {
+    pub max_memory_bytes: Option<u64>,        // Maximum memory in bytes
+    pub max_cpu_percent: Option<u8>,          // Maximum CPU usage (0-100)
+    pub max_file_descriptors: Option<u32>,    // Maximum number of open FDs
+    pub max_processes: Option<u32>,           // Maximum number of processes
+}
+
+impl ResourceLimits {
+    pub fn unlimited() -> Self;
+    pub fn restrictive() -> Self;             // 256MB, 50% CPU, 256 FDs, 10 procs
+    
+    // Builder methods
+    pub fn with_memory(self, bytes: u64) -> Self;
+    pub fn with_cpu(self, percent: u8) -> Self;    // clamped to 100
+    pub fn with_fds(self, count: u32) -> Self;
+    pub fn with_processes(self, count: u32) -> Self;
+}
+```
+
+### Syscall Policy
+
+```rust
+pub enum SyscallPolicy {
+    AllowAll,                                 // Allow all syscalls
+    DenyAll,                                  // Deny dangerous syscalls
+    Allowlist(Vec<String>),                   // Allow only specific syscalls by name
+}
+```
+
+### Execution Mode
+
+```rust
+pub enum ExecutionMode {
+    Safe,                                     // Restricted access (default)
+    Power,                                    // Full system access (opt-in)
+}
+```
+
+---
+
 ## Configuration Directories
 
 Cross-platform config/data/cache directory handling via the [`dirs`](https://crates.io/crates/dirs) crate.
+
+### Module Functions
 
 ```rust
 pub mod dirs {
@@ -417,10 +475,16 @@ pub mod dirs {
     /// - Windows: %APPDATA%\claw-kernel\
     pub fn config_dir() -> Option<PathBuf>;
     
-    /// Data directory (tools, scripts, persistent state)
+    /// Data directory
+    /// - Linux: ~/.local/share/claw-kernel/
+    /// - macOS: ~/Library/Application Support/claw-kernel/
+    /// - Windows: %APPDATA%\claw-kernel\
     pub fn data_dir() -> Option<PathBuf>;
     
     /// Cache directory
+    /// - Linux: ~/.cache/claw-kernel/
+    /// - macOS: ~/Library/Caches/claw-kernel/
+    /// - Windows: %LOCALAPPDATA%\claw-kernel\Cache
     pub fn cache_dir() -> Option<PathBuf>;
     
     /// Tools directory (hot-loaded scripts)
@@ -438,8 +502,11 @@ pub mod dirs {
     /// Power key file path
     pub fn power_key_path() -> Option<PathBuf>;
 }
+```
 
-/// Kernel directory paths (convenience struct)
+### Convenience Struct
+
+```rust
 pub struct KernelDirs {
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
@@ -459,93 +526,125 @@ impl KernelDirs {
 
 ## Security Module
 
-Power Key validation, Argon2 hashing, and mode transition guards.
+Power Key validation, Argon2 hashing, and mode transition guards. Implements the dual-mode security model described in [ADR-003](../adr/003-security-model.md).
+
+### Power Key Validator
+
+Validates Power Key strength requirements:
+- Minimum 12 characters
+- At least 2 distinct character types (uppercase, lowercase, digit, special)
 
 ```rust
-/// Validates Power Key strength requirements.
 pub struct PowerKeyValidator;
 
 impl PowerKeyValidator {
-    /// Validate a Power Key against security requirements.
-    /// Rules:
-    /// - Length >= 12 characters
-    /// - At least 2 distinct character types (uppercase, lowercase, digit, special)
     pub fn validate(key: &str) -> Result<(), SecurityError>;
 }
+```
 
-/// Argon2 hashed Power Key for secure storage.
+### Power Key Hash (Argon2)
+
+For secure persistent storage with Argon2 hashing:
+
+```rust
 pub struct PowerKeyHash(String);
 
 impl PowerKeyHash {
+    /// Create new hash from plaintext key (validates key strength first)
     pub fn new(key: &str) -> Result<Self, SecurityError>;
+    
+    /// Verify candidate key against stored hash (constant-time comparison)
     pub fn verify(&self, candidate: &str) -> bool;
+    
+    /// Load hash from previously stored string representation
     pub fn from_string(hash: &str) -> Result<Self, SecurityError>;
 }
 
-/// SHA-256 based Power Key for verification (deterministic, no salt).
+impl fmt::Display for PowerKeyHash {
+    /// Returns the hash string for storage
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
+}
+```
+
+### Power Key (SHA-256)
+
+For deterministic verification (no salt, vulnerable to rainbow table attacks — use only for temporary/in-memory verification):
+
+```rust
 pub struct PowerKey {
     verification_hash: [u8; 32],
 }
 
 impl PowerKey {
+    /// Create new PowerKey from plaintext key (computes SHA-256 hash)
     pub fn new(key: &str) -> Self;
+    
+    /// Verify provided key against stored hash (constant-time comparison)
     pub fn verify(&self, provided: &str) -> bool;
+    
+    /// Load from file containing hex-encoded hash
     pub fn load_from_file(path: &Path) -> Result<Self, SecurityError>;
+    
+    /// Save hash to file as hex-encoded string
     pub fn save_to_file(&self, path: &Path) -> Result<(), SecurityError>;
 }
+```
 
-/// Manages Power Key persistence and retrieval.
+### Power Key Manager
+
+```rust
 pub struct PowerKeyManager;
 
 impl PowerKeyManager {
-    /// Save a Power Key to the config file (hashed with Argon2).
     pub fn save_power_key(key: &str) -> Result<(), SecurityError>;
-    
-    /// Load the stored Power Key hash from config file.
     pub fn load_stored_hash() -> Result<PowerKeyHash, SecurityError>;
-    
-    /// Check if a Power Key has been configured.
     pub fn is_configured() -> bool;
-    
-    /// Resolve the effective Power Key following priority order:
-    /// 1. CLI argument (`--power-key`)
-    /// 2. Environment variable (`CLAW_KERNEL_POWER_KEY`)
-    /// 3. Config file (`~/.config/claw-kernel/power.key`)
     pub fn resolve_power_key(cli_key: Option<String>) -> Option<String>;
 }
+```
 
-/// Guard for mode transitions between Safe and Power modes.
+**Resolution Priority:**
+1. CLI argument (`--power-key`)
+2. Environment variable (`CLAW_KERNEL_POWER_KEY`)
+3. Config file (`~/.config/claw-kernel/power.key`)
+
+### Mode Transition Guard
+
+```rust
 pub struct ModeTransitionGuard;
 
 impl ModeTransitionGuard {
-    /// Attempt to enter Power Mode from Safe Mode.
-    /// Requires a valid Power Key that matches the stored hash.
-    pub fn enter_power_mode(
-        key: &str,
-        stored_hash: &PowerKeyHash,
-    ) -> Result<ExecutionMode, SecurityError>;
+    /// Enter Power Mode from Safe Mode (requires valid key)
+    pub fn enter_power_mode(key: &str, stored_hash: &PowerKeyHash) -> Result<ExecutionMode, SecurityError>;
     
-    /// Attempt to exit Power Mode (always denied).
-    /// Per ADR-003: Power Mode → Safe Mode requires process restart.
+    /// Exit Power Mode - always returns Err(ModeTransitionDenied)
+    /// Power Mode → Safe Mode requires process restart (per ADR-003)
     pub fn exit_power_mode() -> Result<ExecutionMode, SecurityError>;
 }
+```
 
-/// Security-related errors.
+**Important:** `exit_power_mode()` always returns `Err(SecurityError::ModeTransitionDenied)` because Power Mode → Safe Mode requires process restart. This prevents a compromised Power Mode agent from hiding evidence.
+
+### Security Errors
+
+```rust
 pub enum SecurityError {
     KeyTooShort { len: usize, min: usize },
     InsufficientComplexity { found_types: usize, required: usize },
     InvalidPowerKey,
     ModeTransitionDenied { from: ExecutionMode, to: ExecutionMode },
-    HashError(String),
+    HashError(String),                        // Internal hashing error
 }
 ```
 
 ---
 
-## Error Types
+## Error Handling
+
+### Error Types
 
 ```rust
-/// Sandbox-related errors.
+/// Sandbox-related errors
 pub enum SandboxError {
     CreationFailed(String),
     RestrictFailed(String),
@@ -553,7 +652,8 @@ pub enum SandboxError {
     NotSupported,
 }
 
-/// IPC-related errors.
+/// IPC-related errors
+#[non_exhaustive]
 pub enum IpcError {
     ConnectionRefused,
     Timeout,
@@ -562,7 +662,7 @@ pub enum IpcError {
     PermissionDenied,
 }
 
-/// Process-related errors.
+/// Process-related errors
 pub enum ProcessError {
     SpawnFailed(String),
     SignalFailed(String),
@@ -571,15 +671,21 @@ pub enum ProcessError {
     InvalidSignal,
 }
 
-/// Unified error type for claw-pal operations.
+/// Unified error type
 pub enum PalError {
-    Sandbox(SandboxError),
-    Ipc(IpcError),
-    Process(ProcessError),
+    Sandbox(#[from] SandboxError),
+    Ipc(#[from] IpcError),
+    Process(#[from] ProcessError),
     PermissionDenied(String),
     Io(String),
 }
 ```
+
+### Best Practices
+
+1. **Use `PalError` for general operations** — Automatically converts from specific error types
+2. **Handle `#[non_exhaustive]` IPC errors** — New variants may be added in future versions
+3. **Check `SecurityError` variants** — Provide user-friendly messages for key validation failures
 
 ---
 
@@ -588,13 +694,23 @@ pub enum PalError {
 | Feature | Linux | macOS | Windows |
 |---------|:-----:|:-----:|:-------:|
 | **Sandbox Strength** | ⭐⭐⭐ | ⭐⭐ | ⭐⭐ (stub) |
-| Filesystem isolation | Strong | Medium | Medium (planned) |
-| Network isolation | Strong | Limited | Limited (planned) |
+| Filesystem isolation | Strong (seccomp + mount ns) | Medium (sandbox(7)) | Medium (planned) |
+| Network isolation | Strong (seccomp-bpf) | Limited (SBPL) | Limited (planned) |
 | Syscall filtering | seccomp-bpf | SBPL operations | Limited (planned) |
-| **IPC Performance** (relative to Linux UDS baseline) | 100% | 95% | N/A (v0.2.0) |
+| Process isolation | pid namespace | Standard | Job Objects (planned) |
+| **IPC** | UDS | UDS | Named Pipes |
+| **IPC Performance** (relative to Linux) | 100% | 95% | 90% |
 | **Build Complexity** | Low | Low | Medium |
 | MSVC required | No | No | Yes |
 | Sandbox testing | Easy | Medium | Complex |
+
+### Implementation Status Summary
+
+| Component | Linux | macOS | Windows |
+|-----------|:-----:|:-----:|:-------:|
+| `LinuxSandbox`/`MacOSSandbox`/`WindowsSandbox` | ✅ Full | ✅ Full | ⚠️ Stub |
+| `InterprocessTransport` | ✅ UDS | ✅ UDS | ✅ Named Pipes |
+| `TokioProcessManager` | ✅ Full | ✅ Full | ✅ Full |
 
 ---
 
@@ -603,7 +719,7 @@ pub enum PalError {
 ### Linux
 
 **Strengths:**
-- Strongest sandboxing (seccomp + namespaces)
+- Strongest sandboxing (seccomp-bpf + namespaces)
 - Best performance
 - Native containers
 
@@ -631,6 +747,7 @@ unshare -U cargo test
 - Sandbox profiles are declarative and limited
 - No equivalent to seccomp for syscall filtering
 - Code signing affects sandbox behavior
+- `sandbox_init()` is **irreversible** — once applied, cannot be removed
 
 **Testing:**
 ```bash
@@ -641,14 +758,13 @@ cargo test --features sandbox-tests
 
 ### Windows
 
-**Status for v0.1.0:**
-- AppContainer sandbox: **Stub implementation**
-- Named Pipe IPC: **Not implemented** (returns `IpcError::ConnectionRefused`)
+**Status for v1.0.0:**
+- AppContainer sandbox: **Stub implementation** (returns handle without actual sandbox)
+- Named Pipe IPC: **Fully implemented** via `tokio::net::windows::named_pipe`
 - Process management: **Full implementation** via Tokio
 
-**Planned for v0.2.0:**
+**Planned for future versions:**
 - Full AppContainer implementation with `CreateAppContainerProfile()`
-- Named Pipe IPC support
 - Job Objects for resource limits
 
 **Gotchas:**
@@ -670,7 +786,6 @@ To add support for a new platform (e.g., FreeBSD, Android):
    └── freebsd/
        ├── mod.rs
        ├── sandbox.rs
-       ├── ipc.rs
        └── process.rs
    ```
 
@@ -695,5 +810,6 @@ To add support for a new platform (e.g., FreeBSD, Android):
 - [macOS Platform Guide](../platform/macos.md)
 - [Windows Platform Guide](../platform/windows.md)
 - [Architecture Overview](overview.md)
+- [ADR-003: Dual-Mode Security](../adr/003-security-model.md)
 
 ---

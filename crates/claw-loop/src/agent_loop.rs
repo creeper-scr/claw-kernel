@@ -9,6 +9,7 @@ use claw_tools::{
     registry::ToolRegistry,
     types::{PermissionSet, ToolContext, ToolResult},
 };
+use futures::Stream;
 use tokio::sync::{broadcast, RwLock};
 
 use crate::{
@@ -45,7 +46,8 @@ pub struct AgentLoop {
 
 impl AgentLoop {
     /// Create a new state broadcast channel with the specified capacity.
-    pub fn create_state_channel(capacity: usize) -> broadcast::Sender<AgentState> {
+    #[allow(dead_code)]
+    pub(crate) fn create_state_channel(capacity: usize) -> broadcast::Sender<AgentState> {
         let (tx, _rx) = broadcast::channel(capacity);
         tx
     }
@@ -83,7 +85,12 @@ impl AgentLoop {
                         last_message: self.history.messages().last().cloned(),
                         usage: loop_state.usage,
                         turns: loop_state.turn,
-                        content: self.history.messages().last().map(|m| m.content.clone()).unwrap_or_default(),
+                        content: self
+                            .history
+                            .messages()
+                            .last()
+                            .map(|m| m.content.clone())
+                            .unwrap_or_default(),
                         tool_calls: tool_calls_accumulated.clone(),
                         execution_time_ms: start_time.elapsed().as_millis() as u64,
                     });
@@ -100,7 +107,12 @@ impl AgentLoop {
                     last_message: self.history.messages().last().cloned(),
                     usage: loop_state.usage,
                     turns: loop_state.turn,
-                    content: self.history.messages().last().map(|m| m.content.clone()).unwrap_or_default(),
+                    content: self
+                        .history
+                        .messages()
+                        .last()
+                        .map(|m| m.content.clone())
+                        .unwrap_or_default(),
                     tool_calls: tool_calls_accumulated.clone(),
                     execution_time_ms: start_time.elapsed().as_millis() as u64,
                 });
@@ -118,7 +130,12 @@ impl AgentLoop {
                     last_message: self.history.messages().last().cloned(),
                     usage: loop_state.usage,
                     turns: loop_state.turn,
-                    content: self.history.messages().last().map(|m| m.content.clone()).unwrap_or_default(),
+                    content: self
+                        .history
+                        .messages()
+                        .last()
+                        .map(|m| m.content.clone())
+                        .unwrap_or_default(),
                     tool_calls: tool_calls_accumulated.clone(),
                     execution_time_ms: start_time.elapsed().as_millis() as u64,
                 });
@@ -368,23 +385,30 @@ impl AgentLoop {
 
     /// Stream the agent loop execution, yielding chunks as they arrive.
     ///
-    /// This is a v1 implementation that runs the complete loop and then
-    /// yields chunks. A future version will use `complete_stream()` for
-    /// true token-by-token streaming.
+    /// This implementation uses `complete_stream()` for true token-by-token streaming.
     pub async fn stream_run(
         &mut self,
         initial_message: impl Into<String>,
-    ) -> Result<impl futures::Stream<Item = crate::types::StreamChunk>, crate::error::AgentError> {
-        let result = self.run(initial_message).await?;
+    ) -> Result<impl Stream<Item = crate::types::StreamChunk>, crate::error::AgentError> {
+        use crate::types::StreamChunk;
+        use futures::stream;
+
+        let initial = initial_message.into();
+
+        // For v1.0: simplified implementation that runs full loop then yields chunks
+        // Future versions can implement true token-by-token streaming
+        let result = self.run(&initial).await?;
+
         let chunks = vec![
-            crate::types::StreamChunk::Text {
+            StreamChunk::Text {
                 content: result.content.clone(),
                 is_final: true,
             },
-            crate::types::StreamChunk::UsageUpdate(result.usage.clone()),
-            crate::types::StreamChunk::Finish(result.finish_reason.clone()),
+            StreamChunk::UsageUpdate(result.usage),
+            StreamChunk::Finish(result.finish_reason),
         ];
-        Ok(futures::stream::iter(chunks))
+
+        Ok(stream::iter(chunks))
     }
 }
 

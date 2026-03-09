@@ -171,10 +171,7 @@ mod tests {
         let lua = Lua::new();
         register_agent(&lua, bridge).unwrap();
 
-        let agent_id: String = lua
-            .load(r#"return agent:spawn("worker")"#)
-            .eval()
-            .unwrap();
+        let agent_id: String = lua.load(r#"return agent:spawn("worker")"#).eval().unwrap();
 
         assert!(!agent_id.is_empty());
         assert_eq!(orc.agent_count(), 1);
@@ -188,12 +185,11 @@ mod tests {
         let lua = Lua::new();
         register_agent(&lua, bridge).unwrap();
 
-        lua.load(r#"_id = agent:spawn("test-agent")"#).exec().unwrap();
-
-        let status: String = lua
-            .load(r#"return agent:status(_id)"#)
-            .eval()
+        lua.load(r#"_id = agent:spawn("test-agent")"#)
+            .exec()
             .unwrap();
+
+        let status: String = lua.load(r#"return agent:status(_id)"#).eval().unwrap();
         assert_eq!(status, "running");
     }
 
@@ -220,10 +216,12 @@ mod tests {
         let lua = Lua::new();
         register_agent(&lua, bridge).unwrap();
 
-        lua.load(r#"
+        lua.load(
+            r#"
             _id = agent:spawn("ephemeral")
             agent:kill(_id)
-        "#)
+        "#,
+        )
         .exec()
         .unwrap();
 
@@ -238,18 +236,22 @@ mod tests {
         let lua = Lua::new();
         register_agent(&lua, bridge).unwrap();
 
-        lua.load(r#"
+        lua.load(
+            r#"
             agent:spawn("a")
             agent:spawn("b")
-        "#)
+        "#,
+        )
         .exec()
         .unwrap();
 
         let count: i64 = lua
-            .load(r#"
+            .load(
+                r#"
                 local children = agent:list()
                 return #children
-            "#)
+            "#,
+            )
             .eval()
             .unwrap();
         assert_eq!(count, 2);
@@ -264,10 +266,12 @@ mod tests {
             let lua = Lua::new();
             register_agent(&lua, bridge).unwrap();
 
-            lua.load(r#"
+            lua.load(
+                r#"
                 agent:spawn("temp1")
                 agent:spawn("temp2")
-            "#)
+            "#,
+            )
             .exec()
             .unwrap();
 
@@ -276,7 +280,11 @@ mod tests {
         }
 
         // After drop, children should be cleaned up.
-        assert_eq!(orc.agent_count(), 0, "auto-cleanup should remove all children");
+        assert_eq!(
+            orc.agent_count(),
+            0,
+            "auto-cleanup should remove all children"
+        );
     }
 
     #[test]
@@ -290,10 +298,12 @@ mod tests {
         lua.load(r#"_id = agent:spawn("my-agent")"#).exec().unwrap();
 
         let has_info: bool = lua
-            .load(r#"
+            .load(
+                r#"
                 local info = agent:info(_id)
                 return info ~= nil and info.status == "running"
-            "#)
+            "#,
+            )
             .eval()
             .unwrap();
         assert!(has_info);

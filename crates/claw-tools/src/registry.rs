@@ -14,7 +14,7 @@ static AUDIT_COUNTER: AtomicU64 = AtomicU64::new(1);
 use crate::{
     error::RegistryError,
     traits::Tool,
-    types::{LogEntry, SubprocessPolicy, ToolContext, ToolError, ToolMeta, ToolResult},
+    types::{LogEntry, SubprocessPolicy, ToolContext, ToolError, ToolMeta, ToolResult, LoadedToolMeta},
 };
 
 /// Thread-safe tool registry with permission checking and timeout execution.
@@ -22,6 +22,10 @@ pub struct ToolRegistry {
     tools: DashMap<String, Arc<dyn Tool>>,
     audit_log: RwLock<BTreeMap<u64, LogEntry>>, // key → entry (ordered by ID)
     max_audit_entries: usize,
+    /// Hot reload processor (if enabled)
+    hot_reload: tokio::sync::RwLock<Option<crate::hot_reload::HotReloadProcessor>>,
+    /// Loaded script tools metadata
+    script_tools: DashMap<String, LoadedToolMeta>,
 }
 
 impl ToolRegistry {
@@ -31,6 +35,8 @@ impl ToolRegistry {
             tools: DashMap::new(),
             audit_log: RwLock::new(BTreeMap::new()),
             max_audit_entries: 10_000,
+            hot_reload: tokio::sync::RwLock::new(None),
+            script_tools: DashMap::new(),
         }
     }
 
@@ -52,6 +58,37 @@ impl ToolRegistry {
     }
 
     /// Register a tool. Returns `RegistryError::AlreadyExists` if already registered.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use claw_tools::{ToolRegistry, Tool, ToolSchema, PermissionSet, ToolContext, ToolResult};
+    /// use async_trait::async_trait;
+    ///
+    /// struct MyTool;
+    ///
+    /// #[async_trait]
+    /// impl Tool for MyTool {
+    ///     fn name(&self) -> &str { "my_tool" }
+    ///     fn description(&self) -> &str { "A useful tool" }
+    ///     fn schema(&self) -> &ToolSchema {
+    ///         static SCHEMA: std::sync::OnceLock<ToolSchema> = std::sync::OnceLock::new();
+    ///         SCHEMA.get_or_init(|| ToolSchema::new("my_tool", "A useful tool", serde_json::json!({})))
+    ///     }
+    ///     fn permissions(&self) -> &PermissionSet {
+    ///         static PERMS: std::sync::OnceLock<PermissionSet> = std::sync::OnceLock::new();
+    ///         PERMS.get_or_init(PermissionSet::minimal)
+    ///     }
+    ///     async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
+    ///         ToolResult::ok(args, 0)
+    ///     }
+    /// }
+    ///
+    /// let registry = ToolRegistry::new();
+    /// registry.register(Box::new(MyTool)).expect("registration succeeds");
+    /// assert_eq!(registry.tool_count(), 1);
+    /// assert!(registry.tool_names().contains(&"my_tool".to_string()));
+    /// ```
     pub fn register(&self, tool: Box<dyn Tool>) -> Result<(), RegistryError> {
         let name = tool.name().to_string();
         if self.tools.contains_key(&name) {
@@ -342,6 +379,146 @@ impl ToolRegistry {
                 }
             }
         }
+    }
+}
+
+// =============================================================================
+// Hot-loading API
+// =============================================================================
+
+impl ToolRegistry {
+    /// Load a tool from a script file.
+    ///
+    /// # Arguments
+    /// * `path` - Path to the script file
+    ///
+    /// # Returns
+    /// * `Ok(ToolMeta)` - Tool metadata loaded successfully
+    /// * `Err(LoadError)` - Loading failed
+    ///
+    /// # Note
+    /// This loads metadata only. Actual script compilation requires
+    /// ScriptEngine integration (application layer responsibility).
+    pub async fn load_from_script(&self, path: &std::path::Path) -> Result<ToolMeta, crate::types::LoadError> {
+        use crate::types::{ScriptLanguage, ToolSchema, PermissionSet, ToolSource};
+        use std::time::Duration;
+
+        if !path.exists() {
+            return Err(crate::types::LoadError::IoError(format!(
+                "File not found: {}",
+                path.display()
+            )));
+        }
+
+        let _content = tokio::fs::read_to_string(path)
+            .await
+            .map_err(|e| crate::types::LoadError::IoError(e.to_string()))?;
+
+        let extension = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+
+        let language = match extension {
+            "lua" => ScriptLanguage::Lua,
+            "js" | "ts" => ScriptLanguage::TypeScript,
+            "py" => ScriptLanguage::Python,
+            _ => {
+                return Err(crate::types::LoadError::ParseError {
+                    path: path.display().to_string(),
+                    message: format!("Unknown script extension: {}", extension),
+                });
+            }
+        };
+
+        let tool_name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| crate::types::LoadError::ParseError {
+                path: path.display().to_string(),
+                message: "Invalid file name".to_string(),
+            })?;
+
+        let meta = ToolMeta {
+            schema: ToolSchema::new(
+                tool_name,
+                format!("Script tool from {}", path.display()),
+                serde_json::json!({"type": "object", "properties": {}}),
+            ),
+            permissions: PermissionSet::minimal(),
+            timeout: Duration::from_secs(30),
+            source: ToolSource::Script {
+                path: path.to_path_buf(),
+                language,
+            },
+        };
+
+        self.script_tools.insert(
+            tool_name.to_string(),
+            LoadedToolMeta {
+                name: tool_name.to_string(),
+                source: meta.source.clone(),
+                loaded_at: std::time::SystemTime::now(),
+            },
+        );
+
+        Ok(meta)
+    }
+
+    /// Load all tools from a directory.
+    pub async fn load_from_directory(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<Vec<ToolMeta>, crate::types::LoadError> {
+        let mut results = Vec::new();
+
+        let mut entries = tokio::fs::read_dir(path)
+            .await
+            .map_err(|e| crate::types::LoadError::IoError(e.to_string()))?;
+
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| crate::types::LoadError::IoError(e.to_string()))?
+        {
+            let path = entry.path();
+            if path.is_file() {
+                match self.load_from_script(&path).await {
+                    Ok(meta) => results.push(meta),
+                    Err(e) => {
+                        tracing::warn!("Failed to load tool from {:?}: {}", path, e);
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Unload a script tool.
+    pub fn unload(&self, name: &str) -> Result<(), RegistryError> {
+        self.script_tools.remove(name);
+        self.unregister(name)
+    }
+
+    /// Enable hot-loading for the registry.
+    pub async fn enable_hot_loading(
+        &self,
+        config: crate::types::HotLoadingConfig,
+    ) -> Result<(), crate::types::WatchError> {
+        config.validate().map_err(|e| crate::types::WatchError::InvalidConfig(e))?;
+
+        // Placeholder: actual implementation requires ScriptEngine integration
+        tracing::info!("Hot-loading enabled with config: {:?}", config);
+
+        Ok(())
+    }
+
+    /// Disable hot-loading.
+    pub async fn disable_hot_loading(&self) {
+        let mut guard = self.hot_reload.write().await;
+        *guard = None;
+        tracing::info!("Hot-loading disabled");
     }
 }
 

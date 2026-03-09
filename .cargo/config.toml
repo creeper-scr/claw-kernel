@@ -1,0 +1,16 @@
+# Cargo configuration for claw-kernel workspace
+
+[build]
+# Use all available cores for compilation
+rustflags = []
+
+[test]
+# Limit concurrent test threads to prevent resource exhaustion
+# Reasons:
+# 1. spawn_blocking thread pool saturation (default 512)
+# 2. EventBus capacity (1024) overflow with many concurrent tests
+# 3. IPC resource contention (Unix sockets/Named pipes)
+#
+# With 4 threads, we allow enough parallelism while keeping
+# EventBus events, thread pool tasks, and IPC connections manageable
+test-threads = 4

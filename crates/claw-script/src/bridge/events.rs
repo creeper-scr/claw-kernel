@@ -47,7 +47,11 @@ impl EventsBridge {
     /// Create a new EventsBridge.
     ///
     /// The Lua instance must be the same one that will execute scripts.
-    pub fn new(lua: &Lua, event_bus: Arc<EventBus>, agent_id: impl Into<String>) -> LuaResult<Self> {
+    pub fn new(
+        lua: &Lua,
+        event_bus: Arc<EventBus>,
+        agent_id: impl Into<String>,
+    ) -> LuaResult<Self> {
         let rx = event_bus.subscribe();
         let callbacks_tbl = lua.create_table()?;
         let callbacks_key = lua.create_registry_value(callbacks_tbl)?;
@@ -301,18 +305,17 @@ impl UserData for EventsBridge {
                     let len = callbacks.raw_len();
 
                     for i in 1..=(len as i64) {
-                        let entry: mlua::Table =
-                            match callbacks.raw_get::<i64, mlua::Value>(i)? {
-                                mlua::Value::Table(t) => t,
-                                _ => continue,
-                            };
+                        let entry: mlua::Table = match callbacks.raw_get::<i64, mlua::Value>(i)? {
+                            mlua::Value::Table(t) => t,
+                            _ => continue,
+                        };
 
                         // Check if this entry is still alive (fn may be nil for spent once-callbacks).
-                        let func: Option<mlua::Function> = match entry.get::<_, mlua::Value>("fn")?
-                        {
-                            mlua::Value::Function(f) => Some(f),
-                            _ => None,
-                        };
+                        let func: Option<mlua::Function> =
+                            match entry.get::<_, mlua::Value>("fn")? {
+                                mlua::Value::Function(f) => Some(f),
+                                _ => None,
+                            };
                         let once: bool = entry.get::<_, bool>("once").unwrap_or(false);
 
                         if let Some(func) = func {

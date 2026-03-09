@@ -1,5 +1,5 @@
-use claw_pal::{ProcessConfig, TokioProcessManager};
 use claw_pal::traits::ProcessManager;
+use claw_pal::{ProcessConfig, TokioProcessManager};
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -399,8 +399,8 @@ mod tests {
         let config = AgentConfig::new("echo-agent");
         let agent_id = config.agent_id.clone();
 
-        let process_config = ProcessConfig::new("echo".to_string())
-            .with_arg("hello from claw-runtime".to_string());
+        let process_config =
+            ProcessConfig::new("echo".to_string()).with_arg("hello from claw-runtime".to_string());
 
         let handle = orc
             .spawn(config, process_config)
@@ -455,8 +455,11 @@ mod tests {
         #[cfg(unix)]
         let pc = ProcessConfig::new("sleep".to_string()).with_arg("60".to_string());
         #[cfg(windows)]
-        let pc = ProcessConfig::new("ping".to_string())
-            .with_args(vec!["-n".to_string(), "60".to_string(), "127.0.0.1".to_string()]);
+        let pc = ProcessConfig::new("ping".to_string()).with_args(vec![
+            "-n".to_string(),
+            "60".to_string(),
+            "127.0.0.1".to_string(),
+        ]);
 
         orc.spawn(config, pc).await.expect("spawn should succeed");
         assert_eq!(orc.agent_count(), 1);
@@ -479,14 +482,15 @@ mod tests {
         #[cfg(unix)]
         let pc = ProcessConfig::new("sleep".to_string()).with_arg("60".to_string());
         #[cfg(windows)]
-        let pc = ProcessConfig::new("ping".to_string())
-            .with_args(vec!["-n".to_string(), "60".to_string(), "127.0.0.1".to_string()]);
+        let pc = ProcessConfig::new("ping".to_string()).with_args(vec![
+            "-n".to_string(),
+            "60".to_string(),
+            "127.0.0.1".to_string(),
+        ]);
 
         orc.spawn(config, pc).await.expect("spawn should succeed");
 
-        orc.kill(&agent_id)
-            .await
-            .expect("kill should succeed");
+        orc.kill(&agent_id).await.expect("kill should succeed");
 
         assert_eq!(orc.agent_count(), 0);
     }

@@ -201,6 +201,23 @@ Available permissions:
 
 ---
 
+## Error Types
+
+```rust
+use claw_tools::{LoadError, WatchError};
+
+// Loading errors (from load_from_script/load_from_directory)
+let err = LoadError::ParseError {
+    path: "/tools/my_tool.lua".to_string(),
+    message: "Invalid syntax at line 10".to_string(),
+};
+
+// Watch errors (from enable_hot_loading)
+let err = WatchError::InvalidConfig("watch_dirs cannot be empty".to_string());
+```
+
+---
+
 ## Hot-Loading
 
 The hot-reload system provides file watching, debouncing, and atomic hot-swapping capabilities.

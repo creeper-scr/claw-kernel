@@ -5,6 +5,8 @@ edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Platform Abstraction Layer — IPC, process management, sandbox, dirs"
+repository.workspace = true
 
 [dependencies]
 async-trait = { workspace = true }
@@ -28,6 +30,9 @@ nix = { workspace = true, features = ["resource"] }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27.1", features = ["process", "sched", "signal"] }
+
+[target.'cfg(windows)'.dependencies]
+tokio = { workspace = true, features = ["net"] }
 
 [features]
 default = []

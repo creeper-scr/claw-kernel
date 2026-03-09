@@ -1,14 +1,15 @@
 ---
 title: "ADR-011: Multi-Language Support via IPC Daemon (KernelServer)"
 description: "Non-Rust applications access the kernel through a local IPC daemon rather than a Rust library dependency"
-status: proposed
+status: accepted
+accepted_date: 2026-03-08
 date: 2026-03-08
 type: adr
 ---
 
 # ADR-011: Multi-Language Support via IPC Daemon (KernelServer)
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-03-08
 **Deciders:** claw-kernel core team
 

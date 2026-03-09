@@ -371,6 +371,23 @@ pub trait HttpTransportExt: HttpTransport {
 /// # }
 /// ```
 ///
+/// Using Anthropic provider with environment-based setup:
+///
+/// ```rust,ignore
+/// use claw_provider::{AnthropicProvider, traits::LLMProvider};
+/// use claw_provider::types::{Message, Options};
+///
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let provider = AnthropicProvider::from_env()?;
+///     let messages = vec![Message::user("Hello")];
+///     let opts = Options::new("claude-3-opus-20240229");
+///     let response = provider.complete(messages, opts).await?;
+///     println!("{}", response.message.content);
+///     Ok(())
+/// }
+/// ```
+///
 /// Implementing a custom provider:
 ///
 /// ```rust

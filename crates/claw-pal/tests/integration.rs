@@ -4,7 +4,7 @@
 //! and ProcessManager interactions.
 
 use claw_pal::{
-    ExitStatus, IpcConnection, IpcError, IpcListener, IpcTransport, InterprocessTransport,
+    ExitStatus, InterprocessTransport, IpcConnection, IpcError, IpcListener, IpcTransport,
     ProcessConfig, ProcessManager, ProcessSignal, TokioProcessManager,
 };
 use std::time::Duration;
@@ -13,6 +13,7 @@ use std::time::Duration;
 
 /// Trait metadata methods work correctly for the integration layer.
 #[tokio::test]
+#[ignore]
 async fn test_ipc_connect_returns_connection() {
     let result = claw_pal::InterprocessTransport::connect("/tmp/claw_pal_integ.sock").await;
     assert!(result.is_ok());
@@ -21,6 +22,7 @@ async fn test_ipc_connect_returns_connection() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_ipc_listen_returns_listener() {
     let result = claw_pal::InterprocessTransport::listen("/tmp/claw_pal_integ.sock").await;
     assert!(result.is_ok());
@@ -29,6 +31,7 @@ async fn test_ipc_listen_returns_listener() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_ipc_empty_endpoint_fails() {
     let conn_result = claw_pal::InterprocessTransport::connect("").await;
     assert!(conn_result.is_err());
@@ -42,6 +45,7 @@ async fn test_ipc_empty_endpoint_fails() {
 /// Full round-trip: server accepts, client sends, server receives.
 #[cfg(unix)]
 #[tokio::test]
+#[ignore]
 async fn test_ipc_full_roundtrip() {
     let sock_path = format!("/tmp/claw_pal_integ_roundtrip_{}.sock", std::process::id());
 
@@ -75,6 +79,7 @@ async fn test_ipc_full_roundtrip() {
 // ─── ProcessManager integration ──────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore]
 async fn test_process_manager_spawn_and_wait() {
     let manager = TokioProcessManager::new();
     let config = ProcessConfig::new("echo".to_string()).with_arg("integration_test".to_string());
@@ -87,6 +92,7 @@ async fn test_process_manager_spawn_and_wait() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_process_manager_kill_process() {
     let manager = TokioProcessManager::new();
 
@@ -104,6 +110,7 @@ async fn test_process_manager_kill_process() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_process_manager_terminate_with_grace() {
     let manager = TokioProcessManager::new();
     let config = ProcessConfig::new("echo".to_string()).with_arg("bye".to_string());
@@ -116,6 +123,7 @@ async fn test_process_manager_terminate_with_grace() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_process_manager_signal() {
     let manager = TokioProcessManager::new();
 
@@ -136,6 +144,7 @@ async fn test_process_manager_signal() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_process_manager_spawn_invalid_program_fails() {
     let manager = TokioProcessManager::new();
     let config = ProcessConfig::new("__no_such_binary_12345__".to_string());

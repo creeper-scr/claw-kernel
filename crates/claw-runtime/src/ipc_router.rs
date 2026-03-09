@@ -101,7 +101,11 @@ impl IpcRouter {
     /// Route a message to its target (local or remote).
     ///
     /// First checks if the target is a local agent, then falls back to remote.
+    /// Emits an `Event::A2A` when a message is successfully routed.
     pub async fn route_message(&self, message: A2AMessage) -> Result<(), RuntimeError> {
+        // Publish A2A event before routing
+        let _ = self.event_bus.publish(Event::A2A(message.clone()));
+
         // Check if target is local
         if let Some(target) = &message.target {
             if self.router.is_agent_registered(target).await {
@@ -160,18 +164,13 @@ impl IpcRouter {
                 #[cfg(unix)]
                 let _ = std::fs::remove_file(&endpoint);
 
-                let transport =
-                    match InterprocessTransport::new_server(&endpoint).await {
-                        Ok(t) => t,
-                        Err(e) => {
-                            tracing::error!(
-                                "IpcRouter: failed to bind on {}: {}",
-                                endpoint,
-                                e
-                            );
-                            break;
-                        }
-                    };
+                let transport = match InterprocessTransport::new_server(&endpoint).await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::error!("IpcRouter: failed to bind on {}: {}", endpoint, e);
+                        break;
+                    }
+                };
 
                 let router_clone = Arc::clone(&router);
                 let event_bus_clone = Arc::clone(&event_bus);
@@ -196,11 +195,17 @@ impl IpcRouter {
         while let Ok(bytes) = transport.recv().await {
             match Self::decode_message(&bytes) {
                 Ok(message) => {
+                    // Publish message received notification (metadata only)
                     let _ = event_bus.publish(Event::MessageReceived {
                         agent_id: message.source.clone(),
                         channel: "ipc".to_string(),
                         message_type: format!("{:?}", message.message_type),
                     });
+
+                    // Publish the full A2A event
+                    let _ = event_bus.publish(Event::A2A(message.clone()));
+
+                    // Route message to local agent
                     let _ = router.route_message(message).await;
                 }
                 Err(e) => tracing::warn!("IpcRouter: decode error: {e}"),
@@ -468,5 +473,46 @@ mod tests {
 
         let result = router.send(&target_id, msg).await;
         assert!(result.is_ok());
+    }
+
+    // ── test_ipc_router_emits_a2a_event ────────────────────────
+    #[tokio::test]
+    async fn test_ipc_router_emits_a2a_event() {
+        use crate::event_bus::EventFilter;
+        use crate::events::Event;
+
+        let bus = Arc::new(EventBus::new());
+        let router = IpcRouter::new(Arc::clone(&bus), "/tmp/claw-test-a2a.sock");
+
+        // Register a local agent
+        let target_id = AgentId::new("target-agent");
+        let _handle = router.register_agent(target_id.clone(), 100).await;
+
+        // Subscribe to A2A events
+        let mut rx = bus.subscribe_with_filter(EventFilter::A2A);
+
+        // Create and route a message
+        let msg = A2AMessage::new(
+            "a2a-test-msg",
+            AgentId::new("sender"),
+            A2AMessageType::Event,
+            A2AMessagePayload::Event {
+                event_type: "test".to_string(),
+                data: Default::default(),
+            },
+        )
+        .with_target(target_id);
+
+        // Route the message
+        router.route_message(msg.clone()).await.unwrap();
+
+        // Should receive A2A event
+        let event = rx.recv().await.unwrap();
+        assert!(matches!(event, Event::A2A(..)));
+
+        if let Event::A2A(received_msg) = event {
+            assert_eq!(received_msg.id, "a2a-test-msg");
+            assert_eq!(received_msg.source.0, "sender");
+        }
     }
 }

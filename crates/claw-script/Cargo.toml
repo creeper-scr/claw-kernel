@@ -5,13 +5,14 @@ edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Script engine abstraction — Lua (default), V8 and Python optional"
+repository.workspace = true
 
 [dependencies]
-claw-tools = { path = "../claw-tools" }
-claw-pal = { path = "../claw-pal" }
-claw-memory = { path = "../claw-memory" }
-claw-runtime = { path = "../claw-runtime" }
-claw-provider = { path = "../claw-provider" }
+claw-tools = { workspace = true }
+claw-memory = { workspace = true }
+claw-runtime = { workspace = true }
+claw-provider = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

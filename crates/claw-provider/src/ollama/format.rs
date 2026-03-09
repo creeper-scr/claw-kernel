@@ -90,8 +90,8 @@ mod tests {
     #[test]
     fn test_token_count() {
         let messages = vec![
-            Message::user("hello world"),  // 11 chars → 2 tokens
-            Message::assistant("okay"),    // 4 chars → 1 token
+            Message::user("hello world"), // 11 chars → 2 tokens
+            Message::assistant("okay"),   // 4 chars → 1 token
         ];
         // (11 + 4) / 4 = 3
         assert_eq!(OllamaFormat::token_count(&messages), 3);

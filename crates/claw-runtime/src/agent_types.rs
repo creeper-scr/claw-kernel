@@ -1,4 +1,4 @@
-use claw_pal::ProcessHandle;
+use claw_pal::{ExecutionMode, ProcessHandle};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -63,23 +63,6 @@ fn rand_hex(n: usize) -> String {
         ^ (pid << 48)
         ^ (tid << 32);
     format!("{:0>width$x}", raw & ((1u128 << (n * 4)) - 1), width = n)
-}
-
-// ─── ExecutionMode ────────────────────────────────────────────────────────────
-
-/// Execution mode of an agent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ExecutionMode {
-    /// Sandbox-restricted mode (default).
-    Safe,
-    /// Elevated-privilege mode.
-    Power,
-}
-
-impl Default for ExecutionMode {
-    fn default() -> Self {
-        Self::Safe
-    }
 }
 
 // ─── AgentConfig ──────────────────────────────────────────────────────────────

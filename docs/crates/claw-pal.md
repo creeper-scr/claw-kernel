@@ -3,7 +3,7 @@ title: claw-pal
 description: Platform Abstraction Layer (sandbox, IPC, process)
 status: implemented
 version: "0.1.0"
-last_updated: "2026-03-08"
+last_updated: "2026-03-09"
 language: en
 ---
 
@@ -48,30 +48,36 @@ claw-pal = "0.1"
 ```
 
 ```rust
-use claw_pal::{SandboxBackend, SandboxConfig, ExecutionMode};
-use claw_pal::types::{NetRule, ResourceLimits};
+use claw_pal::{SandboxBackend, SandboxConfig, ExecutionMode, NetRule, ResourceLimits};
+use claw_pal::traits::sandbox::SyscallPolicy;
 use std::path::PathBuf;
 
-// Create safe mode sandbox
+// Create safe mode sandbox configuration
 let config = SandboxConfig::safe_default();
-let mut sandbox = LinuxSandbox::create(config).unwrap();
 
-// Configure filesystem restrictions
-sandbox.restrict_filesystem(&[PathBuf::from("/data")]);
+// Platform-specific sandbox implementations
+#[cfg(target_os = "linux")]
+{
+    use claw_pal::LinuxSandbox;
+    let mut sandbox = LinuxSandbox::create(config).unwrap();
+    
+    // Configure restrictions
+    sandbox
+        .restrict_filesystem(&[PathBuf::from("/data")])
+        .restrict_network(&[NetRule::allow_port("api.example.com".to_string(), 443)])
+        .restrict_syscalls(SyscallPolicy::DenyAll)
+        .restrict_resources(ResourceLimits::restrictive());
+    
+    // Apply the sandbox
+    let handle = sandbox.apply()?;
+}
 
-// Configure network rules
-sandbox.restrict_network(&[
-    NetRule::allow_port("api.example.com".to_string(), 443),
-]);
-
-// Apply syscall policy
-sandbox.restrict_syscalls(SyscallPolicy::DenyAll);
-
-// Apply resource limits
-sandbox.restrict_resources(ResourceLimits::restrictive());
-
-// Apply the sandbox
-let handle = sandbox.apply()?;
+#[cfg(target_os = "macos")]
+{
+    use claw_pal::MacOSSandbox;
+    let mut sandbox = MacOSSandbox::create(config).unwrap();
+    // ... configure and apply
+}
 ```
 
 ---
@@ -137,7 +143,7 @@ pub enum SyscallPolicy {
 
 Inter-process communication:
 
-> **v0.1.0**: Unix Domain Sockets only (Linux/macOS). Windows Named Pipe support planned for v0.2.0.
+> **v1.0.0**: Unix Domain Sockets (Linux/macOS) and Named Pipes (Windows) are fully implemented.
 
 ```rust
 use claw_pal::IpcTransport;
@@ -155,6 +161,16 @@ let response = transport.recv().await?;
 **IPC Framing Protocol:**
 - 4-byte Big Endian length prefix
 - Maximum payload: 16 MiB
+
+**Testing with Mock Transport:**
+
+```rust
+use claw_pal::traits::ipc::MockIpcTransport;
+
+let transport = MockIpcTransport::new("/tmp/test".to_string());
+transport.send(b"test message").await?;
+let msg = transport.recv().await?;
+```
 
 ### `process`
 
@@ -250,10 +266,10 @@ pub enum ProcessError {
 
 ## Platform Support
 
-| Feature | Linux | macOS | Windows (v0.1.0) |
-|---------|:-----:|:-----:|:----------------:|
+| Feature | Linux | macOS | Windows |
+|---------|:-----:|:-----:|:-------:|
 | Sandbox | ✅ Strong | ✅ Medium | ⚠️ Stub |
-| IPC (UDS/NamedPipe) | ✅ UDS | ✅ UDS | ❌ v0.2.0 |
+| IPC (UDS/NamedPipe) | ✅ UDS | ✅ UDS | ✅ Named Pipes |
 | Process | ✅ Full | ✅ Full | ✅ Full |
 
 ---

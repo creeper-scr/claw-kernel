@@ -24,6 +24,26 @@ pub struct SqliteMemoryStore {
 
 impl SqliteMemoryStore {
     /// Open (or create) a database at the given path.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use claw_memory::SqliteMemoryStore;
+    /// use std::path::Path;
+    ///
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Create a temporary directory for the test
+    /// let temp_dir = tempfile::tempdir()?;
+    /// let db_path = temp_dir.path().join("memory.db");
+    ///
+    /// // Open or create the database
+    /// let store = SqliteMemoryStore::open(&db_path)?;
+    ///
+    /// // The database is now ready to use
+    /// // The temp_dir will be automatically cleaned up when it goes out of scope
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn open(path: impl AsRef<Path>) -> Result<Self, MemoryError> {
         let conn = Connection::open(path).map_err(|e| MemoryError::Storage(e.to_string()))?;
         let store = Self {

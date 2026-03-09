@@ -1,15 +1,14 @@
 use async_trait::async_trait;
 use mlua::{Lua, Value as LuaValue};
 use serde_json::{json, Value as JsonValue};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::{
     bridge::{
-        agent::AgentBridge,
-        dirs::DirsBridge,
-        memory::MemoryBridge,
-        tools::CallerContext,
-        register_agent, register_dirs, register_events, register_fs, register_memory,
-        register_net, register_tools, EventsBridge, FsBridge, NetBridge, ToolsBridge,
+        agent::AgentBridge, dirs::DirsBridge, memory::MemoryBridge, register_agent, register_dirs,
+        register_events, register_fs, register_memory, register_net, register_tools,
+        tools::CallerContext, EventsBridge, FsBridge, NetBridge, ToolsBridge,
     },
     error::{CompileError, ScriptError},
     traits::ScriptEngine,
@@ -186,8 +185,27 @@ impl ScriptEngine for LuaEngine {
         let event_bus = ctx.event_bus.clone();
         let orchestrator = ctx.orchestrator.clone();
 
+        // Cancellation flag shared between timeout watcher and Lua hook
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancelled_in_task = Arc::clone(&cancelled);
+
         let task = tokio::task::spawn_blocking(move || -> Result<ScriptValue, ScriptError> {
             let lua = Lua::new();
+
+            // Set up a hook that checks the cancellation flag every N instructions
+            // This allows infinite loops to be interrupted
+            lua.set_hook(
+                mlua::HookTriggers::new().every_nth_instruction(1000),
+                move |_, _| {
+                    if cancelled_in_task.load(Ordering::Relaxed) {
+                        Err(mlua::Error::RuntimeError(
+                            "script execution timeout".to_string(),
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
 
             // Inject agent_id global
             lua.globals()
@@ -253,8 +271,10 @@ impl ScriptEngine for LuaEngine {
 
             // Register Events bridge if event bus is provided
             if let Some(bus) = event_bus {
-                let events_bridge = EventsBridge::new(&lua, bus, agent_id.clone())
-                    .map_err(|e| ScriptError::Runtime(format!("Failed to create events bridge: {}", e)))?;
+                let events_bridge =
+                    EventsBridge::new(&lua, bus, agent_id.clone()).map_err(|e| {
+                        ScriptError::Runtime(format!("Failed to create events bridge: {}", e))
+                    })?;
                 register_events(&lua, events_bridge).map_err(|e| {
                     ScriptError::Runtime(format!("Failed to register events bridge: {}", e))
                 })?;
@@ -277,10 +297,22 @@ impl ScriptEngine for LuaEngine {
             Ok(lua_to_json(lua_result, 0, max_recursion_depth))
         });
 
-        match tokio::time::timeout(timeout_dur, task).await {
-            Ok(join_result) => join_result.map_err(|e| ScriptError::Runtime(e.to_string()))?,
-            Err(_elapsed) => Err(ScriptError::Timeout),
-        }
+        // Use a separate timeout task to set the cancellation flag
+        // This ensures the Lua hook can detect timeout and terminate gracefully
+        let timeout_handle = tokio::spawn(async move {
+            tokio::time::sleep(timeout_dur).await;
+            cancelled.store(true, Ordering::Relaxed);
+        });
+
+        // Wait for the Lua task to complete
+        let result = task
+            .await
+            .map_err(|e| ScriptError::Runtime(e.to_string()))?;
+
+        // Cancel the timeout task if Lua completed first
+        timeout_handle.abort();
+
+        result
     }
 
     fn validate(&self, script: &Script) -> Result<(), ScriptError> {
@@ -405,9 +437,10 @@ mod tests {
         let result = engine()
             .execute(&Script::lua("t", "while true do end"), &ctx)
             .await;
+        // Timeout is detected via hook and returned as Runtime error with "timeout" message
         assert!(
-            matches!(result, Err(ScriptError::Timeout)),
-            "expected Timeout, got: {result:?}"
+            matches!(result, Err(ScriptError::Runtime(ref msg)) if msg.contains("timeout")),
+            "expected Runtime timeout error, got: {result:?}"
         );
     }
 

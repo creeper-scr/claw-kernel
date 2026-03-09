@@ -163,21 +163,25 @@ pub enum Event {
     // Extension events
     Extension(ExtensionEvent),
 
+    // ── Agent-to-Agent messaging ─────────────────────────────────────────────
+    /// Emitted when an A2A message is received via IPC.
+    A2A(A2AMessage),
+
     // System
     Shutdown,
 }
 
 /// Agent-to-Agent message for inter-agent communication
 pub struct A2AMessage {
-    pub id: String,
-    pub source: AgentId,
-    pub target: Option<AgentId>,
-    pub message_type: A2AMessageType,
-    pub payload: A2AMessagePayload,
-    pub priority: MessagePriority,
-    pub correlation_id: Option<String>,
-    pub timestamp: u64,
-    pub ttl_secs: Option<u32>,
+    pub id: String,                          // Unique message ID
+    pub source: AgentId,                     // Source agent
+    pub target: Option<AgentId>,             // Target agent (None for broadcast)
+    pub message_type: A2AMessageType,        // Request/Response/Event/Discovery/etc
+    pub payload: A2AMessagePayload,          // Message content
+    pub priority: MessagePriority,           // Critical/High/Normal/Low/Background
+    pub correlation_id: Option<String>,      // For request/response matching
+    pub timestamp: u64,                      // Unix timestamp in milliseconds
+    pub ttl_secs: Option<u32>,               // Time-to-live (None for no expiry)
 }
 
 pub enum MessagePriority {
@@ -220,6 +224,13 @@ pub enum ExtensionEvent {
 > **注意**: IPC 远程消息投递当前未实现，仅支持本地进程内通信。Windows IPC 计划在 v0.2.0 中实现。
 
 ### Layer 2: Agent Kernel Protocol
+
+> **Kernel Positioning**: Layer 2 provides mechanisms, not policies.
+> - It gives you `AgentLoop`, not an opinionated agent
+> - It gives you `HistoryManager`, not a fixed memory strategy
+> - It gives you `ToolRegistry`, not pre-selected tools
+>
+> You compose these primitives in your application layer to build your product.
 
 The **heart** of the system — where all Claw projects had been reinventing wheels.
 
@@ -346,16 +357,19 @@ pub struct ToolCall {
 
 **Built-in implementations:**
 
-| Provider | Format | Code Complexity |
-|----------|--------|-----------------|
-| `AnthropicProvider` | AnthropicFormat | ~20 lines (config) |
-| `OpenAIProvider` | OpenAIFormat | ~20 lines (config) |
-| `DeepSeekProvider` | OpenAIFormat | ~20 lines (config) |
-| `MoonshotProvider` | OpenAIFormat | ~20 lines (config) |
-| `QwenProvider` | OpenAIFormat | ~20 lines (config) |
-| `GrokProvider` | OpenAIFormat | ~20 lines (config) |
-| `OllamaProvider` | OllamaFormat (OpenAI variant) | ~25 lines (config) |
-| `ScriptableProvider` | Custom via script | Runtime defined |
+| Provider | Format | Code Complexity | Status |
+|----------|--------|-----------------|--------|
+| `AnthropicProvider` | AnthropicFormat | ~20 lines (config) | ✅ Implemented |
+| `OpenAIProvider` | OpenAIFormat | ~20 lines (config) | ✅ Implemented |
+| `DeepSeekProvider` | OpenAIFormat | ~20 lines (config) | ✅ Implemented |
+| `MoonshotProvider` | OpenAIFormat | ~20 lines (config) | ✅ Implemented |
+| `OllamaProvider` | OllamaFormat | ~25 lines (config) | ✅ Implemented |
+| `QwenProvider` | OpenAIFormat | ~20 lines (config) | 🚧 Planned |
+| `GrokProvider` | OpenAIFormat | ~20 lines (config) | 🚧 Planned |
+| `ScriptableProvider` | Custom via script | Runtime defined | 🚧 Planned |
+
+> **Note:** Providers marked with 🚧 are not yet implemented.
+> The kernel's provider architecture supports them; they will be added in future releases.
 
 > 90% code reduction: Adding a new OpenAI-compatible provider requires only configuration (base URL + auth), not HTTP implementation.
 
@@ -451,36 +465,40 @@ pub enum SubprocessPolicy {
 }
 
 pub struct ToolRegistry {
-    tools: HashMap<String, RegisteredTool>,
-    hot_loading: Option<HotLoadingWatcher>,
-}
-
-pub struct RegisteredTool {
-    pub tool: Box<dyn Tool>,
-    pub source: ToolSource,
-    pub loaded_at: SystemTime,
+    // Internal implementation uses DashMap for thread-safe access
 }
 
 impl ToolRegistry {
-    pub fn new() -> Self;
+    /// Register a native Rust tool.
     pub fn register(&self, tool: Box<dyn Tool>) -> Result<(), RegistryError>;
+
+    /// Unregister a tool by name.
     pub fn unregister(&self, name: &str) -> Result<(), RegistryError>;
+
+    /// Get a registered tool.
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>>;
+
+    /// List all registered tool metadata.
     pub fn list(&self) -> Vec<ToolMeta>;
-    pub async fn execute(&self, name: &str, params: serde_json::Value) -> Result<ToolResult, ToolError>;
-    
+
+    /// Execute a tool with given arguments and context.
+    pub async fn execute(&self, name: &str, args: serde_json::Value, ctx: ToolContext)
+        -> Result<ToolResult, RegistryError>;
+
+    /// Get recent audit log entries.
+    pub async fn recent_log(&self, n: usize) -> Vec<LogEntry>;
+
     // Hot-loading support
-    pub async fn load_from_script(&mut self, path: &Path) -> Result<ToolMeta, LoadError>;
-    pub async fn load_from_directory(&mut self, path: &Path) -> Result<Vec<ToolMeta>, LoadError>;
-    pub fn unload(&mut self, name: &str) -> Result<(), RegistryError>;
-    pub async fn enable_hot_loading(&mut self, config: HotLoadingConfig) -> Result<(), WatchError>;
-    pub fn disable_hot_loading(&mut self);
+    pub async fn load_from_script(&self, path: &Path) -> Result<ToolMeta, LoadError>;
+    pub async fn load_from_directory(&self, path: &Path) -> Result<Vec<ToolMeta>, LoadError>;
+    pub fn unload(&self, name: &str) -> Result<(), RegistryError>;
+    pub async fn enable_hot_loading(&self, config: HotLoadingConfig) -> Result<(), WatchError>;
+    pub async fn disable_hot_loading(&self);
 }
 
 pub struct ToolMeta {
     pub name: String,
     pub description: String,
-    pub version: String,
     pub schema: ToolSchema,
     pub permissions: PermissionSet,
     pub source: ToolSource,
@@ -579,6 +597,12 @@ pub struct AgentResult {
     pub usage: TokenUsage,
     /// Total turns executed.
     pub turns: u32,
+    /// Final response content (convenience accessor).
+    pub content: String,
+    /// All tool calls executed across all turns.
+    pub tool_calls: Vec<ToolCall>,
+    /// Wall-clock execution time in milliseconds.
+    pub execution_time_ms: u64,
 }
 
 pub enum FinishReason {
@@ -594,11 +618,11 @@ pub enum StreamChunk {
     Text { content: String, is_final: bool },
     ToolStart { id: String, name: String },
     ToolArguments { id: String, arguments: String },
-    ToolComplete { id: String, result: ToolResult },
-    ToolError { id: String, error: ToolError },
+    ToolComplete { id: String, result: serde_json::Value },
+    ToolError { id: String, error: String },
     UsageUpdate(TokenUsage),
-    FinishReason(FinishReason),
-    Error(AgentError),
+    Finish(FinishReason),
+    Error(String),
 }
 
 pub struct ConversationContext {
@@ -753,82 +777,29 @@ interface RustBridge {
 
 ---
 
-<a name="memory-system-architecture"></a>
-## Memory System Architecture (The 3-Tier Model)
+<a name="memory-in-kernel"></a>
+### Memory in Kernel
 
-> **Mechanism vs. Policy**: Layer 2 (`claw-memory`) provides the storage *mechanism*. Layer 3 scripts define the *policy* — when to persist, how to summarize, which retrieval prompts to use. This separation enables Agent self-evolution without recompiling the kernel.
+The kernel provides only **short-term memory** via `HistoryManager`:
 
-The memory system is organized into three tiers, each managed by a different component:
+| Aspect | Kernel Provides | Application Provides |
+|--------|----------------|---------------------|
+| Short-term | `HistoryManager` trait, `InMemoryHistory`, `SqliteHistory` | - |
+| Overflow handling | `set_overflow_callback()` hook | Archive policy (file/DB/API) |
+| Long-term | ❌ Nothing | Application implements |
 
-### Tier 1 — Working Memory (WM)
+**Extension Example**:
 
-| Property | Value |
-|----------|-------|
-| **Location** | `claw-loop` — the `History` object |
-| **Storage** | In-process heap (Vec\<Message\>) |
-| **Capacity** | Token-budget bounded (FIFO eviction) |
-| **Eviction** | Oldest messages dropped when token limit is exceeded |
-| **Persistence** | None (volatile; survives only within the session) |
-
-When Working Memory overflows, `claw-loop` emits a `MemoryPressure` event on the EventBus. A script listener (or the default kernel handler) can then call `claw.memory.logEpisode()` / `claw.memory.memorize()` to promote important context into the lower tiers.
-
-```
-Working Memory overflow  ──EventBus──►  claw-memory (EM / SM persistence)
-         (claw-loop)                          (claw-memory)
+```rust
+// Application implements long-term memory
+let mut history = InMemoryHistory::new(8192);
+history.set_overflow_callback(Box::new(|current, limit| {
+    // Your policy: archive to DB, write to file, or discard
+    my_archive_system.save_overflow(current, limit);
+}));
 ```
 
-### Tier 2 — Episodic Memory (EM)
-
-| Property | Value |
-|----------|-------|
-| **Location** | `claw-memory` crate |
-| **Storage** | SQLite (time-series log table) |
-| **Scope** | Per-Agent, persists across sessions |
-| **Purpose** | Records agent behavior trace: tool calls, LLM responses, errors |
-| **Use Case** | Reflection, post-mortem analysis, self-evolution audit trail |
-
-Episodic Memory is a **chronological journal** of what the Agent did. It answers: *"What did I try last time this happened?"* Scripts query it in `on_think` to avoid repeating past mistakes.
-
-### Tier 3 — Semantic Memory (SM)
-
-| Property | Value |
-|----------|-------|
-| **Location** | `claw-memory` crate |
-| **Storage** | `sqlite-vec` (default) · `qdrant-client` (feature `qdrant`, ml-ready) |
-| **Scope** | Configurable: per-Agent or shared knowledge space |
-| **Purpose** | De-temporalized, factual knowledge for cross-session RAG |
-| **Use Case** | Domain knowledge, learned procedures, distilled insights |
-
-Semantic Memory is a **knowledge graph without timestamps**. It answers: *"What do I know about X?"* The Agent autonomously decides — via script policy — which observations are worth memorizing as reusable knowledge.
-
-### 3-Tier Interaction Diagram
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    Agent Execution Loop                       │
-│                       (claw-loop)                            │
-│                                                              │
-│  on_think ──► search WM ──► search SM (claw.memory.search)   │
-│                                   │                          │
-│                            inject top-k results              │
-│                            into LLM context                  │
-│                                                              │
-│  on_observe ──► evaluate value ──► if worthy:               │
-│                                      claw.memory.memorize()  │
-│                                      claw.memory.logEpisode()│
-│                                                              │
-│  WM overflow ──► EventBus ──► auto-persist to EM            │
-└──────────────────────────────────────────────────────────────┘
-         │                              │
-         ▼                              ▼
-  ┌─────────────┐               ┌─────────────────┐
-  │  Episodic   │               │    Semantic      │
-  │  Memory     │               │    Memory        │
-  │  (SQLite)   │               │  (sqlite-vec /   │
-  │  time-log   │               │   qdrant)        │
-  └─────────────┘               └─────────────────┘
-         both managed by claw-memory (Layer 2)
-```
+See [ADR-010](../adr/010-memory-system-boundary.md) for full rationale.
 
 ---
 

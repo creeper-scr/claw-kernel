@@ -5,6 +5,8 @@ edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Channel integrations — Discord, Webhook, Stdin"
+repository.workspace = true
 
 [features]
 webhook = ["dep:axum", "dep:reqwest"]

@@ -27,22 +27,13 @@ pub enum LoadError {
 #[derive(Debug, Clone, Error, Serialize, Deserialize)]
 pub enum ReloadError {
     #[error("IO error reloading script at '{path}': {message}")]
-    Io {
-        path: PathBuf,
-        message: String,
-    },
+    Io { path: PathBuf, message: String },
 
     #[error("Compilation error in script at '{path}': {message}")]
-    Compile {
-        path: PathBuf,
-        message: String,
-    },
+    Compile { path: PathBuf, message: String },
 
     #[error("Runtime error reloading script at '{path}': {message}")]
-    Runtime {
-        path: PathBuf,
-        message: String,
-    },
+    Runtime { path: PathBuf, message: String },
 }
 
 // ─── ExtensionEvent ───────────────────────────────────────────────────────────

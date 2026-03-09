@@ -3,9 +3,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use claw_tools::{registry::ToolRegistry, types::PermissionSet};
 use claw_memory::MemoryStore;
 use claw_runtime::{AgentOrchestrator, EventBus};
+use claw_tools::{registry::ToolRegistry, types::PermissionSet};
 use serde::{Deserialize, Serialize};
 
 /// Supported scripting engines.

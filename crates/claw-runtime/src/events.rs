@@ -1,3 +1,4 @@
+use crate::a2a::protocol::A2AMessage;
 use crate::agent_types::AgentId;
 use crate::extension::ExtensionEvent;
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,10 @@ pub enum Event {
         channel: String,
         message_type: String,
     },
+
+    // ── Agent-to-Agent messaging ─────────────────────────────────────────────
+    /// Emitted when an A2A message is received via IPC.
+    A2A(A2AMessage),
 
     // ── Tool usage ───────────────────────────────────────────────────────────
     ToolCalled {

@@ -16,7 +16,7 @@ Platform-agnostic channel abstraction for connecting agents to external messagin
 
 ## Overview
 
-`claw-channel` is the Layer 2.5 channel subsystem. It defines a unified `Channel` trait and `ChannelMessage` type that decouple agent logic from specific platform APIs.
+`claw-channel` is the Layer 2 channel subsystem (part of Agent Kernel Protocol). It defines a unified `Channel` trait and `ChannelMessage` type that decouple agent logic from specific platform APIs.
 
 ## Components
 

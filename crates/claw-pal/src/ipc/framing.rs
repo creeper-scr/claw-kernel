@@ -33,7 +33,7 @@ impl FrameConfig {
     /// This function is unsafe because it modifies a global static variable.
     /// It should only be called during initialization before any IPC operations.
     #[allow(dead_code)]
-    pub unsafe fn set_max_frame_size(size: usize) {
+    pub(crate) unsafe fn set_max_frame_size(size: usize) {
         MAX_FRAME_SIZE = size;
     }
 
@@ -43,7 +43,7 @@ impl FrameConfig {
     /// This function modifies a global static variable and should only be called
     /// during initialization before any IPC operations.
     #[allow(dead_code)]
-    pub unsafe fn reset() {
+    pub(crate) unsafe fn reset() {
         MAX_FRAME_SIZE = DEFAULT_MAX_FRAME_SIZE;
     }
 }

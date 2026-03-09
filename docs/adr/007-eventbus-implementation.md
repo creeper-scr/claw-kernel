@@ -27,7 +27,7 @@ pub struct EventBus {
 }
 
 impl EventBus {
-    pub fn emit(&self, event: Event);
+    pub fn publish(&self, event: Event);
     pub fn subscribe(&self, filter: EventFilter) -> Receiver<Event>;
 }
 ```
@@ -79,11 +79,11 @@ impl EventBus {
         Self { sender }
     }
 
-    /// Emit an event to all active subscribers.
+    /// Publish an event to all active subscribers.
     /// Returns the number of receivers that received the event.
     /// Never blocks; if the channel is full, the oldest message
     /// is dropped and lagging receivers are marked.
-    pub fn emit(&self, event: Event) -> usize {
+    pub fn publish(&self, event: Event) -> usize {
         // send() returns Err only when there are zero receivers,
         // which is a normal condition (no subscribers yet).
         self.sender.send(event).unwrap_or(0)
@@ -131,11 +131,13 @@ If a subscriber falls more than 1024 events behind, `broadcast` drops the oldest
 ```rust
 match rx.recv().await {
     Ok(event) => handle(event),
-    Err(broadcast::error::RecvError::Lagged(n)) => {
-        tracing::warn!("EventBus subscriber lagged by {} events, some events lost", n);
+    Err(RuntimeError::EventBusError(msg)) => {
+        if msg.contains("receiver lagged") {
+            tracing::warn!("EventBus subscriber lagged: {}", msg);
+        }
         // Continue receiving from the current position.
     }
-    Err(broadcast::error::RecvError::Closed) => break,
+    _ => break,
 }
 ```
 
@@ -148,18 +150,18 @@ Subscribers that consistently lag (e.g., a slow logging sink) should be moved to
 ```
 Remote agent                    Local process
     │                               │
-    │  serialized Event (bincode)   │
+    │  serialized Event (JSON)      │
     ├──────────────────────────────►│
     │                               │  IpcRouter::on_incoming()
     │                               │      │
     │                               │      ▼
-    │                               │  event_bus.emit(event)
+    │                               │  event_bus.publish(event)
     │                               │      │
     │                               │      ▼
     │                               │  all local subscribers
 ```
 
-`IpcRouter` holds an `Arc<EventBus>` and calls `emit()` for every deserialized incoming event. Local events are emitted directly by their producers (agent loop, tool executor, etc.) without going through IPC at all.
+`IpcRouter` holds an `Arc<EventBus>` and calls `publish()` for every deserialized incoming event. Local events are emitted directly by their producers (agent loop, tool executor, etc.) without going through IPC at all.
 
 Outbound routing works symmetrically: `IpcRouter` subscribes to `Event::A2A(_)` variants and forwards them to the appropriate remote agent over IPC.
 
@@ -172,8 +174,8 @@ pub struct IpcRouter {
 impl IpcRouter {
     /// Called by the PAL IPC layer when a frame arrives from a remote agent.
     pub fn on_incoming(&self, raw: &[u8]) {
-        if let Ok(event) = bincode::deserialize::<Event>(raw) {
-            self.event_bus.emit(event);
+        if let Ok(event) = serde_json::from_slice::<Event>(raw) {
+            self.event_bus.publish(event);
         }
     }
 
@@ -183,7 +185,7 @@ impl IpcRouter {
         loop {
             match rx.recv().await {
                 Ok(Event::A2A(msg)) => {
-                    let _ = self.transport.send(msg.to, &bincode::serialize(&msg).unwrap()).await;
+                    let _ = self.transport.send(msg.to, &serde_json::to_vec(&msg).unwrap()).await;
                 }
                 Ok(_) => unreachable!(),
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -224,7 +226,7 @@ This keeps `EventBus` free of any IPC knowledge. The bus is a pure in-process fa
 |----------|------------|
 | 1. `broadcast` vs `mpsc` for fan-out? | **`broadcast`** — native fan-out, no dispatch loop, built-in lag detection. `mpsc` would require one channel per subscriber plus a manual dispatch task. |
 | 2. What capacity for the broadcast channel? | **1024** — absorbs short bursts (~200 KB max), large enough for typical agent workloads, small enough to bound memory. Tunable via `EventBusConfig` in the future. |
-| 3. How does `IpcRouter` integrate without coupling EventBus to IPC? | **`IpcRouter` holds `Arc<EventBus>`** and calls `emit()` on incoming frames. EventBus has no IPC knowledge. The bridge is one-directional at the type level. |
+| 3. How does `IpcRouter` integrate without coupling EventBus to IPC? | **`IpcRouter` holds `Arc<EventBus>`** and calls `publish()` on incoming frames. EventBus has no IPC knowledge. The bridge is one-directional at the type level. |
 | 4. What happens to a slow subscriber? | **`RecvError::Lagged(n)` is returned** on the next `recv()`. The subscriber logs a warning and continues from the current position. Persistently slow subscribers should use a dedicated buffered task. |
 | 5. `crossbeam-channel` as an alternative? | **Rejected** — synchronous API requires `spawn_blocking` wrappers in an async-first codebase. No benefit over `broadcast` for this use case. |
 

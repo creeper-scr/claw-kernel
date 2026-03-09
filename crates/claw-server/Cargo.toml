@@ -1,0 +1,29 @@
+[package]
+name = "claw-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "KernelServer — exposes agent loop via JSON-RPC 2.0 over local IPC"
+repository.workspace = true
+
+[dependencies]
+claw-pal   = { workspace = true }
+claw-loop  = { workspace = true }
+claw-provider = { workspace = true }
+claw-tools    = { workspace = true }
+claw-runtime  = { workspace = true }
+
+tokio       = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+thiserror   = { workspace = true }
+tracing     = { workspace = true }
+async-trait = { workspace = true }
+uuid        = { workspace = true }
+dashmap     = { workspace = true }
+
+[dev-dependencies]
+tempfile    = { workspace = true }
+tokio       = { workspace = true, features = ["rt", "macros", "net"] }

@@ -83,7 +83,10 @@ impl UserData for MemoryBridge {
             match this.store.retrieve(&id).await {
                 Ok(Some(item)) => Ok(Some(item.content)),
                 Ok(None) => Ok(None),
-                Err(e) => Err(mlua::Error::RuntimeError(format!("memory get error: {}", e))),
+                Err(e) => Err(mlua::Error::RuntimeError(format!(
+                    "memory get error: {}",
+                    e
+                ))),
             }
         });
 
@@ -140,8 +143,8 @@ pub fn register_memory(lua: &Lua, bridge: MemoryBridge) -> LuaResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use claw_memory::{error::MemoryError, types::*, traits::MemoryStore};
     use async_trait::async_trait;
+    use claw_memory::{error::MemoryError, traits::MemoryStore, types::*};
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -207,9 +210,11 @@ mod tests {
         register_memory(&lua, bridge).unwrap();
 
         // set a value
-        lua.load(r#"
+        lua.load(
+            r#"
             local ok = memory:set("pref", "concise")
-        "#)
+        "#,
+        )
         .exec_async()
         .await
         .unwrap();
@@ -303,10 +308,12 @@ mod tests {
             .unwrap();
 
         let result: bool = lua
-            .load(r#"
+            .load(
+                r#"
                 local results = memory:search("hello", 5)
                 return type(results) == "table"
-            "#)
+            "#,
+            )
             .eval_async()
             .await
             .unwrap();

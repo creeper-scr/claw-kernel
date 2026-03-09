@@ -20,13 +20,13 @@ This document describes the crate structure of claw-kernel, including dependenci
 ╔══════════════════════════════════════════════════════════════════════╗
 ║                     CORE KERNEL (Minimal & Stable)                    ║
 ╠══════════════════════════════════════════════════════════════════════╣
-║  Layer 0         Layer 0.5      Layer 1        Layer 2        Layer 2.5    Layer 3    ║
+║  Layer 0         Layer 0.5      Layer 1        Layer 2                Layer 3        ║
 ║                                                                                       ║
-║  ┌────┐  ┌─────────┐  ┌──────────┐   ┌───────────┐  ┌───────────┐  ┌───────────┐     ║
-║  │Rust│  │claw-pal │  │claw-     │   │claw-loop  │  │claw-channel  │claw-script│     ║
-║  │Hard│  │(Platform│  │runtime  │   │(Agent     │  │(Channel   │  │(Script    │     ║
-║  │Core│  │Abstr.)  │  │(System  │   │ Loop)     │  │ Integr.)  │  │ Runtime)  │     ║
-║  └──┬─┘  └────┬────┘  │ Runtime) │   └─────┬─────┘  └───────────┘  └───────────┘     ║
+║  ┌────┐  ┌─────────┐  ┌──────────┐   ┌──────────────────────────┐  ┌───────────┐     ║
+║  │Rust│  │claw-pal │  │claw-     │   │claw-loop  │  │claw-channel│  │claw-script│     ║
+║  │Hard│  │(Platform│  │runtime  │   │(Agent     │  │(Channel    │  │(Script    │     ║
+║  │Core│  │Abstr.)  │  │(System  │   │ Loop)     │  │  Adapter)  │  │ Runtime)  │     ║
+║  └──┬─┘  └────┬────┘  │ Runtime) │   └─────┬────┘  └───────────┘  └───────────┘     ║
 ║       │       └────┬─────┘         │         │                                       ║
 ║       │            │          ┌────┴────┐    │                                       ║
 ║       │            │          │         │    │                                       ║

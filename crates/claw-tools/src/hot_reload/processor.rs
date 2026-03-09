@@ -204,7 +204,11 @@ impl HotReloadProcessor {
         // Find the tool by source path
         for name in self.registry.tool_names() {
             if let Some(meta) = self.registry.tool_meta(&name) {
-                if let crate::types::ToolSource::Script { path: ref source_path, .. } = meta.source {
+                if let crate::types::ToolSource::Script {
+                    path: ref source_path,
+                    ..
+                } = meta.source
+                {
                     if source_path.to_string_lossy() == path_str {
                         match self.registry.unregister(&name) {
                             Ok(()) => {

@@ -4,14 +4,16 @@
 
 use crate::error::SandboxError;
 use crate::types::{NetRule, ResourceLimits};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Execution mode for sandboxed operations.
 ///
 /// Determines the level of system access allowed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ExecutionMode {
     /// Safe mode: restricted access (default)
+    #[default]
     Safe,
     /// Power mode: full system access (opt-in)
     Power,

@@ -78,7 +78,9 @@ fn str_to_role(s: &str) -> Result<Role, AgentError> {
         "assistant" => Ok(Role::Assistant),
         "system" => Ok(Role::System),
         "tool" => Ok(Role::Tool),
-        other => Err(AgentError::Context(format!("unknown role in history: {other}"))),
+        other => Err(AgentError::Context(format!(
+            "unknown role in history: {other}"
+        ))),
     }
 }
 
@@ -128,8 +130,7 @@ impl HistoryManager for SqliteHistory {
                     .chars()
                     .map(|c| if c.is_ascii() { 0.25 } else { 1.0 })
                     .sum();
-                let tool_call_tokens =
-                    m.tool_calls.as_ref().map(|tc| tc.len() * 50).unwrap_or(0);
+                let tool_call_tokens = m.tool_calls.as_ref().map(|tc| tc.len() * 50).unwrap_or(0);
                 (content_tokens as usize) + 1 + tool_call_tokens
             })
             .sum()
@@ -153,8 +154,8 @@ mod tests {
 
     #[test]
     fn test_sqlite_history_open_in_memory() {
-        let mut h = SqliteHistory::open(":memory:", "test-agent")
-            .expect("should open in-memory db");
+        let mut h =
+            SqliteHistory::open(":memory:", "test-agent").expect("should open in-memory db");
 
         assert!(h.is_empty());
         h.append(Message::user("hello"));
@@ -168,8 +169,8 @@ mod tests {
 
     #[test]
     fn test_sqlite_history_clear() {
-        let mut h = SqliteHistory::open(":memory:", "test-agent")
-            .expect("should open in-memory db");
+        let mut h =
+            SqliteHistory::open(":memory:", "test-agent").expect("should open in-memory db");
 
         h.append(Message::user("msg1"));
         h.append(Message::user("msg2"));
@@ -181,8 +182,8 @@ mod tests {
 
     #[test]
     fn test_sqlite_history_token_estimate() {
-        let mut h = SqliteHistory::open(":memory:", "test-agent")
-            .expect("should open in-memory db");
+        let mut h =
+            SqliteHistory::open(":memory:", "test-agent").expect("should open in-memory db");
 
         assert_eq!(h.token_estimate(), 0);
         // "hello" = 5 chars → 5*0.25 + 1 = 2

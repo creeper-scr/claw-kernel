@@ -3,7 +3,8 @@
 //! Provides agent discovery, metadata loading, and agent directory management.
 //! Agents are discovered from the filesystem at `~/.local/share/claw-kernel/agents/`.
 
-use crate::agent_types::{AgentId, ExecutionMode};
+use crate::agent_types::AgentId;
+use crate::ExecutionMode;
 use crate::error::RuntimeError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

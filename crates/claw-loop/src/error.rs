@@ -8,6 +8,7 @@ use thiserror::Error;
 use crate::state_machine::{AgentState, StateEvent};
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AgentError {
     #[error("provider error: {0}")]
     Provider(String),
@@ -63,7 +64,10 @@ mod tests {
         let err = AgentError::MaxTurnsReached(100);
         assert_eq!(err.to_string(), "max turns reached (100)");
 
-        let err = AgentError::TokenBudgetExceeded { used: 1000, budget: 800 };
+        let err = AgentError::TokenBudgetExceeded {
+            used: 1000,
+            budget: 800,
+        };
         assert_eq!(err.to_string(), "token budget exceeded (1000 > 800)");
 
         let err = AgentError::StopCondition("user interrupt".to_string());

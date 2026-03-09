@@ -159,6 +159,7 @@ impl TokenUsage {
 /// Reason why the LLM stopped generating.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum FinishReason {
     Stop,
     /// Generation stopped due to token length limit.

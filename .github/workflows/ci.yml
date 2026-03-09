@@ -1,144 +1,104 @@
-# claw-kernel CI Workflow
-# Note: Build and test jobs are disabled until crate implementation begins
-# Currently only documentation and formatting checks are enabled
-
 name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-    branches: [main, master]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
-  # Documentation and formatting checks (enabled)
-  lint:
-    name: Lint & Format Check
+  test-linux:
+    name: Test (Linux)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
-
-      - name: Check formatting
+          toolchain: "1.83"
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
         run: cargo fmt --all -- --check
-        continue-on-error: true
-
-      - name: Run clippy
+      - name: clippy
         run: cargo clippy --workspace -- -D warnings
-        continue-on-error: true
+      - name: test (unit)
+        run: |
+          cargo test -p claw-pal
+          cargo test -p claw-runtime
+          cargo test -p claw-provider
+          cargo test -p claw-tools
+          cargo test -p claw-loop
+          cargo test -p claw-memory
+          cargo test -p claw-channel
+          cargo test -p claw-script
+          cargo test -p claw-server
+          cargo test -p claw-kernel
+      - name: test (doc)
+        run: |
+          cargo test --doc -p claw-provider
+          cargo test --doc -p claw-loop
+          cargo test --doc -p claw-runtime
+          cargo test --doc -p claw-tools
+          cargo test --doc -p claw-memory
+      - name: audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
 
-      - name: Check documentation links
-        uses: lycheeverse/lychee-action@v1
-        with:
-          args: --timeout 60 README.md AGENTS.md CONTRIBUTING.md SECURITY.md
-        continue-on-error: true
-
-  # Build job (enabled)
-  build:
-    name: Build
-    runs-on: ${{ matrix.os }}
-    if: true
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable, 1.83.0]
+  test-macos:
+    name: Test (macOS)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
-
-      - name: Install platform dependencies (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+          toolchain: "1.83"
+      - uses: Swatinem/rust-cache@v2
+      - name: test (unit, no script)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libseccomp-dev pkg-config
+          cargo test -p claw-pal
+          cargo test -p claw-runtime
+          cargo test -p claw-provider
+          cargo test -p claw-tools
+          cargo test -p claw-loop
+          cargo test -p claw-memory
+          cargo test -p claw-channel
+          cargo test -p claw-server
+          cargo test -p claw-kernel
 
-      - name: Build (default features)
-        run: cargo build --workspace
-
-      - name: Build (all features)
-        run: cargo build --workspace --all-features
-
-  # Test job (enabled)
-  test:
-    name: Test
-    runs-on: ${{ matrix.os }}
-    if: true
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        rust: [stable, 1.83.0]
+  test-windows:
+    name: Test (Windows)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
-
-      - name: Install platform dependencies (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+          toolchain: "1.83"
+      - uses: Swatinem/rust-cache@v2
+      - name: test (unit, no script)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libseccomp-dev pkg-config
+          cargo test -p claw-pal
+          cargo test -p claw-runtime
+          cargo test -p claw-provider
+          cargo test -p claw-tools
+          cargo test -p claw-loop
+          cargo test -p claw-memory
+          cargo test -p claw-server
+          cargo test -p claw-kernel
 
-      - name: Run tests
-        run: cargo test --workspace
-
-      - name: Run integration tests
-        run: cargo test --workspace --features integration-tests
-
-  # Documentation check (enabled)
-  docs:
-    name: Documentation
+  build-release:
+    name: Build release binary
     runs-on: ubuntu-latest
+    needs: [test-linux]
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Check documentation
-        run: |
-          # Check for required documentation files
-          test -f README.md || echo "::error::README.md missing"
-          test -f CONTRIBUTING.md || echo "::error::CONTRIBUTING.md missing"
-          test -f SECURITY.md || echo "::error::SECURITY.md missing"
-          test -f CODE_OF_CONDUCT.md || echo "::error::CODE_OF_CONDUCT.md missing"
-          test -f LICENSE-MIT || echo "::error::LICENSE-MIT missing"
-          test -f LICENSE-APACHE || echo "::error::LICENSE-APACHE missing"
-
-      - name: Validate markdown
-        uses: DavidAnson/markdownlint-cli2-action@v13
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          globs: "**/*.md"
-          config: |
-            {
-              "MD013": false,
-              "MD033": false,
-              "MD041": false
-            }
-        continue-on-error: true
-
-  # Security audit (enabled)
-  audit:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Run cargo audit
-        uses: rustsec/audit-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
+          toolchain: "1.83"
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build --release -p claw-kernel-server

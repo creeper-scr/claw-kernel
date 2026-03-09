@@ -1,0 +1,23 @@
+[package]
+name = "claw-kernel-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "claw-kernel IPC daemon binary"
+repository.workspace = true
+
+[[bin]]
+name = "claw-kernel-server"
+path = "src/main.rs"
+
+[dependencies]
+claw-server   = { workspace = true }
+claw-provider = { workspace = true }
+
+clap          = { version = "4.5", features = ["derive", "env"] }
+tokio         = { workspace = true }
+tracing       = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow        = { workspace = true }
