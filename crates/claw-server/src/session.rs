@@ -8,6 +8,8 @@ use dashmap::DashMap;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
+use claw_runtime::agent_types::AgentId;
+
 use crate::error::ServerError;
 
 /// A single agent session.
@@ -17,9 +19,12 @@ use crate::error::ServerError;
 /// - A notification channel for streaming responses to the client
 /// - A pending tool calls map for external tool bridge communication
 /// - An agent loop (wrapped in Mutex for async exclusive access)
+/// - An optional AgentId when this session backs a spawned agent
 pub struct Session {
     /// Unique session identifier.
     pub id: String,
+    /// If this session was created by `agent.spawn`, the corresponding AgentId.
+    pub agent_id: Option<AgentId>,
     /// Channel for sending notifications to the client.
     pub notify_tx: mpsc::Sender<Vec<u8>>,
     /// Pending external tool calls waiting for client response.
@@ -42,6 +47,7 @@ impl Session {
     ) -> Self {
         Self {
             id,
+            agent_id: None,
             notify_tx,
             pending_tool_calls: Arc::new(DashMap::new()),
             agent_loop: tokio::sync::Mutex::new(agent_loop),
@@ -62,8 +68,27 @@ impl Session {
     ) -> Self {
         Self {
             id,
+            agent_id: None,
             notify_tx,
             pending_tool_calls,
+            agent_loop: tokio::sync::Mutex::new(agent_loop),
+            event_forwarder: tokio::sync::Mutex::new(None),
+            scheduled_task_ids: tokio::sync::Mutex::new(vec![]),
+        }
+    }
+
+    /// Creates a new session backed by an agent.spawn call, binding it to the given AgentId.
+    pub fn new_for_agent(
+        id: String,
+        agent_id: AgentId,
+        notify_tx: mpsc::Sender<Vec<u8>>,
+        agent_loop: claw_loop::AgentLoop,
+    ) -> Self {
+        Self {
+            id,
+            agent_id: Some(agent_id),
+            notify_tx,
+            pending_tool_calls: Arc::new(DashMap::new()),
             agent_loop: tokio::sync::Mutex::new(agent_loop),
             event_forwarder: tokio::sync::Mutex::new(None),
             scheduled_task_ids: tokio::sync::Mutex::new(vec![]),
@@ -91,6 +116,10 @@ impl std::fmt::Debug for Session {
 pub struct SessionManager {
     /// Active sessions mapped by ID.
     sessions: DashMap<String, Arc<Session>>,
+    /// Reverse index: AgentId → session_id.
+    ///
+    /// Populated when `agent.spawn` creates a session backed by an AgentId.
+    agent_to_session: DashMap<AgentId, String>,
     /// Maximum number of allowed sessions.
     max_sessions: usize,
 }
@@ -100,6 +129,7 @@ impl SessionManager {
     pub fn new(max_sessions: usize) -> Self {
         Self {
             sessions: DashMap::new(),
+            agent_to_session: DashMap::new(),
             max_sessions,
         }
     }
@@ -154,16 +184,69 @@ impl SessionManager {
         Ok(session)
     }
 
+    /// Creates a session that backs a spawned agent and registers the AgentId→SessionId index.
+    ///
+    /// Called by `agent.spawn` so that `agent.steer` and `agent.kill` can locate the
+    /// real running `AgentLoop` via the `AgentId`.
+    pub fn create_for_agent(
+        &self,
+        agent_id: AgentId,
+        notify_tx: mpsc::Sender<Vec<u8>>,
+        agent_loop: claw_loop::AgentLoop,
+    ) -> Result<Arc<Session>, ServerError> {
+        if self.sessions.len() >= self.max_sessions {
+            return Err(ServerError::MaxSessionsReached {
+                max: self.max_sessions,
+            });
+        }
+
+        let session_id = Uuid::new_v4().to_string();
+        let session = Arc::new(Session::new_for_agent(
+            session_id.clone(),
+            agent_id.clone(),
+            notify_tx,
+            agent_loop,
+        ));
+        self.sessions.insert(session_id.clone(), Arc::clone(&session));
+        self.agent_to_session.insert(agent_id, session_id);
+
+        Ok(session)
+    }
+
+    /// Returns the session_id bound to the given AgentId, if any.
+    pub fn session_for_agent(&self, agent_id: &AgentId) -> Option<String> {
+        self.agent_to_session
+            .get(agent_id)
+            .map(|entry| entry.value().clone())
+    }
+
     /// Gets a session by ID.
     pub fn get(&self, id: &str) -> Option<Arc<Session>> {
         self.sessions.get(id).map(|entry| Arc::clone(entry.value()))
     }
 
-    /// Removes a session by ID.
+    /// Removes a session by ID, cleaning up the AgentId→SessionId index if applicable.
     ///
     /// Returns true if a session was removed.
     pub fn remove(&self, id: &str) -> bool {
-        self.sessions.remove(id).is_some()
+        if let Some((_, session)) = self.sessions.remove(id) {
+            if let Some(ref aid) = session.agent_id {
+                self.agent_to_session.remove(aid);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Removes a session by AgentId.
+    ///
+    /// Looks up the session_id from the reverse index, then removes both.
+    /// Returns the removed session_id on success.
+    pub fn remove_by_agent(&self, agent_id: &AgentId) -> Option<String> {
+        let session_id = self.agent_to_session.remove(agent_id)?.1;
+        self.sessions.remove(&session_id);
+        Some(session_id)
     }
 
     /// Returns the current number of active sessions.
@@ -179,6 +262,7 @@ impl SessionManager {
     /// Clears all sessions.
     pub fn clear(&self) {
         self.sessions.clear();
+        self.agent_to_session.clear();
     }
 }
 
@@ -192,6 +276,7 @@ impl std::fmt::Debug for SessionManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionManager")
             .field("session_count", &self.sessions.len())
+            .field("agent_count", &self.agent_to_session.len())
             .field("max_sessions", &self.max_sessions)
             .finish()
     }

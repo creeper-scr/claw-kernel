@@ -34,6 +34,11 @@ nix = { version = "0.27.1", features = ["process", "sched", "signal"] }
 
 [target.'cfg(windows)'.dependencies]
 tokio = { workspace = true, features = ["net"] }
+windows-sys = { version = "0.52", features = [
+    "Win32_System_JobObjects",
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
 
 [features]
 default = []

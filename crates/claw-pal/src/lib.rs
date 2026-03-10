@@ -41,6 +41,7 @@ pub mod dirs;
 pub mod error;
 pub mod lockfile;
 pub mod manager;
+pub mod retry;
 pub mod security;
 pub mod traits;
 
@@ -87,3 +88,6 @@ pub use security::{ModeTransitionGuard, PowerKey, PowerKeyHash, PowerKeyManager,
 
 // Daemon lock file
 pub use lockfile::{DaemonLock, LockError};
+
+// Retry utility
+pub use retry::{with_retry_mapped, RetryConfig};

@@ -3,6 +3,8 @@ claw-kernel Python SDK 参考实现
 依赖：Python 3.9+，标准库（无第三方依赖）
 """
 import json
+import os
+import platform
 import socket
 import struct
 import subprocess
@@ -35,14 +37,30 @@ class KernelClient:
     # --- 自动发现 ---
 
     @staticmethod
-    def _default_socket_path() -> str:
-        """返回默认 socket 路径（跨平台）。"""
-        data_dir = Path.home() / ".local" / "share" / "claw-kernel"
-        return str(data_dir / "kernel.sock")
+    def _data_dir() -> Path:
+        """返回与 claw-pal dirs 模块一致的平台数据目录。"""
+        system = platform.system()
+        if system == "Darwin":
+            return Path.home() / "Library" / "Application Support" / "claw-kernel"
+        elif system == "Windows":
+            local_app_data = os.environ.get(
+                "LOCALAPPDATA", str(Path.home() / "AppData" / "Local")
+            )
+            return Path(local_app_data) / "claw-kernel"
+        else:  # Linux / 其他 Unix
+            xdg_runtime = os.environ.get("XDG_RUNTIME_DIR")
+            if xdg_runtime:
+                return Path(xdg_runtime) / "claw"
+            return Path.home() / ".local" / "share" / "claw-kernel"
 
-    @staticmethod
-    def _token_path() -> Path:
-        return Path.home() / ".local" / "share" / "claw-kernel" / "kernel.token"
+    @classmethod
+    def _default_socket_path(cls) -> str:
+        """返回默认 socket 路径（跨平台，与 Rust claw-pal 保持一致）。"""
+        return str(cls._data_dir() / "kernel.sock")
+
+    @classmethod
+    def _token_path(cls) -> Path:
+        return cls._data_dir() / "kernel.token"
 
     def _read_token(self) -> str:
         tp = self._token_path()

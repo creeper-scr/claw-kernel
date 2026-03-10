@@ -12,10 +12,11 @@ use async_trait::async_trait;
 use axum::{
     body::Bytes,
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::IntoResponse,
     routing::post,
     Router,
 };
+use claw_pal::retry::{with_retry_mapped, RetryConfig};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::{
@@ -70,6 +71,8 @@ pub struct WebhookChannel {
     secret: Option<String>,
     client: reqwest::Client,
     server_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Retry policy for outbound send() calls.
+    retry_config: RetryConfig,
     /// 实际监听地址（connect() 之后设置，用于端口 0 场景）。
     local_addr: Mutex<Option<SocketAddr>>,
     /// Guards against double-start: true after the first successful connect().
@@ -93,6 +96,7 @@ impl WebhookChannel {
             secret: None,
             client: reqwest::Client::new(),
             server_handle: Mutex::new(None),
+            retry_config: RetryConfig::default(),
             local_addr: Mutex::new(None),
             started: AtomicBool::new(false),
         }
@@ -119,6 +123,15 @@ impl WebhookChannel {
         }
         self.secret = Some(secret);
         Ok(self)
+    }
+
+    /// Override the retry policy applied to outbound `send()` calls.
+    ///
+    /// The default policy retries up to 3 times with 500 ms base delay capped
+    /// at 30 s.  Useful in tests to set sub-millisecond delays.
+    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
+        self.retry_config = config;
+        self
     }
 }
 
@@ -205,19 +218,67 @@ impl Channel for WebhookChannel {
         Ok(())
     }
 
-    /// 将消息 POST 到 `outbound_url`。未配置时返回 `SendFailed` 错误。
+    /// 将消息 POST 到 `outbound_url`，失败时自动指数退避重试（最多 3 次）。
+    ///
+    /// **重试条件**：网络层错误（连接超时、TCP 重置等）以及 HTTP 429 / 5xx 状态码。
+    /// 4xx 非限流错误（如 400、401、403）视为永久性错误，直接返回，不再重试。
     async fn send(&self, message: ChannelMessage) -> Result<(), ChannelError> {
-        let url = self
-            .outbound_url
-            .as_ref()
-            .ok_or_else(|| ChannelError::SendFailed("no outbound_url configured".to_string()))?;
-        self.client
-            .post(url)
-            .json(&message)
-            .send()
-            .await
-            .map_err(|e| ChannelError::SendFailed(e.to_string()))?;
-        Ok(())
+        let url = match &self.outbound_url {
+            Some(u) => u.clone(),
+            None => {
+                return Err(ChannelError::SendFailed(
+                    "no outbound_url configured".to_string(),
+                ))
+            }
+        };
+
+        let client = self.client.clone();
+
+        // Local enum lets `is_retryable` distinguish transient from permanent
+        // errors without adding new variants to the public `ChannelError` type.
+        enum SendErr {
+            Transient(String),
+            Permanent(ChannelError),
+        }
+
+        let result = with_retry_mapped(
+            || {
+                let client = client.clone();
+                let url = url.clone();
+                let message = message.clone();
+                async move {
+                    match client.post(&url).json(&message).send().await {
+                        Err(e) => {
+                            // Network-level error (timeout, connection refused, …)
+                            Err(SendErr::Transient(e.to_string()))
+                        }
+                        Ok(resp) => {
+                            let status = resp.status().as_u16();
+                            if status < 300 {
+                                Ok(())
+                            } else if status == 429 || status >= 500 {
+                                // Rate-limited or server-side fault — retryable.
+                                Err(SendErr::Transient(format!("HTTP {status}")))
+                            } else {
+                                // Permanent 4xx error — don't retry.
+                                Err(SendErr::Permanent(ChannelError::SendFailed(format!(
+                                    "HTTP {status}"
+                                ))))
+                            }
+                        }
+                    }
+                }
+            },
+            &self.retry_config,
+            |e| matches!(e, SendErr::Transient(_)),
+        )
+        .await;
+
+        match result {
+            Ok(()) => Ok(()),
+            Err(SendErr::Transient(msg)) => Err(ChannelError::SendFailed(msg)),
+            Err(SendErr::Permanent(e)) => Err(e),
+        }
     }
 
     /// 从内部队列取出下一条入站消息（阻塞直到消息到达）。
@@ -283,6 +344,8 @@ mod tests {
             direction: MessageDirection::Inbound,
             platform: Platform::Webhook,
             content: "hello webhook".to_string(),
+            sender_id: None,
+            thread_id: None,
             metadata: serde_json::Value::Null,
             timestamp_ms: 0,
         };
@@ -314,5 +377,97 @@ mod tests {
         let msg = ChannelMessage::inbound(ChannelId::new("wh-test"), Platform::Webhook, "out");
         let err = ch.send(msg).await.unwrap_err();
         assert!(err.to_string().contains("no outbound_url configured"));
+    }
+
+    /// Verify that send() retries on HTTP 5xx and eventually succeeds.
+    ///
+    /// A local axum server returns 503 for the first two requests, then 200.
+    /// With fast retry delays the entire test completes in well under a second.
+    #[tokio::test]
+    async fn test_webhook_send_retries_on_transient_5xx() {
+        use std::sync::atomic::{AtomicU32, Ordering as AO};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let call_count = Arc::new(AtomicU32::new(0));
+        let cc = Arc::clone(&call_count);
+
+        let app = axum::Router::new().route(
+            "/target",
+            axum::routing::post(move || {
+                let count = cc.fetch_add(1, AO::SeqCst);
+                async move {
+                    if count < 2 {
+                        StatusCode::SERVICE_UNAVAILABLE
+                    } else {
+                        StatusCode::OK
+                    }
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+
+        let outbound_url = format!("http://{addr}/target");
+        let ch = WebhookChannel::new(
+            ChannelId::new("wh-retry"),
+            "127.0.0.1:0".parse().unwrap(),
+            Some(outbound_url),
+        )
+        .with_retry_config(
+            RetryConfig::new()
+                .with_max_retries(3)
+                .with_base_delay(Duration::from_millis(1))
+                .with_max_delay(Duration::from_millis(5)),
+        );
+
+        let msg = ChannelMessage::inbound(ChannelId::new("wh-retry"), Platform::Webhook, "test");
+        ch.send(msg).await.expect("should succeed after retries");
+        // 2 failures + 1 success = 3 calls
+        assert_eq!(call_count.load(AO::SeqCst), 3);
+    }
+
+    /// Verify that a permanent 4xx error is returned immediately without retrying.
+    #[tokio::test]
+    async fn test_webhook_send_no_retry_on_4xx() {
+        use std::sync::atomic::{AtomicU32, Ordering as AO};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let call_count = Arc::new(AtomicU32::new(0));
+        let cc = Arc::clone(&call_count);
+
+        let app = axum::Router::new().route(
+            "/target",
+            axum::routing::post(move || {
+                cc.fetch_add(1, AO::SeqCst);
+                async { StatusCode::BAD_REQUEST }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.ok() });
+
+        let outbound_url = format!("http://{addr}/target");
+        let ch = WebhookChannel::new(
+            ChannelId::new("wh-perm"),
+            "127.0.0.1:0".parse().unwrap(),
+            Some(outbound_url),
+        )
+        .with_retry_config(
+            RetryConfig::new()
+                .with_max_retries(3)
+                .with_base_delay(Duration::from_millis(1))
+                .with_max_delay(Duration::from_millis(5)),
+        );
+
+        let msg = ChannelMessage::inbound(ChannelId::new("wh-perm"), Platform::Webhook, "test");
+        let err = ch.send(msg).await.unwrap_err();
+        assert!(err.to_string().contains("HTTP 400"));
+        // No retries for permanent 4xx
+        assert_eq!(call_count.load(AO::SeqCst), 1);
     }
 }

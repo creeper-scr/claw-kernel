@@ -1,18 +1,20 @@
 ---
 title: Windows Platform Guide
-description: Windows platform guide (AppContainer + Job Objects)
+description: Windows platform guide (Job Objects + AppContainer roadmap)
 status: partial-implementation
-version: "0.1.0"
-last_updated: "2026-03-08"
+version: "1.4.0"
+last_updated: "2026-03-10"
 language: en
 ---
 
 
 # Windows Platform Guide
 
-> ⚠️ **已知限制 (Known Limitation)**: Windows沙箱目前为 **Stub实现**，仅返回占位符handle，不实际限制进程权限。在Windows上使用Safe Mode时，安全隔离依赖其他机制（如低完整性级别、UAC等）。完整AppContainer实现计划在v0.2.0中提供。
+> ⚠️ **降级实现 (Degraded Implementation)**: Windows 沙箱使用 **Job Objects** 提供部分隔离。
+> 资源限制和子进程阻断已通过 Job Object 实际执行，但**文件系统和网络限制暂不生效**。
+> 完整 AppContainer 实现（含文件系统/网络隔离）计划在 **v1.5.0** 提供。
 
-Windows IPC (Named Pipe) 功能完整，但沙箱隔离功能尚未完全实现。
+Windows IPC (Named Pipe) 功能完整，沙箱已从 Stub 升级为 Job Object 实现。
 
 ---
 
@@ -75,35 +77,68 @@ rustc --print host-triple
 
 ## Sandbox Implementation
 
-> ⚠️ **当前状态**: Windows沙箱为 **Stub实现**，以下代码仅展示设计意图，实际未执行：
+### 当前实现：Job Object（v1.4.0）
+
+Windows Safe 模式通过 **Job Objects** 提供降级隔离。与 Linux（seccomp）和 macOS（sandbox_init）相比：
+
+| 隔离能力 | Linux | macOS | Windows Job Object (v1.4.0) |
+|---------|-------|-------|------------------------------|
+| 内存限制 | ✅ setrlimit | ❌ 不支持 | ✅ `JobMemoryLimit` |
+| 子进程阻断 | ✅ seccomp | ✅ SBPL | ✅ `ActiveProcessLimit=1` |
+| 进程数限制 | ✅ setrlimit NPROC | ❌ | ✅ `ActiveProcessLimit` |
+| 文件系统限制 | ⚠️ namespace | ✅ SBPL | ❌ **暂不生效** |
+| 网络限制 | ✅ seccomp socket | ✅ SBPL | ❌ **暂不生效** |
+
+**Safe 模式实际执行的限制：**
 
 ```rust
-// 设计目标 (尚未实现)
-// create_app_container()?;    // ❌ 未实现
-create_capabilities()?;        // ❌ 未实现  
-apply_job_limits()?;           // ⚠️ Stub - 仅存储配置
-create_process_with_token()?;  // ❌ 未实现
+// v1.4.0 实现 — Job Object 实际执行以下限制
+// 1. 内存上限：若配置了 max_memory_bytes，超出则进程被终止
+// 2. 子进程阻断：allow_subprocess=false 时 ActiveProcessLimit=1，
+//    CreateProcess 调用将返回 ERROR_NOT_ENOUGH_QUOTA
+// 3. 进程数上限：若配置了 max_processes
+//
+// 以下限制存储但暂不执行（v1.5.0 AppContainer 实现后生效）：
+// restrict_filesystem(&whitelist)  → 存储，未执行
+// restrict_network(&rules)         → 存储，未执行
 ```
 
-Windows沙箱设计使用 AppContainer + Job Objects，但目前：
-- ✅ Job Objects资源限制：已实现stub，结构就绪
-- ❌ AppContainer隔离：**未实现**（返回空handle）
-- ❌ 文件系统白名单：**未实现**  
-- ❌ 网络规则限制：**未实现**
+**Safe 模式激活时的运行时告警（不可关闭）：**
 
-### AppContainer
+```
+WARN claw_pal::windows::sandbox: Windows Safe mode uses Job Object isolation (degraded).
+     Resource limits and subprocess blocking are enforced via Job Object.
+     Filesystem and network restrictions are NOT enforced until v1.5.0 (AppContainer).
+     For full isolation, use WSL2 to run the Linux version.
+```
 
-Isolates the process with:
-- Low integrity level
-- Capability-based access control
-- Network isolation
+### Job Object 生命周期
 
-### Job Objects
+```
+CreateJobObjectW(null, null)           → 创建匿名 Job Object
+SetInformationJobObject(...)           → 配置资源限制
+AssignProcessToJobObject(job, self)    → 将当前进程加入 Job
+CloseHandle(job)                       → 关闭句柄（内核继续执行限制）
+                                        ↑ 进程仍在 Job 中，限制有效
+```
 
-Enforce:
-- Memory limits
-- CPU limits
-- Active process limits
+Job Object 句柄关闭后，只要进程仍在 Job 中，内核就继续执行限制规则。进程退出时 Job Object 自动释放。
+
+### 规划：AppContainer（v1.5.0）
+
+完整 Windows 沙箱实现需要：
+
+```rust
+// 计划 v1.5.0 实现
+CreateAppContainerProfile(name)?;         // 创建 AppContainer profile
+CreateProcessAsUser(token, ...)?;         // 以 AppContainer 身份启动进程
+// Windows Filtering Platform (WFP) callout for network rules
+```
+
+届时将实现：
+- ✅ 文件系统路径级别的读写限制
+- ✅ 网络域名/端口级别过滤
+- ✅ 低完整性级别进程隔离
 
 ---
 
@@ -257,20 +292,25 @@ Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name
 
 ## Sandbox Degradation Strategy
 
-Windows 平台采用**功能降级**策略：
+Windows 平台采用**功能降级**策略，分两阶段实现完整沙箱：
 
-| 功能 | Linux/macOS | Windows（降级后） |
-|------|-------------|-------------------|
-| 系统调用过滤 | seccomp-bpf / Seatbelt | AppContainer + WFP（简化实现） |
-| 文件系统隔离 | 完整 namespace | AppContainer 能力声明 |
-| 网络规则 | 域名+端口组合匹配 | AppContainer 网络隔离（较粗粒度） |
-| 进程隔离 | PID namespace | Job Objects |
+| 功能 | Linux/macOS | Windows v1.4.0（当前） | Windows v1.5.0（计划） |
+|------|-------------|------------------------|------------------------|
+| 系统调用过滤 | seccomp-bpf / Seatbelt | 不适用（Windows无seccomp等价物） | 不适用 |
+| 内存限制 | setrlimit | ✅ Job Object JobMemoryLimit | ✅ Job Object |
+| 进程数限制 | setrlimit NPROC | ✅ Job Object ActiveProcessLimit | ✅ Job Object |
+| 子进程阻断 | seccomp execve | ✅ ActiveProcessLimit=1 | ✅ Job Object |
+| 文件系统隔离 | namespace / SBPL | ❌ 暂不执行 | ✅ AppContainer |
+| 网络限制 | seccomp / SBPL | ❌ 暂不执行 | ✅ AppContainer + WFP |
 
-**降级说明**：
-1. Windows 版本完整支持 API，但某些高级沙箱特性可能简化实现
-2. 启动时输出警告：`[WARN] Windows sandbox provides medium isolation, suitable for personal use`
-3. **警告级别为 WARN，不可关闭**（提醒用户当前隔离强度）
-4. 如需更强隔离，建议使用 WSL2 运行 Linux 版本
+**降级说明（v1.4.0）：**
+
+1. Safe 模式通过 Job Object 实际执行资源和进程限制
+2. 文件系统和网络规则存储但不生效
+3. 启动时输出不可关闭的 `WARN` 级别告警，明确告知隔离能力范围
+4. 如需完整文件系统/网络隔离，建议使用 WSL2 运行 Linux 版本
+
+> **与旧版 Stub 的区别**：v1.3.0 及之前，Windows Safe 模式直接返回 `Err(NotSupported)` 完全拒绝工作。v1.4.0 提供真实的 Job Object 隔离，虽然不完整，但已具备实际安全价值。
 
 ## Performance
 

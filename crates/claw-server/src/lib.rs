@@ -50,12 +50,15 @@
 
 #![warn(missing_docs)]
 
+pub mod channel_event_publisher;
 pub mod channel_registry;
 pub mod error;
 pub mod event_publisher;
+pub(crate) mod event_trigger;
 pub mod global_skill_registry;
 pub mod global_tool_registry;
 pub mod handler;
+pub mod hot_loader;
 pub mod protocol;
 pub mod server;
 pub mod session;
@@ -63,6 +66,7 @@ pub mod tool_bridge;
 pub mod trigger_store;
 
 pub use channel_registry::ChannelRegistry;
+pub use channel_event_publisher::RuntimeChannelEventPublisher;
 pub use error::ServerError;
 pub use server::{KernelServer, ProviderConfig, ServerConfig};
 pub use session::SessionManager;

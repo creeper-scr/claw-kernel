@@ -90,7 +90,7 @@ pub use v8::{
 // Re-export bridge types for configuration
 pub use bridge::tools::CallerContext;
 pub use bridge::{
-    AgentBridge, DirsBridge, EventsBridge, FsBridge, MemoryBridge, NetBridge, RustBridge, ToolsBridge,
+    AgentBridge, DirsBridge, EventsBridge, FsBridge, NetBridge, RustBridge, ToolsBridge,
 };
 
 // Re-export hot-reload types

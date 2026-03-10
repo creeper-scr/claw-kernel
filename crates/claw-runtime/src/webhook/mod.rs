@@ -218,6 +218,8 @@ pub struct EndpointConfig {
     pub max_body_size: usize,
     /// Whether to parse JSON automatically.
     pub parse_json: bool,
+    /// Maximum requests per minute per endpoint (rate limit). Defaults to 100.
+    pub max_requests_per_minute: u32,
 }
 
 impl std::fmt::Debug for EndpointConfig {
@@ -246,6 +248,7 @@ impl EndpointConfig {
             hmac: HmacConfig::None,
             max_body_size: 10 * 1024 * 1024, // 10MB default
             parse_json: false,
+            max_requests_per_minute: 100,
         }
     }
 
@@ -278,6 +281,12 @@ impl EndpointConfig {
     /// Enable automatic JSON parsing.
     pub fn with_json_parsing(mut self) -> Self {
         self.parse_json = true;
+        self
+    }
+
+    /// Set the maximum requests per minute for rate limiting.
+    pub fn with_rate_limit(mut self, max: u32) -> Self {
+        self.max_requests_per_minute = max;
         self
     }
 }
@@ -366,6 +375,10 @@ pub struct WebhookStats {
     pub last_request: Option<u64>,
     /// Average response time in milliseconds.
     pub avg_response_time_ms: u64,
+    /// Requests skipped due to duplicate X-Request-Id within 60s dedup window.
+    pub requests_deduped: u64,
+    /// Requests rejected due to per-endpoint rate limit (100 req/min default).
+    pub requests_rate_limited: u64,
 }
 
 /// Extension trait for webhook server utilities.

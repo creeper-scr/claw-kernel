@@ -1,9 +1,14 @@
 //! IpcAgentHandle: typed handle for communicating with a spawned agent over IPC.
 //!
 //! Unlike [`AgentHandle`](crate::agent_types::AgentHandle) (which only holds an
-//! event bus reference), `IpcAgentHandle` carries a dedicated
-//! `tokio::sync::mpsc` channel so callers can send request/response messages
-//! directly to the agent's internal message loop.
+//! event bus reference), `IpcAgentHandle` carries a [`SharedSender`] — a
+//! mutex-wrapped optional mpsc sender — so callers can send request/response
+//! messages directly to the agent's internal message loop.
+//!
+//! The [`SharedSender`] design enables **transparent hot-swap on restart**: when
+//! the orchestrator restarts a failed agent it swaps the inner sender in-place,
+//! so all cloned `IpcAgentHandle` instances automatically route future messages
+//! to the new loop without the caller needing to obtain a fresh handle.
 //!
 //! # Usage
 //!
@@ -19,6 +24,7 @@
 //! println!("{}", response.content);
 //! ```
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -77,32 +83,53 @@ pub(crate) enum AgentMessage {
     },
 }
 
+// ─── SharedSender ─────────────────────────────────────────────────────────────
+
+/// Hot-swappable sender to an agent's IPC message loop.
+///
+/// Wrapped in `Arc<Mutex<Option<...>>>` so that:
+/// - Multiple [`IpcAgentHandle`] clones share a single slot.
+/// - The orchestrator can atomically replace the inner sender when the agent
+///   loop is restarted, making the swap transparent to callers.
+/// - `None` signals that the agent is not currently running (e.g. between
+///   restart attempts); callers receive `AgentNotFound`.
+pub(crate) type SharedSender =
+    Arc<tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<AgentMessage>>>>;
+
 // ─── IpcAgentHandle ──────────────────────────────────────────────────────────
 
 /// A typed handle to a running agent for direct IPC communication.
 ///
 /// Obtained from [`AgentOrchestrator::spawn_agent`](crate::orchestrator::AgentOrchestrator::spawn_agent).
-/// All clones share the same underlying channel to the agent.
+/// All clones share the same [`SharedSender`] slot: when the orchestrator
+/// restarts the underlying agent loop the sender is swapped in-place, so
+/// existing handles automatically route future messages to the new loop.
 #[derive(Debug, Clone)]
 pub struct IpcAgentHandle {
     /// The unique ID of the target agent.
     pub agent_id: AgentId,
-    /// Sender side of the agent's message channel.
-    pub(crate) tx: tokio::sync::mpsc::Sender<AgentMessage>,
+    /// Shared, hot-swappable sender to the agent's message loop.
+    pub(crate) shared_tx: SharedSender,
 }
 
 impl IpcAgentHandle {
     /// Send a message to the agent without waiting for a response.
     ///
     /// Returns immediately after the message is queued.  Returns
-    /// `Err(AgentNotFound)` if the agent's message loop has already exited.
+    /// `Err(AgentNotFound)` if the agent's message loop has exited and the
+    /// restart has not yet completed (slot is `None`) or if the channel is
+    /// permanently closed.
     pub async fn send(&self, msg: impl Into<String>) -> Result<(), RuntimeError> {
-        self.tx
-            .send(AgentMessage::Send {
-                content: msg.into(),
-            })
-            .await
-            .map_err(|_| RuntimeError::AgentNotFound(self.agent_id.0.clone()))
+        let guard = self.shared_tx.lock().await;
+        match guard.as_ref() {
+            Some(tx) => tx
+                .send(AgentMessage::Send {
+                    content: msg.into(),
+                })
+                .await
+                .map_err(|_| RuntimeError::AgentNotFound(self.agent_id.0.clone())),
+            None => Err(RuntimeError::AgentNotFound(self.agent_id.0.clone())),
+        }
     }
 
     /// Send a message and wait for the agent to complete processing it.
@@ -119,14 +146,20 @@ impl IpcAgentHandle {
     ) -> Result<AgentResponse, RuntimeError> {
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
 
-        self.tx
-            .send(AgentMessage::SendAwait {
-                content: msg.into(),
-                timeout,
-                reply_tx,
-            })
-            .await
-            .map_err(|_| RuntimeError::AgentNotFound(self.agent_id.0.clone()))?;
+        {
+            let guard = self.shared_tx.lock().await;
+            match guard.as_ref() {
+                Some(tx) => tx
+                    .send(AgentMessage::SendAwait {
+                        content: msg.into(),
+                        timeout,
+                        reply_tx,
+                    })
+                    .await
+                    .map_err(|_| RuntimeError::AgentNotFound(self.agent_id.0.clone()))?,
+                None => return Err(RuntimeError::AgentNotFound(self.agent_id.0.clone())),
+            }
+        }
 
         // Give the handler `timeout + 5s` to respond before the outer guard fires.
         tokio::time::timeout(timeout + Duration::from_secs(5), reply_rx)
@@ -142,13 +175,17 @@ impl IpcAgentHandle {
 mod tests {
     use super::*;
 
+    fn make_handle(tx: tokio::sync::mpsc::Sender<AgentMessage>, id: &str) -> IpcAgentHandle {
+        IpcAgentHandle {
+            agent_id: AgentId::new(id),
+            shared_tx: Arc::new(tokio::sync::Mutex::new(Some(tx))),
+        }
+    }
+
     #[tokio::test]
     async fn test_send_fire_and_forget() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentMessage>(8);
-        let handle = IpcAgentHandle {
-            agent_id: AgentId::new("test-agent"),
-            tx,
-        };
+        let handle = make_handle(tx, "test-agent");
 
         handle.send("hello").await.expect("send should succeed");
 
@@ -164,10 +201,7 @@ mod tests {
         // Drop _rx immediately — the channel is closed.
         drop(_rx);
 
-        let handle = IpcAgentHandle {
-            agent_id: AgentId::new("gone-agent"),
-            tx,
-        };
+        let handle = make_handle(tx, "gone-agent");
 
         let result = handle.send("hello").await;
         assert!(
@@ -178,12 +212,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_send_fails_when_slot_is_none() {
+        // Simulate the between-restart window: slot is None.
+        let handle = IpcAgentHandle {
+            agent_id: AgentId::new("restarting-agent"),
+            shared_tx: Arc::new(tokio::sync::Mutex::new(None)),
+        };
+
+        let result = handle.send("hello").await;
+        assert!(
+            matches!(result, Err(RuntimeError::AgentNotFound(_))),
+            "expected AgentNotFound when slot is None, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_shared_sender_hot_swap() {
+        // First channel (old loop)
+        let (tx1, _rx1) = tokio::sync::mpsc::channel::<AgentMessage>(8);
+        let shared: SharedSender = Arc::new(tokio::sync::Mutex::new(Some(tx1)));
+        let handle = IpcAgentHandle {
+            agent_id: AgentId::new("swap-agent"),
+            shared_tx: Arc::clone(&shared),
+        };
+
+        // Drop rx1 — old loop is dead.
+        drop(_rx1);
+        // Send fails because old channel is broken.
+        assert!(handle.send("should fail").await.is_err());
+
+        // Orchestrator restarts: swap in a new sender.
+        let (tx2, mut rx2) = tokio::sync::mpsc::channel::<AgentMessage>(8);
+        *shared.lock().await = Some(tx2);
+
+        // Same handle now routes to new loop.
+        handle.send("after restart").await.expect("send after hot-swap should succeed");
+        match rx2.recv().await.unwrap() {
+            AgentMessage::Send { content } => assert_eq!(content, "after restart"),
+            other => panic!("unexpected message: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
     async fn test_send_await_receives_response() {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentMessage>(8);
-        let handle = IpcAgentHandle {
-            agent_id: AgentId::new("echo-agent"),
-            tx,
-        };
+        let handle = make_handle(tx, "echo-agent");
 
         // Spawn a fake handler that echoes back.
         tokio::spawn(async move {
@@ -218,10 +292,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::channel::<AgentMessage>(8);
         // Do NOT spawn a handler — reply will never arrive.
 
-        let handle = IpcAgentHandle {
-            agent_id: AgentId::new("slow-agent"),
-            tx,
-        };
+        let handle = make_handle(tx, "slow-agent");
 
         let result = handle
             .send_await("stuck", Duration::from_millis(50))

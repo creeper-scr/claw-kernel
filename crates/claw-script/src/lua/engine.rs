@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use crate::{
     bridge::{
-        agent::AgentBridge, dirs::DirsBridge, memory::MemoryBridge, register_agent, register_dirs,
-        register_events, register_fs, register_memory, register_net, register_tools,
+        agent::AgentBridge, dirs::DirsBridge, llm::LlmBridge, register_agent, register_dirs,
+        register_events, register_fs, register_llm, register_net, register_tools,
         tools::CallerContext, EventsBridge, FsBridge, NetBridge, ToolsBridge,
     },
     error::{CompileError, ScriptError},
@@ -181,9 +181,9 @@ impl ScriptEngine for LuaEngine {
         let tool_registry = ctx.tool_registry.clone();
         let permissions = ctx.permissions.clone();
         let max_recursion_depth = self.max_recursion_depth;
-        let memory_store = ctx.memory_store.clone();
         let event_bus = ctx.event_bus.clone();
         let orchestrator = ctx.orchestrator.clone();
+        let llm_provider = ctx.llm_provider.clone();
 
         // Cancellation flag shared between timeout watcher and Lua hook
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -261,14 +261,6 @@ impl ScriptEngine for LuaEngine {
                 ScriptError::Runtime(format!("Failed to register dirs bridge: {}", e))
             })?;
 
-            // Register Memory bridge if store is provided
-            if let Some(store) = memory_store {
-                let memory_bridge = MemoryBridge::new(store, agent_id.clone());
-                register_memory(&lua, memory_bridge).map_err(|e| {
-                    ScriptError::Runtime(format!("Failed to register memory bridge: {}", e))
-                })?;
-            }
-
             // Register Events bridge if event bus is provided
             if let Some(bus) = event_bus {
                 let events_bridge =
@@ -285,6 +277,14 @@ impl ScriptEngine for LuaEngine {
                 let agent_bridge = AgentBridge::new(orc, agent_id);
                 register_agent(&lua, agent_bridge).map_err(|e| {
                     ScriptError::Runtime(format!("Failed to register agent bridge: {}", e))
+                })?;
+            }
+
+            // Register LLM bridge if provider is provided
+            if let Some(provider) = llm_provider {
+                let llm_bridge = LlmBridge::new(provider);
+                register_llm(&lua, llm_bridge).map_err(|e| {
+                    ScriptError::Runtime(format!("Failed to register llm bridge: {}", e))
                 })?;
             }
 

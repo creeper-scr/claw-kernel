@@ -40,6 +40,7 @@ uuid        = { workspace = true }
 dashmap     = { workspace = true }
 rusqlite    = { workspace = true }
 regex       = { workspace = true }
+notify      = { workspace = true }
 
 [dev-dependencies]
 tempfile    = { workspace = true }

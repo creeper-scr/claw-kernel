@@ -6,7 +6,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.83%2B-orange.svg)](https://www.rust-lang.org)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](docs/platform/)
 [![Tests](https://img.shields.io/badge/tests-670+%20passing-brightgreen.svg)](#)
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.4.1-blue.svg)](CHANGELOG.md)
 
 ---
 
@@ -21,9 +21,14 @@ It is a **shared infrastructure library**, not a standalone agent — think of i
 │              Layer 3: Extension Foundation          │
 │    Lua (default✅) · V8/TypeScript (optional✅)      │
 ├─────────────────────────────────────────────────────┤
+│              Layer 2.5: IPC Daemon Services         │
+│    claw-server: ChannelRegistry · ToolBridge        │
+│    TriggerStore · IPC token auth · AxumWebhook      │
+├─────────────────────────────────────────────────────┤
 │              Layer 2: Agent Kernel Protocol         │
-│    Provider · ToolRegistry · AgentLoop · Memory     │
+│    Provider · ToolRegistry · AgentLoop              │
 │    Channel (Discord · HTTP Webhook · Stdin)         │
+│    [Memory: optional application-layer dependency]  │
 ├─────────────────────────────────────────────────────┤
 │              Layer 1: System Runtime                │
 │    EventBus · AgentOrchestrator · IpcRouter         │
@@ -74,8 +79,9 @@ See [`examples/`](examples/) for `simple-agent`, `custom-tool`, and `self-evolvi
 | [`claw-provider`](docs/crates/claw-provider.md) | 2 | LLM providers: Anthropic, OpenAI, Ollama, DeepSeek, Moonshot |
 | [`claw-tools`](docs/crates/claw-tools.md) | 2 | Tool registry, JSON Schema gen, hot-loading (50ms debounce) |
 | [`claw-loop`](docs/crates/claw-loop.md) | 2 | Agent loop engine, history, stop conditions |
-| [`claw-memory`](docs/crates/claw-memory.md) | 2 | Ngram embedder, SQLite store, SecureMemoryStore (50 MB) |
+| [`claw-memory`](docs/crates/claw-memory.md) | 2 | Ngram embedder, SQLite store, SecureMemoryStore (50 MB) — **optional application-layer dependency** |
 | [`claw-channel`](docs/crates/claw-channel.md) | 2 | Channel trait: Discord, HTTP Webhook, Stdin |
+| [`claw-server`](docs/crates/claw-server.md) | 2.5 | IPC daemon server, channel registry, tool bridge, trigger store |
 | [`claw-script`](docs/crates/claw-script.md) | 3 | Script engines: Lua (default✅), V8/TypeScript (✅) |
 | `claw-kernel` | meta | Re-exports all of the above + prelude |
 
@@ -83,13 +89,9 @@ See [`examples/`](examples/) for `simple-agent`, `custom-tool`, and `self-evolvi
 
 | Platform | Sandbox | Isolation | IPC Support |
 |----------|---------|-----------|-------------|
-| Linux | seccomp-bpf + Namespaces | Strongest | ✅ Unix Domain Socket |
-| macOS | sandbox(7) / Seatbelt | Medium | ✅ Unix Domain Socket |
-| Windows | AppContainer + Job Objects | Medium | 🚧 Skeleton included, fully available in v0.2.0 |
-
-> **Note:** Windows IPC foundation is included in v0.1.0 with basic skeleton structure. Full Named Pipe implementation will be available in v0.2.0 **(High Priority)**.
->
-> **注意**: IPC 远程消息投递当前未实现，仅支持本地进程内通信。Windows IPC 计划在 v0.2.0 中实现。
+| Linux | seccomp-bpf + Namespaces | Strongest | Unix Domain Socket |
+| macOS | sandbox(7) / Seatbelt | Medium | Unix Domain Socket |
+| Windows | AppContainer + Job Objects | Medium | Named Pipe (基础框架已实现) |
 
 Platform guides: [Linux](docs/platform/linux.md) · [macOS](docs/platform/macos.md) · [Windows](docs/platform/windows.md)
 
@@ -101,7 +103,7 @@ Platform guides: [Linux](docs/platform/linux.md) · [macOS](docs/platform/macos.
 git clone https://github.com/claw-project/claw-kernel.git
 cd claw-kernel
 cargo build                          # default (Lua only)
-cargo test --workspace               # 389+ tests
+cargo test --workspace               # 670+ tests
 cargo clippy --workspace -- -D warnings
 ```
 

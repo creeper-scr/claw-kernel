@@ -17,6 +17,7 @@ use crate::{
     types::{ChannelId, ChannelMessage, Platform},
 };
 use async_trait::async_trait;
+use claw_pal::retry::{with_retry_mapped, RetryConfig};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -48,6 +49,8 @@ pub struct DiscordChannel {
     shard_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Whether the channel is currently connected.
     connected: Arc<AtomicBool>,
+    /// Retry policy applied to outbound `send()` calls.
+    retry_config: RetryConfig,
 }
 
 impl DiscordChannel {
@@ -68,6 +71,7 @@ impl DiscordChannel {
             inbound_rx: Mutex::new(rx),
             shard_handle: Mutex::new(None),
             connected: Arc::new(AtomicBool::new(false)),
+            retry_config: RetryConfig::default(),
         }
     }
 
@@ -85,6 +89,16 @@ impl DiscordChannel {
         self.inbound_tx
             .try_send(msg)
             .expect("test: inbound channel full or closed");
+    }
+
+    /// Override the retry policy applied to outbound `send()` calls.
+    ///
+    /// The default policy retries up to 3 times with 500 ms base delay capped
+    /// at 30 s, covering Discord 429 rate-limit responses and transient 5xx
+    /// errors.
+    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
+        self.retry_config = config;
+        self
     }
 }
 
@@ -146,11 +160,12 @@ impl Channel for DiscordChannel {
                 if let Event::MessageCreate(msg) = event {
                     // Only forward messages from the configured channel.
                     if msg.channel_id.get() == discord_channel_id {
-                        let channel_msg = ChannelMessage::inbound(
+                        let mut channel_msg = ChannelMessage::inbound(
                             channel_id.clone(),
                             Platform::Discord,
                             msg.content.clone(),
                         );
+                        channel_msg.sender_id = Some(msg.author.id.get().to_string());
                         if tx.send(channel_msg).await.is_err() {
                             // Receiver dropped — shut down.
                             break;
@@ -164,12 +179,13 @@ impl Channel for DiscordChannel {
         Ok(())
     }
 
-    /// Send a message to the Discord channel.
+    /// Send a message to the Discord channel, retrying on transient errors.
     ///
-    /// Returns `Err(ChannelError::SendFailed)` if the message content exceeds
-    /// Discord's 2000-character limit.
+    /// Returns `Err(ChannelError::SendFailed)` immediately (without retrying)
+    /// if the message exceeds Discord's 2 000-character limit.  All other
+    /// failures (HTTP 429 rate-limit, 5xx server errors, network faults) are
+    /// retried with exponential back-off according to `retry_config`.
     async fn send(&self, message: ChannelMessage) -> Result<(), ChannelError> {
-        // FIX-16: Validate Discord 2000-character message length limit.
         const DISCORD_MAX_MSG_LEN: usize = 2000;
         if message.content.len() > DISCORD_MAX_MSG_LEN {
             return Err(ChannelError::SendFailed(format!(
@@ -177,14 +193,31 @@ impl Channel for DiscordChannel {
                 message.content.len()
             )));
         }
+
         let client = Arc::clone(&self.http_client);
-        client
-            .create_message(self.discord_id())
-            .content(&message.content)
-            .map_err(|e| ChannelError::SendFailed(e.to_string()))?
-            .await
-            .map_err(|e| ChannelError::SendFailed(e.to_string()))?;
-        Ok(())
+        let discord_id = self.discord_id();
+        let content = message.content.clone();
+
+        with_retry_mapped(
+            || {
+                let client = Arc::clone(&client);
+                let content = content.clone();
+                async move {
+                    client
+                        .create_message(discord_id)
+                        .content(&content)
+                        .map_err(|e| ChannelError::SendFailed(e.to_string()))?
+                        .await
+                        .map_err(|e| ChannelError::SendFailed(e.to_string()))?;
+                    Ok(())
+                }
+            },
+            &self.retry_config,
+            // Retry on all HTTP / network errors; the 2000-char guard above
+            // prevents the most common permanent 400 error before we get here.
+            |_| true,
+        )
+        .await
     }
 
     /// Receive the next inbound message.

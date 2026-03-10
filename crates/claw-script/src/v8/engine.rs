@@ -227,9 +227,9 @@ impl ScriptEngine for V8Engine {
         let net_config = ctx.net_config.clone();
         let tool_registry = ctx.tool_registry.clone();
         let permissions = ctx.permissions.clone();
-        let memory_store = ctx.memory_store.clone();
         let event_bus = ctx.event_bus.clone();
         let orchestrator = ctx.orchestrator.clone();
+        let llm_provider = ctx.llm_provider.clone();
         let options = self.options.clone();
 
         // Shared slot for the V8 IsolateHandle.
@@ -309,15 +309,15 @@ impl ScriptEngine for V8Engine {
             }
 
             // Create BridgeState for bridges
-            let bridge_state = BridgeState::new(
+            let bridge_state = BridgeState::new_with_llm(
                 fs_config,
                 net_config,
                 tool_registry,
                 permissions,
                 agent_id.clone(),
-                memory_store,
                 event_bus,
                 orchestrator,
+                llm_provider,
             )?;
 
             // Register bridges — keep the Box alive for the entire V8 execution.

@@ -2,8 +2,8 @@
 title: claw-kernel Architecture Overview
 description: Complete 5-layer architecture documentation for claw-kernel
 status: implemented
-version: "1.0.0"
-last_updated: "2026-03-09"
+version: "1.4.1"
+last_updated: "2026-03-10"
 language: en
 ---
 
@@ -668,6 +668,9 @@ impl From<&str> for ConversationContext {
 
 #### Long-Term Memory (`claw-memory`)
 
+> **v1.3.0 D1 Decision — Application-Layer Component**
+> `claw-memory` is an **optional application-layer dependency**, not a kernel hard dependency. As of v1.3.0, long-term memory operations were demoted from the kernel protocol to the application layer. Applications that need long-term memory can depend on `claw-memory` directly; the kernel itself does not require it. See [ADR-010](../adr/010-memory-system-boundary.md) for full rationale.
+
 > **Design Principle — Mechanism vs. Policy Separation**
 > The Rust kernel (Layer 2) is responsible only for *how* to store and retrieve memories safely and efficiently (Mechanism). All lifecycle rules, summarization algorithms, and retrieval prompts are defined in Layer 3 scripts (Policy), enabling Agent self-evolution without kernel changes.
 
@@ -744,6 +747,8 @@ pub enum EpisodeKind {
 - `claw-pal` — Sandboxed filesystem access (database path enforcement)
 - Works closely with `claw-loop` — Working Memory overflow triggers persistence via EventBus
 
+> **Note:** `claw-memory` is an **optional** application-layer dependency (v1.3.0 D1 decision). The kernel core (`claw-runtime`, `claw-loop`, `claw-server`) does **not** hard-depend on `claw-memory`. Applications opt in by adding `claw-memory` to their own `Cargo.toml`.
+
 **Feature Flags:**
 ```toml
 [features]
@@ -782,20 +787,10 @@ interface RustBridge {
     call(name: string, params: any): Promise<any>;
     list(): ToolMeta[];
   };
-  // claw.memory.* — Policy defined in scripts, Mechanism provided by claw-memory (Layer 2)
-  // Agent decides WHAT to memorize and WHEN; the kernel handles HOW.
-  //
-  // Typical usage pattern:
-  //   on_think:   relevant = await claw.memory.search(current_topic, 5)
-  //   on_observe: if valuable, await claw.memory.memorize({ content, space: "knowledge" })
-  memory: {
-    // Semantic memory (RAG) — cross-session, de-temporalized knowledge
-    search(query: string, topK: number): Promise<MemoryItem[]>;
-    memorize(item: { content: string; metadata?: any; space?: string }): Promise<string>;
-    // Episodic memory — time-series action log (tool calls, errors, reflections)
-    logEpisode(entry: { kind: string; content: any; tags?: string[] }): Promise<string>;
-    queryEpisodes(filter: { since?: Date; until?: Date; tags?: string[]; limit?: number }): Promise<EpisodicEntry[]>;
-  };
+  // claw.memory.* — REMOVED in v1.3.0 (D1 decision)
+  // Memory operations are application-layer policy.
+  // Use the claw-memory crate directly in Rust, or implement via custom IPC.
+  // See: docs/adr/010-memory-system-boundary.md
   events: { emit(event: string, data: any): void; on(event: string, handler: Function): void };
   fs: { read(path: string): Promise<Buffer>; write(path: string, data: Buffer): Promise<void> };
   agent: { spawn(config: AgentConfig): Promise<AgentHandle>; kill(handle: AgentHandle): Promise<void> };

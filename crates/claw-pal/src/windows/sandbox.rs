@@ -1,36 +1,52 @@
-//! Windows sandbox implementation using AppContainer (STUB — NOT PRODUCTION READY).
+//! Windows sandbox implementation using Job Objects (degraded isolation).
 //!
-//! ⚠️ **WARNING**: This is a STUB implementation. It stores configuration but does NOT
-//! enforce any actual sandbox restrictions. Use with caution in production environments.
+//! Provides **partial isolation** via Windows Job Objects, which is a significant
+//! improvement over the previous stub, but weaker than Linux (seccomp) and macOS
+//! (sandbox_init) due to Windows API limitations.
 //!
-//! Implements [`SandboxBackend`] for Windows (partially):
-//! - **AppContainer API**: ❌ NOT implemented — returns stub handle only
-//! - **Job Objects**: ❌ NOT implemented — resource limits stored but not enforced
+//! # Isolation Comparison
 //!
-//! # Current Behavior
+//! | Feature | Linux | macOS | Windows Job Object |
+//! |---------|-------|-------|--------------------|
+//! | Memory limits | ✅ setrlimit | ❌ not supported | ✅ JobMemoryLimit |
+//! | Subprocess blocking | ✅ seccomp | ✅ SBPL | ✅ ActiveProcessLimit=1 |
+//! | Process count limit | ✅ setrlimit NPROC | ❌ | ✅ ActiveProcessLimit |
+//! | Network restrictions | ✅ seccomp socket | ✅ SBPL | ❌ NOT enforced |
+//! | Filesystem restrictions | ⚠️ namespace | ✅ SBPL | ❌ NOT enforced |
 //!
-//! - `create()`: Initializes configuration storage
-//! - `restrict_filesystem()`: Stores paths for future implementation
-//! - `restrict_network()`: Stores rules for future implementation
-//! - `restrict_syscalls()`: Stores policy for future implementation (no syscall filtering on Windows)
-//! - `restrict_resources()`: Stores limits for future implementation
-//! - `apply()`: Returns `SandboxHandle` WITHOUT applying any actual restrictions
+//! # What IS enforced in Safe mode
 //!
-//! # Safety Considerations
+//! - **Memory limit** (`max_memory_bytes`) via `JOBOBJECT_EXTENDED_LIMIT_INFORMATION::JobMemoryLimit`
+//! - **Subprocess blocking** (`allow_subprocess=false`) via `ActiveProcessLimit=1`
+//! - **Process count limit** (`max_processes`) via `ActiveProcessLimit`
 //!
-//! Since this is a stub, agents running on Windows have FULL system access even in
-//! "Safe Mode". For production deployments on Windows:
-//! - Use Power Mode only in fully trusted environments
-//! - Consider running agents in Windows containers or VMs
-//! - Implement additional application-level security controls
+//! # What is NOT enforced (requires AppContainer — planned v1.5.0)
 //!
-//! # Future Implementation Roadmap
+//! - Filesystem access control (path-level read/write restrictions)
+//! - Network access control (domain/port-based filtering)
 //!
-//! Full Windows sandbox implementation requires:
-//! - `CreateAppContainerProfile()` / `DeleteAppContainerProfile()` for container creation
-//! - `CreateProcessAsUser()` with AppContainer SID for process isolation
-//! - `CreateJobObject()` / `SetInformationJobObject()` for resource limits
-//! - Capability-based policy translation from our NetRule/PathRule to AppContainer capabilities
+//! A `tracing::warn!` is emitted at Safe mode activation so operators are always
+//! aware of the reduced isolation guarantees.
+//!
+//! # Job Object Lifecycle
+//!
+//! 1. Create anonymous Job Object (`CreateJobObjectW`)
+//! 2. Configure limits (`SetInformationJobObject`)
+//! 3. Assign current process (`AssignProcessToJobObject`)
+//! 4. Close the Job Object handle
+//!
+//! After step 4, the kernel continues to enforce limits for the lifetime of the
+//! assigned process. The Job Object is referenced by the process itself and will be
+//! freed automatically when the process exits.
+//!
+//! # Full AppContainer Roadmap
+//!
+//! Full isolation (filesystem + network) requires:
+//! - `CreateAppContainerProfile()` / `DeleteAppContainerProfile()`
+//! - `CreateProcessAsUser()` with AppContainer SID
+//! - Windows Filtering Platform (WFP) callout for network rules
+//!
+//! Tracked in v1.5.0 milestone.
 
 use crate::error::SandboxError;
 use crate::traits::sandbox::{
@@ -40,82 +56,200 @@ use crate::types::{NetRule, ResourceLimits};
 
 use std::path::PathBuf;
 
-/// ⚠️ **Stub implementation (v1.0.0)**: configuration is stored but no sandboxing
-/// restrictions are actually enforced on Windows.
-/// Production deployments on Windows should use containers or VMs for isolation.
-/// AppContainer implementation is planned for v1.1.0.
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
+    JOB_OBJECT_LIMIT_JOB_MEMORY,
+};
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+/// Windows sandbox using Job Objects for resource isolation.
 ///
-/// Windows sandbox implementation using AppContainer (stub).
+/// Provides partial isolation (resource limits + subprocess blocking) in Safe mode.
+/// Filesystem and network restrictions are stored but not enforced until
+/// AppContainer support is added in v1.5.0.
 ///
-/// Provides process-level isolation through:
-/// - **AppContainer**: Capability-based access control for files, network, and registry
-/// - **Job Objects**: Resource limits (memory, CPU, handles)
-///
-/// # Resource Limit Note
-///
-/// Windows Job Objects support resource limits (memory, CPU time, handle count, etc.).
-/// These are stored for future implementation.
-///
-/// # Filesystem Filtering
-///
-/// AppContainer uses capability-based access control. Specific paths are not directly
-/// restricted; instead, capabilities determine what resources can be accessed.
+/// ⚠️ **Degraded isolation**: Safe mode on Windows does NOT restrict filesystem or
+/// network access. A `tracing::warn!` is emitted when Safe mode is applied.
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// // Internal implementation example - platform types are not public API
 /// use claw_pal::SandboxBackend;
-/// use claw_pal::{SandboxConfig, SyscallPolicy, ResourceLimits};
+/// use claw_pal::{SandboxConfig, ResourceLimits};
 ///
 /// let config = SandboxConfig::safe_default();
 /// let mut sandbox = WindowsSandbox::create(config).unwrap();
 ///
-/// sandbox
-///     .restrict_syscalls(SyscallPolicy::DenyAll)
-///     .restrict_resources(ResourceLimits::restrictive());
+/// sandbox.restrict_resources(ResourceLimits::restrictive());
 ///
+/// // Applies Job Object: memory limits + subprocess blocking enforced.
+/// // NOTE: filesystem/network rules are stored but NOT enforced.
 /// let handle = sandbox.apply().unwrap();
-/// // Sandbox is now active — restricted operations return ERROR_ACCESS_DENIED
 /// ```
 pub struct WindowsSandbox {
     /// Sandbox configuration (mode, subprocess policy).
     config: SandboxConfig,
-    /// Filesystem whitelist paths.
+    /// Filesystem whitelist paths (stored; not enforced — AppContainer pending).
     filesystem_rules: Vec<PathBuf>,
-    /// Network access rules.
+    /// Network access rules (stored; not enforced — AppContainer pending).
     network_rules: Vec<NetRule>,
-    /// Syscall filtering policy (stored for future implementation).
+    /// Syscall filtering policy (stored; not applicable on Windows).
     syscall_policy: Option<SyscallPolicy>,
-    /// Resource limits (stored for future implementation).
+    /// Resource limits to apply via Job Object.
     resource_limits: Option<ResourceLimits>,
 }
 
 impl WindowsSandbox {
-    /// Generate an AppContainer profile (stub).
+    /// Apply Job Object limits to the current process.
     ///
-    /// In a full implementation, this would translate restrictions into
-    /// AppContainer capabilities and Job Object limits.
+    /// Creates an anonymous Job Object, sets resource limits, assigns the current
+    /// process, then closes the handle. Limits remain kernel-enforced for the
+    /// process lifetime even after the handle is closed.
+    ///
+    /// # Job Object Limits Applied
+    ///
+    /// - `JOB_OBJECT_LIMIT_ACTIVE_PROCESS` (1) when `allow_subprocess = false`
+    /// - `JOB_OBJECT_LIMIT_JOB_MEMORY` when `max_memory_bytes` is set
+    /// - `JOB_OBJECT_LIMIT_ACTIVE_PROCESS` from `max_processes` if set
+    ///
+    /// # Windows Version Note
+    ///
+    /// Nested Job Objects require Windows 8+ (build 9200+). On Windows 7, if the
+    /// process is already in a job, `AssignProcessToJobObject` returns error 5
+    /// (ACCESS_DENIED). Modern CI and development environments use Windows 10+.
+    fn apply_job_limits(
+        config: &SandboxConfig,
+        resource_limits: Option<&ResourceLimits>,
+    ) -> Result<(), SandboxError> {
+        // SAFETY: CreateJobObjectW with null parameters creates a valid anonymous
+        // job object with default security. Returns 0 on failure.
+        let job_handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job_handle == 0 {
+            // SAFETY: GetLastError is always safe to call after a failed Win32 API
+            let err = unsafe { GetLastError() };
+            return Err(SandboxError::CreationFailed(format!(
+                "CreateJobObjectW failed: Windows error {}",
+                err
+            )));
+        }
+
+        // SAFETY: zeroed initialization is valid for JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        // which is a plain C struct with no invariants beyond numeric fields.
+        let mut ext_info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        let mut limit_flags: u32 = 0;
+
+        // Block subprocess spawning: limit active processes to 1 (current process only).
+        // ActiveProcessLimit=1 prevents CreateProcess from succeeding inside the job.
+        if !config.allow_subprocess {
+            ext_info.BasicLimitInformation.ActiveProcessLimit = 1;
+            limit_flags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+        }
+
+        // Apply resource limits
+        if let Some(limits) = resource_limits {
+            if let Some(max_memory) = limits.max_memory_bytes {
+                ext_info.JobMemoryLimit = max_memory as usize;
+                limit_flags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+            }
+            // max_processes overrides the allow_subprocess=false limit when set
+            if let Some(max_procs) = limits.max_processes {
+                ext_info.BasicLimitInformation.ActiveProcessLimit = max_procs;
+                limit_flags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+            }
+        }
+
+        ext_info.BasicLimitInformation.LimitFlags = limit_flags;
+
+        // SAFETY: ext_info is properly zero-initialized and has the correct size.
+        // JobObjectExtendedLimitInformation = 9 is the correct info class.
+        let set_result = unsafe {
+            SetInformationJobObject(
+                job_handle,
+                JobObjectExtendedLimitInformation,
+                &ext_info as *const _ as *const core::ffi::c_void,
+                core::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+
+        if set_result == 0 {
+            let err = unsafe { GetLastError() };
+            // SAFETY: CloseHandle on a valid job handle is always safe
+            unsafe { CloseHandle(job_handle) };
+            return Err(SandboxError::RestrictFailed(format!(
+                "SetInformationJobObject failed: Windows error {}",
+                err
+            )));
+        }
+
+        // SAFETY: GetCurrentProcess returns a pseudo-handle (-1), always valid,
+        // does not need to be closed.
+        let proc_handle = unsafe { GetCurrentProcess() };
+
+        // SAFETY: AssignProcessToJobObject with valid job and process handles.
+        let assign_result = unsafe { AssignProcessToJobObject(job_handle, proc_handle) };
+
+        // Save error code BEFORE CloseHandle (which would overwrite GetLastError)
+        let assign_err = if assign_result == 0 {
+            unsafe { GetLastError() }
+        } else {
+            0
+        };
+
+        // Always close the job handle. If assignment succeeded, the kernel holds the
+        // job alive via the process reference; limits remain enforced. If assignment
+        // failed, the orphaned job (no handles, no processes) is freed immediately.
+        // SAFETY: job_handle is a valid handle returned by CreateJobObjectW.
+        unsafe { CloseHandle(job_handle) };
+
+        if assign_result == 0 {
+            return Err(SandboxError::RestrictFailed(format!(
+                "AssignProcessToJobObject failed: Windows error {}. \
+                 Error 5 (ACCESS_DENIED) on Windows 7 means the process is already \
+                 in a non-nested job object. Windows 8+ supports nested job objects.",
+                assign_err
+            )));
+        }
+
+        // Limits are now enforced by the kernel for the process lifetime.
+        Ok(())
+    }
+
+    /// Generate a human-readable description of configured restrictions.
+    ///
+    /// Shows what is and is not enforced on Windows.
     pub(crate) fn generate_profile(&self) -> String {
         let mut profile = String::new();
-        profile.push_str("AppContainer Profile (stub)\n");
+        profile.push_str("Windows Job Object Profile\n");
 
         if self.config.mode == ExecutionMode::Power {
             profile.push_str("Mode: Power (no restrictions)\n");
             return profile;
         }
 
-        profile.push_str("Mode: Safe\n");
+        profile.push_str("Mode: Safe (Job Object — degraded isolation)\n");
         profile.push_str(&format!(
-            "Filesystem rules: {}\n",
+            "Subprocess blocked: {} [enforced]\n",
+            !self.config.allow_subprocess
+        ));
+        profile.push_str(&format!(
+            "Filesystem rules: {} [NOT enforced — AppContainer pending v1.5.0]\n",
             self.filesystem_rules.len()
         ));
-        profile.push_str(&format!("Network rules: {}\n", self.network_rules.len()));
         profile.push_str(&format!(
-            "Subprocess allowed: {}\n",
-            self.config.allow_subprocess
+            "Network rules: {} [NOT enforced — AppContainer pending v1.5.0]\n",
+            self.network_rules.len()
         ));
-
+        if let Some(ref limits) = self.resource_limits {
+            if let Some(mem) = limits.max_memory_bytes {
+                profile.push_str(&format!("Memory limit: {} bytes [enforced]\n", mem));
+            }
+            if let Some(procs) = limits.max_processes {
+                profile.push_str(&format!("Max processes: {} [enforced]\n", procs));
+            }
+        }
         profile
     }
 }
@@ -123,8 +257,8 @@ impl WindowsSandbox {
 impl SandboxBackend for WindowsSandbox {
     /// Create a new Windows sandbox backend.
     ///
-    /// This only initializes the configuration; no system calls are made
-    /// until [`apply()`](SandboxBackend::apply) is called.
+    /// Only initializes configuration; no system calls are made until
+    /// [`apply()`](SandboxBackend::apply) is called.
     fn create(config: SandboxConfig) -> Result<Self, SandboxError> {
         Ok(Self {
             config,
@@ -135,9 +269,10 @@ impl SandboxBackend for WindowsSandbox {
         })
     }
 
-    /// Store filesystem whitelist for sandbox profile generation.
+    /// Store filesystem whitelist.
     ///
-    /// Paths are stored for future AppContainer capability mapping.
+    /// ⚠️ **Not enforced**: Paths are stored for future AppContainer implementation
+    /// (v1.5.0). On Windows, filesystem access is currently unrestricted in Safe mode.
     fn restrict_filesystem(&mut self, whitelist: &[PathBuf]) -> &mut Self {
         self.filesystem_rules = whitelist.to_vec();
         self
@@ -145,62 +280,66 @@ impl SandboxBackend for WindowsSandbox {
 
     /// Configure network access rules.
     ///
-    /// Rules are stored for future AppContainer capability mapping.
+    /// ⚠️ **Not enforced**: Rules are stored for future AppContainer/WFP implementation
+    /// (v1.5.0). On Windows, network access is currently unrestricted in Safe mode.
     fn restrict_network(&mut self, rules: &[NetRule]) -> &mut Self {
         self.network_rules = rules.to_vec();
         self
     }
 
-    /// Set syscall filtering policy (stub).
+    /// Set syscall filtering policy (stored only).
     ///
-    /// Windows does not have syscall-level filtering like Linux's seccomp.
-    /// The policy is stored for future implementation.
+    /// Windows does not support syscall-level filtering like Linux seccomp.
+    /// This policy is stored for API compatibility but has no effect.
     fn restrict_syscalls(&mut self, policy: SyscallPolicy) -> &mut Self {
         self.syscall_policy = Some(policy);
         self
     }
 
-    /// Set resource limits (stored only, not enforced in stub).
+    /// Set resource limits.
     ///
-    /// Windows Job Objects support resource limits. These are stored
-    /// for use by higher-level components or future implementation.
+    /// `max_memory_bytes` and `max_processes` are enforced via Job Object.
+    /// `max_cpu_percent` and `max_file_descriptors` are stored but not enforced.
     fn restrict_resources(&mut self, limits: ResourceLimits) -> &mut Self {
         self.resource_limits = Some(limits);
         self
     }
 
-    /// Apply all configured restrictions and return a sandbox handle (stub).
+    /// Apply configured restrictions and return a sandbox handle.
     ///
-    /// This method:
-    /// 1. In Power mode: skips sandbox entirely, returns handle immediately
-    /// 2. In Safe mode: returns a handle (stub — no actual AppContainer creation)
+    /// - **Power mode**: skips all restrictions, returns handle immediately.
+    /// - **Safe mode**: creates a Job Object, enforces resource limits and
+    ///   subprocess blocking. Emits `tracing::warn!` about filesystem/network
+    ///   restrictions not being enforced.
     ///
     /// # Errors
     ///
-    /// Returns `SandboxError::NotImplemented` if called on non-Windows platforms.
+    /// Returns `SandboxError::CreationFailed` if `CreateJobObjectW` fails.
+    /// Returns `SandboxError::RestrictFailed` if `SetInformationJobObject` or
+    /// `AssignProcessToJobObject` fails (e.g., error 5 on Windows 7).
     fn apply(self) -> Result<SandboxHandle, SandboxError> {
-        // In Power mode, skip all restrictions
         if self.config.mode == ExecutionMode::Power {
             return Ok(SandboxHandle {
                 platform_handle: PlatformHandle::Windows(0),
             });
         }
 
-        // Safe mode (AppContainer) is NOT implemented — refuse to proceed.
-        // Silently returning a stub handle would create false security assumptions:
-        // callers believe restrictions are active when they are not.
-        tracing::error!(
+        // Warn operators about degraded isolation guarantees
+        tracing::warn!(
             platform = "windows",
-            mode = "Safe",
-            "Windows AppContainer (Safe mode) not implemented until v1.5.0. \
-             Use Power Mode explicitly or wait for v1.5.0. \
-             Refusing to proceed to avoid false security assumptions."
+            enforced = "memory_limit,subprocess_blocking,process_count",
+            not_enforced = "filesystem_restrictions,network_restrictions",
+            "Windows Safe mode uses Job Object isolation (degraded). \
+             Resource limits and subprocess blocking are enforced via Job Object. \
+             Filesystem and network restrictions are NOT enforced until v1.5.0 (AppContainer). \
+             For full isolation, use WSL2 to run the Linux version."
         );
-        Err(SandboxError::NotSupported {
-            platform: "windows",
-            mode: "Safe",
-            reason: "AppContainer not implemented until v1.5.0",
-            workaround: "Use ExecutionMode::Power explicitly, or wait for v1.5.0",
+
+        Self::apply_job_limits(&self.config, self.resource_limits.as_ref())?;
+
+        // Return sentinel value 1 to indicate safe mode restrictions applied.
+        Ok(SandboxHandle {
+            platform_handle: PlatformHandle::Windows(1),
         })
     }
 }
@@ -327,7 +466,7 @@ mod tests {
         let sandbox = WindowsSandbox::create(config).unwrap();
         let profile = sandbox.generate_profile();
 
-        assert!(profile.contains("AppContainer Profile (stub)"));
+        assert!(profile.contains("Windows Job Object Profile"));
         assert!(profile.contains("Mode: Power (no restrictions)"));
     }
 
@@ -337,10 +476,27 @@ mod tests {
         let sandbox = WindowsSandbox::create(config).unwrap();
         let profile = sandbox.generate_profile();
 
-        assert!(profile.contains("AppContainer Profile (stub)"));
+        assert!(profile.contains("Windows Job Object Profile"));
         assert!(profile.contains("Mode: Safe"));
-        assert!(profile.contains("Filesystem rules: 0"));
-        assert!(profile.contains("Network rules: 0"));
+        assert!(profile.contains("NOT enforced"));
+        // Subprocess blocking should be listed
+        assert!(profile.contains("Subprocess blocked: true"));
+    }
+
+    #[test]
+    fn test_windows_sandbox_generate_profile_with_resources() {
+        let config = SandboxConfig::safe_default();
+        let mut sandbox = WindowsSandbox::create(config).unwrap();
+        sandbox.restrict_resources(ResourceLimits {
+            max_memory_bytes: Some(256 * 1024 * 1024),
+            max_processes: Some(4),
+            max_cpu_percent: None,
+            max_file_descriptors: None,
+        });
+        let profile = sandbox.generate_profile();
+
+        assert!(profile.contains("Memory limit: 268435456 bytes [enforced]"));
+        assert!(profile.contains("Max processes: 4 [enforced]"));
     }
 
     // ===== Apply Tests =====
@@ -357,6 +513,9 @@ mod tests {
         }
     }
 
+    // NOTE: test_windows_sandbox_apply_safe_mode calls the real Job Object API.
+    // It requires Windows 8+ for nested job object support (if running inside CI
+    // job container). On Windows 10/11 developer machines, this always succeeds.
     #[test]
     fn test_windows_sandbox_apply_safe_mode() {
         let config = SandboxConfig::safe_default();

@@ -2,8 +2,8 @@
 title: claw-script
 description: Embedded script engines (Lua default, V8 optional)
 status: implemented
-version: "0.1.0"
-last_updated: "2026-03-09"
+version: "1.4.1"
+last_updated: "2026-03-10"
 language: en
 ---
 
@@ -122,14 +122,6 @@ interface RustBridge {
     exists(name: string): boolean;
   };
 
-  // Memory ✅ Implemented (namespace-isolated, key-value + semantic search)
-  memory: {
-    get(key: string): Promise<any>;
-    set(key: string, value: any): Promise<void>;
-    delete(key: string): Promise<void>;
-    search(query: string, topK: number): Promise<MemoryItem[]>;
-  };
-
   // Events ✅ Implemented (EventBus pub/sub, lifecycle-bound)
   events: {
     emit(event: string, data: any): void;
@@ -177,8 +169,67 @@ interface RustBridge {
     list(): AgentId[];
     info(id: AgentId): AgentInfo | null;
   };
+
+  // Memory: NOT exposed to scripts (D1 decision, v1.3.0)
+  // Use the `claw-memory` crate's Rust API directly for memory operations.
+
+  // LLM ✅ Implemented (GAP-01, v1.4.0) — only available when ScriptContext
+  //         is constructed with an LLMProvider via RustBridge::with_llm()
+  llm: {
+    complete(messages: Message[], opts?: LlmOpts): string;  // blocking, returns full response
+    stream(messages: Message[], opts?: LlmOpts): string[];  // returns array of text chunks
+  };
 }
 ```
+
+> **Note:** `llm` 仅在 Lua 引擎中可用（`bridge/llm.rs`）；V8 引擎目前暂未露出 LLM bridge。
+
+---
+
+## Bridge 模块结构（v1.4.0+）
+
+### bridge/mod.rs — RustBridge 聚合结构
+
+```rust
+pub struct RustBridge {
+    pub tools: Option<ToolsBridge>,
+    pub events: Option<EventsBridge>,
+    pub fs: Option<FsBridge>,
+    pub agent: Option<AgentBridge>,
+    pub dirs: Option<DirsBridge>,
+    pub llm: Option<LlmBridge>,   // v1.4.0 新增，GAP-01
+    // Note: MemoryBridge 已移除 (D1, v1.3.0)
+}
+```
+
+### bridge/llm.rs — LLM Bridge (GAP-01, v1.4.0)
+
+`LlmBridge` 将 `LLMProvider` 暴露给 Lua 脚本。在 `spawn_blocking` 环境中遵循 `add_method + block_on` 模式（与 NetBridge Fix-F 一致）。
+
+```lua
+-- Non-streaming completion
+local reply = llm:complete(
+    {{ role = "user", content = "What is Rust?" }},
+    { model = "claude-opus-4-6", max_tokens = 1024 }
+)
+print(reply)
+
+-- Streaming: returns array of text chunks
+local chunks = llm:stream(
+    {{ role = "user", content = "Tell me a joke" }},
+    { model = "claude-opus-4-6" }
+)
+for _, chunk in ipairs(chunks) do
+    io.write(chunk)
+end
+```
+
+支持的 `opts` 字段：`model` (string)、`max_tokens` (integer)、`temperature` (number)。
+支持的 `role` 字符串：`"user"` / `"assistant"` / `"system"` / `"tool"`。
+
+### bridge/conversion.rs — 类型转换层 (Fix-G, v1.1.0)
+
+`conversion.rs` 从 `tools.rs` 中提取，封装 Lua value ↔ Rust/JSON 类型的公用转换函数。内部模块（`pub(crate)`），供各 bridge 共享使用。
 
 ---
 
@@ -190,11 +241,6 @@ interface RustBridge {
 -- Dirs bridge: platform-aware paths (always available)
 local cfg = dirs:config_dir()
 local data = dirs:data_dir()
-
--- Memory bridge: namespace-isolated key-value store (requires ScriptContext with memory_store)
-memory:set("user_pref", "dark_mode")
-local pref = memory:get("user_pref")   -- "dark_mode"
-local items = memory:search("dark", 5) -- semantic search, returns array of strings
 
 -- Events bridge: EventBus pub/sub (requires ScriptContext with event_bus)
 events:on("task_done", function(data)
@@ -217,6 +263,16 @@ fs:write("/path/to/out.txt", content)
 
 -- Network bridge
 local resp = net:get("https://api.example.com/data")
+
+-- LLM bridge (v1.4.0+, requires RustBridge::with_llm())
+local reply = llm:complete(
+    {{ role = "user", content = "Summarize this" }},
+    { model = "claude-opus-4-6", max_tokens = 512 }
+)
+print(reply)
+
+-- Note: Memory operations (memory:set/get/search) are NOT available in scripts.
+-- Use the `claw-memory` crate's Rust API directly (D1 decision, v1.3.0).
 ```
 
 ---
@@ -229,11 +285,6 @@ local resp = net:get("https://api.example.com/data")
 // Dirs bridge: platform-aware paths
 const cfg = claw.dirs.configDir();
 const data = claw.dirs.dataDir();
-
-// Memory bridge
-await claw.memory.set("user_pref", "dark_mode");
-const pref = await claw.memory.get("user_pref");
-const items = await claw.memory.search("dark", 5);
 
 // Events bridge
 claw.events.on("task_done", (data) => {
@@ -260,6 +311,9 @@ const body = await resp.text();
 // JSON utilities
 const obj = claw.json.parse('{"key": "value"}');
 const str = claw.json.stringify(obj, { pretty: true });
+
+// Note: claw.memory.* is NOT available (D1 decision, v1.3.0).
+// Use the `claw-memory` crate's Rust API directly for memory operations.
 ```
 
 ---

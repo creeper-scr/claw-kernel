@@ -12,9 +12,9 @@
 //!
 //! # Sender-ID matching
 //!
-//! [`ChannelMessage`] does not carry an explicit `sender_id` field; instead the
-//! sender is stored in `metadata["sender_id"]` as a JSON string.
-//! [`RoutingRule::BySenderId`] reads that key at match time.
+//! [`ChannelMessage`] carries a top-level `sender_id: Option<String>` field.
+//! [`RoutingRule::BySenderId`] compares that field directly — no JSON look-up
+//! required.
 //!
 //! # Example
 //!
@@ -81,7 +81,7 @@ pub enum RoutingRule {
         channel_id: String,
         agent_id: AgentId,
     },
-    /// Messages where `metadata["sender_id"]` equals a specific string → target agent.
+    /// Messages where `sender_id` equals a specific string → target agent.
     BySenderId {
         sender_id: String,
         agent_id: AgentId,
@@ -117,17 +117,10 @@ impl RoutingRule {
             RoutingRule::BySenderId {
                 sender_id,
                 agent_id,
-            } => {
-                // sender_id is stored in metadata["sender_id"] as a JSON string.
-                let meta_sender = msg
-                    .metadata
-                    .get("sender_id")
-                    .and_then(|v| v.as_str());
-                match meta_sender {
-                    Some(s) if s == sender_id.as_str() => Some(agent_id),
-                    _ => None,
-                }
-            }
+            } => match msg.sender_id.as_deref() {
+                Some(s) if s == sender_id.as_str() => Some(agent_id),
+                _ => None,
+            },
 
             RoutingRule::ByPattern { pattern, agent_id } => {
                 if pattern.is_match(&msg.content) {
@@ -246,6 +239,73 @@ impl ChannelRouter {
         None
     }
 
+    /// Return all agent IDs that match `msg` under "multi-match" semantics.
+    ///
+    /// Unlike [`route`][Self::route] which stops at the first matching rule
+    /// (first-match-wins), this method collects **all** matching agents so that
+    /// the same message can be fan-out delivered to multiple agents — e.g. a
+    /// primary handler *and* a monitoring/audit agent.
+    ///
+    /// # Default rule handling
+    ///
+    /// A [`RoutingRule::Default`] rule is appended only when **no** explicit
+    /// rule matched, preventing the default agent from receiving duplicate
+    /// copies in cases where explicit rules already covered the message.
+    ///
+    /// # Duplicate suppression
+    ///
+    /// If multiple rules target the same `agent_id`, it appears only once in
+    /// the returned `Vec`.
+    pub fn broadcast_route(&self, msg: &ChannelMessage) -> Vec<String> {
+        let rules = match self.rules.read() {
+            Ok(r) => r,
+            Err(_) => return vec![],
+        };
+
+        let mut agents: Vec<String> = vec![];
+        let mut has_explicit_match = false;
+        let mut default_agent: Option<String> = None;
+
+        for rule in rules.iter() {
+            match rule {
+                RoutingRule::Default { agent_id } => {
+                    // Remember the default; it is only used when no explicit rule fires.
+                    default_agent = Some(agent_id.clone());
+                }
+                other => {
+                    if let Some(agent_id) = other.matches(msg) {
+                        if !agents.contains(agent_id) {
+                            agents.push(agent_id.clone());
+                        }
+                        has_explicit_match = true;
+                    }
+                }
+            }
+        }
+
+        // Default only fires when nothing else matched.
+        if !has_explicit_match {
+            if let Some(agent_id) = default_agent {
+                agents.push(agent_id);
+            }
+        }
+
+        if !agents.is_empty() {
+            debug!(
+                channel = %msg.channel_id,
+                agents  = ?agents,
+                "Message broadcast-routed"
+            );
+        } else {
+            warn!(
+                channel = %msg.channel_id,
+                "broadcast_route: no rules matched — message will be dropped"
+            );
+        }
+
+        agents
+    }
+
     /// Return the number of routing rules (including any Default rule).
     pub fn rule_count(&self) -> usize {
         self.rules.read().map(|r| r.len()).unwrap_or(0)
@@ -343,7 +403,7 @@ impl ChannelRouterBuilder {
         self
     }
 
-    /// Route messages where `metadata["sender_id"]` equals `sender_id` to `agent_id`.
+    /// Route messages where `sender_id` equals `sender_id` to `agent_id`.
     pub fn route_sender(
         mut self,
         sender_id: impl Into<String>,
@@ -471,7 +531,7 @@ mod tests {
 
     fn make_msg_with_sender(channel: &str, content: &str, sender: &str) -> ChannelMessage {
         let mut msg = make_msg(channel, content);
-        msg.metadata = serde_json::json!({ "sender_id": sender });
+        msg.sender_id = Some(sender.to_string());
         msg
     }
 
@@ -515,9 +575,27 @@ mod tests {
             .route_sender("user-42", "agent-vip")
             .build();
 
-        // No metadata at all → should not match
+        // No sender_id set at all → should not match
         let msg = make_msg("ch-1", "ping");
         assert!(router.route(&msg).is_none());
+    }
+
+    #[test]
+    fn test_route_by_sender_id_uses_top_level_field() {
+        // Ensure that metadata["sender_id"] alone does NOT satisfy BySenderId;
+        // only the top-level field matters.
+        let router = ChannelRouterBuilder::new()
+            .route_sender("user-42", "agent-vip")
+            .build();
+
+        let mut msg = make_msg("ch-1", "ping");
+        // Deliberately put it only in metadata (old behaviour) — must not match.
+        msg.metadata = serde_json::json!({ "sender_id": "user-42" });
+        assert!(router.route(&msg).is_none());
+
+        // Now set the top-level field — must match.
+        msg.sender_id = Some("user-42".to_string());
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-vip"));
     }
 
     // ── route_pattern ────────────────────────────────────────────────────
@@ -695,5 +773,93 @@ agent_id = "agent-default"
         let builder = ChannelRouterBuilder::default();
         let router = builder.build();
         assert_eq!(router.rule_count(), 0);
+    }
+
+    // ── broadcast_route ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_broadcast_route_collects_all_matches() {
+        // Two rules that both match the same message → both agents returned.
+        let router = ChannelRouterBuilder::new()
+            .route_channel("ch-events", "agent-primary")
+            .route_channel("ch-events", "agent-monitor")
+            .build();
+
+        let msg = make_msg("ch-events", "hello");
+        let mut agents = router.broadcast_route(&msg);
+        agents.sort();
+        assert_eq!(agents, vec!["agent-monitor", "agent-primary"]);
+    }
+
+    #[test]
+    fn test_broadcast_route_no_duplicate_agents() {
+        // A channel rule and a pattern rule both point to the same agent.
+        let router = ChannelRouterBuilder::new()
+            .route_channel("ch-1", "agent-a")
+            .route_pattern("hello", "agent-a")
+            .unwrap()
+            .build();
+
+        let msg = make_msg("ch-1", "hello");
+        let agents = router.broadcast_route(&msg);
+        // agent-a should appear only once even though two rules matched.
+        assert_eq!(agents, vec!["agent-a"]);
+    }
+
+    #[test]
+    fn test_broadcast_route_default_fires_when_no_explicit_match() {
+        let router = ChannelRouterBuilder::new()
+            .route_channel("ch-discord", "agent-discord")
+            .default_agent("agent-fallback")
+            .build();
+
+        let msg = make_msg("ch-other", "hello");
+        let agents = router.broadcast_route(&msg);
+        assert_eq!(agents, vec!["agent-fallback"]);
+    }
+
+    #[test]
+    fn test_broadcast_route_default_suppressed_when_explicit_match() {
+        // Explicit rule fires → default should NOT be appended.
+        let router = ChannelRouterBuilder::new()
+            .route_channel("ch-discord", "agent-discord")
+            .default_agent("agent-fallback")
+            .build();
+
+        let msg = make_msg("ch-discord", "hello");
+        let agents = router.broadcast_route(&msg);
+        assert_eq!(agents, vec!["agent-discord"]);
+    }
+
+    #[test]
+    fn test_broadcast_route_no_match_no_default_returns_empty() {
+        let router = ChannelRouterBuilder::new()
+            .route_channel("ch-discord", "agent-discord")
+            .build();
+
+        let msg = make_msg("ch-other", "hello");
+        let agents = router.broadcast_route(&msg);
+        assert!(agents.is_empty());
+    }
+
+    #[test]
+    fn test_broadcast_route_fan_out_mixed_rules() {
+        // channel rule + pattern rule + sender rule — all fire for the same msg.
+        let router = ChannelRouterBuilder::new()
+            .route_channel("ch-alerts", "agent-channel")
+            .route_pattern("^ALERT", "agent-pattern")
+            .unwrap()
+            .route_sender("bot-1", "agent-sender")
+            .default_agent("agent-default")
+            .build();
+
+        let msg = make_msg_with_sender("ch-alerts", "ALERT: disk full", "bot-1");
+        let mut agents = router.broadcast_route(&msg);
+        agents.sort();
+        // All three explicit rules match → default suppressed.
+        assert_eq!(
+            agents,
+            vec!["agent-channel", "agent-pattern", "agent-sender"]
+        );
     }
 }

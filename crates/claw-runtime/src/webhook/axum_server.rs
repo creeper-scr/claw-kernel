@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
@@ -25,6 +25,10 @@ use tokio::task::JoinHandle;
 struct EndpointState {
     config: EndpointConfig,
     stats: RwLock<WebhookStats>,
+    /// 60-second dedup cache keyed by X-Request-Id header value.
+    dedup_cache: DashMap<String, Instant>,
+    /// Sliding-window rate limiter: (count_in_current_window, window_start).
+    rate_counter: std::sync::Mutex<(u32, Instant)>,
 }
 
 /// Axum-based webhook server implementation.
@@ -176,6 +180,55 @@ impl AxumWebhookServer {
             }
         }
 
+        // Rate limiting: sliding-window counter per endpoint.
+        // The std::sync::Mutex guard is released before any .await call.
+        let rate_limited = {
+            let now = Instant::now();
+            let mut counter = state.rate_counter.lock().unwrap_or_else(|e| e.into_inner());
+            if now.duration_since(counter.1) >= std::time::Duration::from_secs(60) {
+                // New window — reset and count this request.
+                *counter = (1, now);
+                false
+            } else if counter.0 >= state.config.max_requests_per_minute {
+                true
+            } else {
+                counter.0 += 1;
+                false
+            }
+            // Mutex guard dropped here.
+        };
+        if rate_limited {
+            let mut stats = state.stats.write().await;
+            stats.requests_rate_limited += 1;
+            return (StatusCode::TOO_MANY_REQUESTS, "Rate limit exceeded").into_response();
+        }
+
+        // Dedup: X-Request-Id based idempotency within a 60s window.
+        // Only applies when the header is present; requests without it are always processed.
+        let is_duplicate = if let Some(rid) = header_map.get("x-request-id").cloned() {
+            let now = Instant::now();
+            let ttl = std::time::Duration::from_secs(60);
+            // Lazily evict expired entries on each request.
+            state.dedup_cache.retain(|_, inserted_at| now.duration_since(*inserted_at) < ttl);
+            if state.dedup_cache.contains_key(&rid) {
+                true
+            } else {
+                state.dedup_cache.insert(rid, now);
+                false
+            }
+        } else {
+            false
+        };
+        if is_duplicate {
+            let mut stats = state.stats.write().await;
+            stats.requests_deduped += 1;
+            return (
+                StatusCode::OK,
+                r#"{"status":"duplicate","skipped":true}"#,
+            )
+                .into_response();
+        }
+
         // Build request
         let request = WebhookRequest {
             path: path.clone(),
@@ -269,6 +322,8 @@ impl WebhookServer for AxumWebhookServer {
         let state = Arc::new(EndpointState {
             config,
             stats: RwLock::new(WebhookStats::default()),
+            dedup_cache: DashMap::new(),
+            rate_counter: std::sync::Mutex::new((0, Instant::now())),
         });
 
         self.endpoints.insert(state.config.path.clone(), state);

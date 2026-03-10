@@ -463,10 +463,6 @@ RustBridge（内核暴露给脚本层的 API，claw.* 命名空间）
 ├── claw.tools.register(def)
 ├── claw.tools.call(name, params)
 ├── claw.tools.list()
-├── claw.memory.search(query, k)
-├── claw.memory.memorize({ content, space })
-├── claw.memory.logEpisode({ kind, content, tags })
-├── claw.memory.queryEpisodes(filter)
 ├── claw.events.emit(event, data)
 ├── claw.events.on(event, handler)
 ├── claw.fs.read(path)
@@ -474,6 +470,9 @@ RustBridge（内核暴露给脚本层的 API，claw.* 命名空间）
 ├── claw.fs.glob(pattern)
 ├── claw.agent.spawn(config)
 └── claw.agent.kill(handle)
+
+注意：`claw.memory.*` 已于 v1.3.0（D1 决策）从 RustBridge 中移除。
+记忆操作属于**应用层策略**，请直接使用 `claw-memory` crate 的 Rust API。
 
 HotLoader（运行时加载脚本工具）
 ├── watch_directory(path)       监听脚本目录变化

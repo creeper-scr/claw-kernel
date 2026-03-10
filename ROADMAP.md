@@ -1,9 +1,9 @@
 ---
 title: claw-kernel Roadmap
 description: Milestone-based roadmap for claw-kernel
-status: v1.0.0-released
-version: "1.0.0"
-last_updated: "2026-03-09"
+status: v1.4.1-released
+version: "1.4.1"
+last_updated: "2026-03-10"
 language: bilingual
 ---
 
@@ -22,13 +22,13 @@ language: bilingual
 | Item | Status |
 |------|--------|
 | Architecture design | ✅ Complete |
-| ADRs (001-011) | ✅ 001-011 accepted |
-| Core implementation (9 crates) | ✅ Complete |
-| 670+ unit + integration tests | ✅ All passing |
+| ADRs (001-014) | ✅ 001-013 accepted, 014 proposed |
+| Core implementation (10 crates) | ✅ Complete |
+| 129+ unit + integration tests (claw-runtime) | ✅ All passing |
 | Clippy / fmt / doc checks | ✅ Clean (zero warnings) |
-| Published on crates.io | ✅ v1.0.0 |
+| Current release | ✅ v1.4.1 |
 
-See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
+See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
 ---
 
@@ -151,7 +151,7 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
 
 ---
 
-### v1.0.0 — Stable Release
+### v1.0.0 — Stable Release ✅
 
 **Released**: 2026-03-08
 
@@ -187,9 +187,9 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
 
 ---
 
-### v1.0.0 — Multi-Language Foundation Layer (KernelServer)
+### v1.0.0 — Multi-Language Foundation Layer (KernelServer) ✅
 
-**Target:** 2026 Q2 (concurrent with v1.0.0 release)
+**Released**: 2026-03-08
 
 **Rationale:** Per [ADR-011](docs/adr/011-multi-language-ipc-daemon.md), the kernel cannot exist as an isolated Rust library — it requires multi-language support to become a shared ecosystem asset. Non-Rust applications must be able to leverage the kernel's unified AI infrastructure without reimplementation.
 
@@ -209,86 +209,129 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
 
 ---
 
-## Post-v1.0 Roadmap
+## Post-v1.0 Roadmap — Completed
 
-**Strategy:** Rapid minor releases adding providers and features. No breaking changes.
+### v1.1.0 — Bug Fixes & Security Hardening ✅
 
-### v1.1.0 — SQLite History & Streaming
+**Released**: 2026-03-10
+
+- [x] WebhookChannel logs error when no HMAC secret configured (Fix-A)
+- [x] SecureMemoryStore quota check atomized — mutex held across `namespace_usage()` + `store()` (Fix-B)
+- [x] WindowsSandbox Safe mode logs security warning stub (Fix-C)
+- [x] `Runtime::new()` auto-starts orchestrator + IPC; `start()` deprecated (Fix-D)
+- [x] `FsBridge::glob_files()` + Lua `glob` method (Fix-E)
+- [x] NetBridge response body cap 4 MiB; `block_on` pattern (Fix-F)
+- [x] `bridge/conversion.rs` extracted from tools.rs (Fix-G)
+
+### v1.2.0 — Provider Expansion ✅
+
+**Released**: 2026-03-10
+
+- [x] Additional LLM providers groundwork merged into existing provider infrastructure
+
+### v1.3.0 — IPC Auth, ChannelRegistry & AgentOrchestrator Wiring ✅
+
+**Released**: 2026-03-10
+
+- [x] IPC token auth — daemon generates token via `DefaultHasher+SystemTime+PID`; writes to `~/.local/share/claw-kernel/kernel.token`; first frame must be `kernel.auth`
+- [x] ChannelRegistry — DashMap-backed, 60s TTL dedup cache; register/unregister/list wired to handler
+- [x] AgentOrchestrator injection — `KernelServer` holds `Arc<AgentOrchestrator>`; agent.spawn/kill/steer/list use real orchestrator API
+- [x] Python SDK — `examples/sdk/python/` (stdlib only, 4-byte BE framing)
+- [x] `handle_kernel_info()` returns `protocol_version: 2`
+- [x] V8 engine (deno_core, ES2022+, TypeScript) — `engine-v8` feature fully wired
+
+### v1.4.0 — GlobalToolRegistry, TriggerStore, AxumWebhookServer, TypeScript SDK ✅
+
+**Released**: 2026-03-10
+
+- [x] `GlobalToolRegistry` + `GlobalSkillRegistry` — cross-session tool/skill sharing
+- [x] Schedule callback fix — corrected timer-based trigger dispatch
+- [x] TypeScript SDK — `examples/sdk/typescript/`
+- [x] `TriggerStore` — SQLite persistence for scheduled and webhook triggers
+- [x] `AxumWebhookServer` integration — routes wired into KernelServer
+- [x] `ChannelRouter` IPC dynamic routing — inbound channel messages dispatched over IPC
+
+### v1.4.1 — Agent Health Check & RestartPolicy (G-10 Fix) ✅
+
+**Released**: 2026-03-10
+
+- [x] `IpcAgentHandle.shared_tx: SharedSender` (`Arc<Mutex<Option<Sender>>>`) for hot-swap on restart
+- [x] `AgentState.ipc_tx: Option<SharedSender>`; `spawn_ipc_message_loop()` sets Error + triggers restart on task exit
+- [x] `trigger_restart()` — checks RestartState, sleeps backoff, hot-swaps SharedSender, re-spawns loop
+- [x] `start_health_check_task()` — timeout detection gated on `process_handle.is_some()`; bogus heartbeat auto-refresh removed
+- [x] `start_auto_restart_task()` scoped to agents WITHOUT per-agent RestartState; Starting status as double-restart guard
+- [x] 4 new tests: `test_spawn_agent_ipc_tx_stored`, `test_health_check_heartbeat_timeout_marks_error`, `test_trigger_restart_never_policy_publishes_agent_failed`, `test_trigger_restart_hot_swaps_sender`
+
+---
+
+## Active — v1.5.0 (Planned)
+
+**Target:** 2026 Q2 (2026-03-24 estimated, 5-week sprint)
+
+**Goal:** Close the most critical gaps identified in `docs/v1.5-gap-report.md`.
+
+### Gap Summary
+
+| Gap | Priority | Description |
+|-----|----------|-------------|
+| GAP-01 | P0 | `claw.llm` bridge missing — scripts cannot call LLM |
+| GAP-02 | P1 | `ChannelRouter.broadcast()` not implemented |
+| GAP-03 | P1 | Channel `send()` has no exponential backoff retry |
+| GAP-04 | P2 | `UnifiedMessage` / `ChannelMessage` missing top-level `sender_id` / `thread_id` |
+| GAP-05 | P2 | Inbound → EventBus pipeline not closed |
+| GAP-06 | P2 | `AgentHandle` has no `resource_usage` field |
+| GAP-07 | P2 | Task agent panics may propagate (needs `catch_unwind`) |
+| GAP-08 | P3 | Webhook URL format non-standard |
+
+### Sprint Plan
+
+**Sprint 1 (2 weeks, 2026-03-10 → 2026-03-24):** Stability & Script LLM Access
+
+- [ ] **GAP-07** — Wrap task agent futures in `catch_unwind`; convert panics to `AgentStatus::Error`
+- [ ] **GAP-08** — Normalize webhook URL format; add validation and structured path helper
+- [ ] **GAP-01** — Implement `claw.llm` Lua bridge + V8 bridge (calls `LLMProvider` via tokio channel); see [ADR-014](docs/adr/014-channel-message-protocol-v2.md) for related context
+- [ ] **GAP-05** — Close inbound → EventBus pipeline: channel adapters publish `ChannelEvent::Inbound` to EventBus on receive
+
+**Sprint 2 (3 weeks, 2026-03-24 → 2026-04-14):** Channel Layer Hardening
+
+- [ ] **GAP-03** — Add exponential backoff retry (claw-pal `retry.rs` already started) to `Channel::send()`; configurable max retries and base delay
+- [ ] **GAP-04** — Promote `sender_id: Option<String>` and `thread_id: Option<String>` to top-level fields on `ChannelMessage` (see [ADR-014](docs/adr/014-channel-message-protocol-v2.md)); semver bump
+- [ ] **GAP-02** — Implement `ChannelRouter::broadcast(msg)` — fan-out to all registered channels
+- [ ] **GAP-06** — Add `resource_usage: Option<ResourceUsage>` to `AgentHandle` (CPU %, memory bytes, uptime)
+
+---
+
+## Future Roadmap
+
+**Strategy:** Rapid minor releases adding providers and features. Semver-controlled breaking changes.
+
+### v1.6.0 — Channel Layer Enhancement & More LLM Providers
 
 **Target:** 2026 Q3
 
-- [ ] SQLite history backend for `claw-loop` (`sqlite-history` feature)
-- [ ] Streaming response support across all providers
-- [ ] Performance benchmarks (provider latency, tool throughput)
-
-### v1.2.0 — Additional Providers
-
-**Target:** 2026 Q3
-
+- [ ] Telegram channel integration
+- [ ] Slack channel integration (including Thread support)
+- [ ] WebSocket bidirectional channel
 - [ ] Gemini (Google) provider
 - [ ] Mistral provider
 - [ ] Azure OpenAI provider
+- [ ] Streaming response support across all providers
 
-### v1.3.0 — Enhanced Scripting (Revised)
-
-> **Note:** V8 engine shipped early in v0.1.0 (2026-03-09).
-
-**Target:** 2026 Q4
-
-- [x] **Deno/V8 engine** (`engine-v8` feature) — ✅ Shipped early in v0.1.0 (2026-03-09)
-  - Full ES2022+ JavaScript support
-  - TypeScript transpilation via deno_core
-  - V8 isolate sandboxing (stronger than Lua)
-  - All 7 bridges: `fs`, `net`, `tools`, `dirs`, `memory`, `events`, `agent`
-  - See [ADR-012](docs/adr/012-v8-engine-implementation.md)
-- [x] `AgentBridge` — shipped ahead of schedule in v0.1.0 (see ADR-009)
-- [x] Full `RustBridge` API: `llm`, `tools`, `memory`, `events`, `fs`, `net`, `agent`, `dirs` — all bridges shipped in v0.1.0
-
-### v1.4.0 — Multi-Language SDK Ecosystem
+### v1.7.0 — Sandbox Hardening
 
 **Target:** 2026 Q4
-
-> KernelServer infrastructure shipped in v1.0.0; this phase focuses on first-party and community SDKs.
-
-**Official SDKs (KernelServer client wrappers):**
-- [ ] Python SDK (`claw-sdk-python`, ~100 lines + docs)
-- [ ] TypeScript/Node SDK (`claw-sdk-ts`, ~100 lines + docs)
-- [ ] Go SDK (`claw-sdk-go`, ~100 lines + docs)
-
-**SDK Features:**
-- [ ] Connection pooling / session reuse
-- [ ] Error retry & circuit breaker
-- [ ] Type-safe message construction (IDE autocomplete)
-- [ ] Streaming token handling
-- [ ] Tool call routing callbacks
-
-### v1.5.0 — Sandbox Hardening
-
-**Target:** 2027 Q1
 
 - [ ] Linux: full seccomp-bpf syscall allowlist
 - [ ] macOS: complete Seatbelt profile
 - [ ] Windows: AppContainer + Job Objects
 
-### v1.6.0 — Local Models
+### v1.8.0 — Local Models & Advanced Memory
 
-**Target:** 2027 Q2
+**Target:** 2027 Q1
 
 - [ ] Local GGUF model support via `llama-cpp-rs` (optional feature)
-
-### v1.7.0+ — Channel Expansion
-
-**Target:** 2027 Q2+
-
-- [ ] Telegram integration
-- [ ] Slack integration
-- [ ] WebSocket bidirectional channel
-
----
-
-## Contributing Priorities
-
-Current priority areas to reach v1.0.0:
+- [ ] SQLite history backend for `claw-loop` (`sqlite-history` feature)
+- [ ] Performance benchmarks (provider latency, tool throughput)
 
 1. **Documentation** — examples, guides, rustdoc
 2. **Cross-platform CI** — Windows testing, macOS CI
@@ -317,6 +360,9 @@ Key architectural choices are recorded as ADRs in [docs/adr/](docs/adr/):
 | 009 | claw-script bridge roadmap (dirs → memory → events → agent) |
 | 010 | Memory boundary: kernel = HistoryManager only; claw-memory = optional |
 | 011 | Multi-language support via KernelServer IPC daemon |
+| 012 | V8 engine implementation (deno_core) |
+| 013 | Runtime v1.0 evolution from ADR-005 IPC design |
+| 014 | Channel Message Protocol v2 — promote sender_id and thread_id to top-level fields (Proposed) |
 
 ---
 
@@ -347,13 +393,13 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 | 项目 | 状态 |
 |------|------|
 | 架构设计 | ✅ 已完成 |
-| ADR（001-011） | ✅ 001-011 已接受 |
-| 核心实现（9 个 crate） | ✅ 已完成 |
-| 670+ 个单元+集成测试 | ✅ 全部通过 |
+| ADR（001-014） | ✅ 001-013 已接受，014 Proposed |
+| 核心实现（10 个 crate） | ✅ 已完成 |
+| 129+ 个单元+集成测试（claw-runtime） | ✅ 全部通过 |
 | Clippy / fmt / 文档检查 | ✅ 干净 |
-| 发布到 crates.io | ✅ v1.0.0 |
+| 当前版本 | ✅ v1.4.1 |
 
-v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
+完整版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -423,7 +469,9 @@ v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
-### v1.0.0 — 稳定版发布
+### v1.0.0 — 稳定版发布 ✅
+
+**发布时间：** 2026-03-08
 
 **目标时间：** 2026 Q2（稳定化之后立即发布）
 
@@ -457,7 +505,9 @@ v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
-### v1.0.0 — 多语言基础层（KernelServer）
+### v1.0.0 — 多语言基础层（KernelServer） ✅
+
+**发布时间：** 2026-03-08
 
 **目标时间：** 2026 Q2（与 v1.0.0 发布同时进行）
 
@@ -479,92 +529,143 @@ v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
-## v1.0 之后路线图
+## v1.0 之后路线图 — 已完成
 
-**策略：** 快速次要版本发布，添加 Provider 和功能。无破坏性变更。
+### v1.1.0 — Bug 修复与安全加固 ✅
 
-### v1.1.0 — SQLite 历史 & 流式响应
+**发布时间：** 2026-03-10
+
+- [x] WebhookChannel 无 HMAC secret 时记录错误日志（Fix-A）
+- [x] SecureMemoryStore 配额检查原子化 — 互斥锁跨越 `namespace_usage()` + `store()`（Fix-B）
+- [x] WindowsSandbox Safe 模式记录安全警告 stub（Fix-C）
+- [x] `Runtime::new()` 自动启动 orchestrator + IPC；`start()` 标记为 deprecated（Fix-D）
+- [x] `FsBridge::glob_files()` + Lua `glob` 方法（Fix-E）
+- [x] NetBridge 响应体上限 4 MiB；`block_on` 模式（Fix-F）
+- [x] `bridge/conversion.rs` 从 tools.rs 中提取（Fix-G）
+
+### v1.2.0 — Provider 扩展 ✅
+
+**发布时间：** 2026-03-10
+
+- [x] 额外 LLM Provider 基础工作合并入现有 provider 基础设施
+
+### v1.3.0 — IPC Auth、ChannelRegistry 和 AgentOrchestrator 接入 ✅
+
+**发布时间：** 2026-03-10
+
+- [x] IPC token 认证 — daemon 生成 token（`DefaultHasher+SystemTime+PID`），写入 `~/.local/share/claw-kernel/kernel.token`；首帧必须为 `kernel.auth`
+- [x] ChannelRegistry — DashMap 支持，60s TTL 去重缓存；register/unregister/list 接入 handler
+- [x] AgentOrchestrator 注入 — `KernelServer` 持有 `Arc<AgentOrchestrator>`；agent.spawn/kill/steer/list 使用真实 orchestrator API
+- [x] Python SDK — `examples/sdk/python/`（stdlib，4 字节 BE 帧）
+- [x] `handle_kernel_info()` 返回 `protocol_version: 2`
+- [x] V8 引擎（deno_core，ES2022+，TypeScript）全面接入
+
+### v1.4.0 — GlobalToolRegistry、TriggerStore、AxumWebhookServer、TypeScript SDK ✅
+
+**发布时间：** 2026-03-10
+
+- [x] `GlobalToolRegistry` + `GlobalSkillRegistry` — 跨会话工具/技能共享
+- [x] Schedule 回调修复 — 纠正基于定时器的触发分发
+- [x] TypeScript SDK — `examples/sdk/typescript/`
+- [x] `TriggerStore` — 计划和 webhook 触发器的 SQLite 持久化
+- [x] `AxumWebhookServer` 集成 — 路由接入 KernelServer
+- [x] `ChannelRouter` IPC 动态路由 — 入站渠道消息通过 IPC 分发
+
+### v1.4.1 — Agent 健康检查与 RestartPolicy（G-10 修复） ✅
+
+**发布时间：** 2026-03-10
+
+- [x] `IpcAgentHandle.shared_tx: SharedSender`（`Arc<Mutex<Option<Sender>>>`），支持重启时热替换
+- [x] `AgentState.ipc_tx: Option<SharedSender>`；`spawn_ipc_message_loop()` 在任务退出时设置 Error + 触发重启
+- [x] `trigger_restart()` — 检查 RestartState，休眠 backoff，热替换 SharedSender，重启 loop
+- [x] `start_health_check_task()` — 超时检测限于 `process_handle.is_some()`；移除错误的心跳自动刷新
+- [x] `start_auto_restart_task()` 仅限于无独立 RestartState 的 agent；Starting 状态作为双重重启防护
+- [x] 4 个新测试：`test_spawn_agent_ipc_tx_stored`、`test_health_check_heartbeat_timeout_marks_error`、`test_trigger_restart_never_policy_publishes_agent_failed`、`test_trigger_restart_hot_swaps_sender`
+
+---
+
+## 进行中 — v1.5.0（计划中）
+
+**目标时间：** 2026 Q2（预计 2026-03-24，5 周冲刺）
+
+**目标：** 修复 `docs/v1.5-gap-report.md` 中识别的最关键缺口。
+
+### Gap 汇总
+
+| Gap | 优先级 | 描述 |
+|-----|--------|------|
+| GAP-01 | P0 | `claw.llm` bridge 缺失 — 脚本层无法调用 LLM |
+| GAP-02 | P1 | `ChannelRouter.broadcast()` 未实现 |
+| GAP-03 | P1 | 渠道 `send()` 无指数退避重试 |
+| GAP-04 | P2 | `UnifiedMessage` / `ChannelMessage` 缺少顶层 `sender_id` / `thread_id` |
+| GAP-05 | P2 | 入站 → EventBus 链路未闭合 |
+| GAP-06 | P2 | `AgentHandle` 无 `resource_usage` 字段 |
+| GAP-07 | P2 | Task Agent 崩溃可能传播（需要 `catch_unwind`） |
+| GAP-08 | P3 | Webhook URL 格式不规范 |
+
+### Sprint 计划
+
+**Sprint 1（2 周，2026-03-10 → 2026-03-24）：** 稳定性与脚本 LLM 访问
+
+- [ ] **GAP-07** — 用 `catch_unwind` 包装 task agent future；将 panic 转换为 `AgentStatus::Error`
+- [ ] **GAP-08** — 规范化 webhook URL 格式；添加验证和结构化路径 helper
+- [ ] **GAP-01** — 实现 `claw.llm` Lua bridge + V8 bridge（通过 tokio channel 调用 `LLMProvider`）；相关上下文见 [ADR-014](docs/adr/014-channel-message-protocol-v2.md)
+- [ ] **GAP-05** — 闭合入站 → EventBus 链路：渠道适配器在收到消息时向 EventBus 发布 `ChannelEvent::Inbound`
+
+**Sprint 2（3 周，2026-03-24 → 2026-04-14）：** 渠道层加固
+
+- [ ] **GAP-03** — 在 `Channel::send()` 中添加指数退避重试（`claw-pal/retry.rs` 已有初步实现）；可配置最大重试次数和基础延迟
+- [ ] **GAP-04** — 将 `sender_id: Option<String>` 和 `thread_id: Option<String>` 提升为 `ChannelMessage` 顶层字段（见 [ADR-014](docs/adr/014-channel-message-protocol-v2.md)）；semver bump
+- [ ] **GAP-02** — 实现 `ChannelRouter::broadcast(msg)` — 向所有注册渠道广播
+- [ ] **GAP-06** — 为 `AgentHandle` 添加 `resource_usage: Option<ResourceUsage>`（CPU %、内存字节、运行时间）
+
+---
+
+## 远期路线图
+
+**策略：** 快速次要版本发布，添加 Provider 和功能。Semver 管理破坏性变更。
+
+### v1.6.0 — 渠道层增强与更多 LLM Provider
 
 **目标时间：** 2026 Q3
 
-- [ ] `claw-loop` SQLite 历史后端（`sqlite-history` feature）
-- [ ] 所有 Provider 的流式响应支持
-- [ ] 性能基准测试（Provider 延迟、工具吞吐量）
-
-### v1.2.0 — 额外 Provider
-
-**目标时间：** 2026 Q3
-
+- [ ] Telegram 渠道集成
+- [ ] Slack 渠道集成（含 Thread 支持）
+- [ ] WebSocket 双向渠道
 - [ ] Gemini（Google）Provider
 - [ ] Mistral Provider
 - [ ] Azure OpenAI Provider
+- [ ] 所有 Provider 的流式响应支持
 
-### v1.3.0 — 增强脚本
-
-**目标时间：** 2026 Q4
-
-- [x] **Deno/V8 引擎**（`engine-v8` feature）— ✅ 提前在 v0.1.0 交付（2026-03-09）
-  - 完整 ES2022+ JavaScript 支持
-  - 通过 deno_core 实现 TypeScript 转译
-  - V8 isolate 沙箱（比 Lua 更强）
-  - 全部 7 个 Bridge：`fs`、`net`、`tools`、`dirs`、`memory`、`events`、`agent`
-  - 参见 [ADR-012](docs/adr/012-v8-engine-implementation.md)
-- [x] `AgentBridge` —— v0.1.0 已提前完成（见 ADR-009）
-- [x] 完整 `RustBridge` API：全部 7 个 Bridge 已在 v0.1.0 完成
-
-### v1.4.0 — 多语言 SDK 生态
+### v1.7.0 — 沙箱加固
 
 **目标时间：** 2026 Q4
-
-> KernelServer 基础设施已在 v1.0.0 发布；此阶段重点是第一方和社区 SDK。
-
-**官方 SDK（封装 KernelServer 客户端）：**
-- [ ] Python SDK（`claw-sdk-python`，~100 行 + docs）
-- [ ] TypeScript/Node SDK（`claw-sdk-ts`，~100 行 + docs）
-- [ ] Go SDK（`claw-sdk-go`，~100 行 + docs）
-
-**SDK 特性：**
-- [ ] 连接池 / 会话复用
-- [ ] 错误重试与断路器
-- [ ] 类型安全的消息构造（IDE 自动完成）
-- [ ] 流式 token 处理
-- [ ] 工具调用路由回调
-
-### v1.5.0 — 沙箱加固
-
-**目标时间：** 2027 Q1
 
 - [ ] Linux：完整 seccomp-bpf 系统调用白名单
 - [ ] macOS：完整 Seatbelt profile
 - [ ] Windows：AppContainer + Job Objects
 
-### v1.6.0 — 本地模型
+### v1.8.0 — 本地模型与高级记忆
 
-**目标时间：** 2027 Q2
+**目标时间：** 2027 Q1
 
 - [ ] 通过 `llama-cpp-rs` 支持本地 GGUF 模型（可选 feature）
-
-### v1.7.0+ — 渠道扩展
-
-**目标时间：** 2027 Q2+
-
-- [ ] Telegram 集成
-- [ ] Slack 集成
-- [ ] WebSocket 双向渠道
+- [ ] `claw-loop` SQLite 历史后端（`sqlite-history` feature）
+- [ ] 性能基准测试（Provider 延迟、工具吞吐量）
 
 ---
 
 ## 贡献优先领域
 
-达到 v1.0.0 的当前优先领域：
+达到 v1.5.0 的当前优先领域：
 
-1. **文档** —— 示例、指南、rustdoc
-2. **脚本 Bridge** —— ✅ 全部 7 个 Lua bridge 已完成；✅ 全部 V8 bridge 已完成
-3. **跨平台 CI** —— Windows 测试、macOS CI
-4. **API 审计** —— 确保 semver 合规性
-5. **Provider 测试** —— 全部 5 个 Provider 的集成测试
+1. **GAP-07** — `catch_unwind` 保护 Task Agent 崩溃
+2. **GAP-01** — 实现 `claw.llm` bridge（脚本层 LLM 访问）
+3. **GAP-05** — 闭合入站 → EventBus 链路
+4. **GAP-03** — 渠道重试机制（指数退避）
+5. **GAP-04** — `ChannelMessage` 顶层 `sender_id`/`thread_id`（见 ADR-014）
 
-**推迟（v1.0 之后）：**
+**推迟（v1.6+）：**
 - 新 Provider（Gemini、Mistral、Azure）
 - ~~KernelServer 多语言 IPC 守护进程~~ —— ✅ 已在 v1.0.0 实现（见 ADR-011）
 - GGUF 本地模型

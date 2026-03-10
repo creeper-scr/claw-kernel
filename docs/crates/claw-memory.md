@@ -2,13 +2,24 @@
 title: claw-memory
 description: "Memory layer: Ngram embedder, SQLite vector store, SecureMemoryStore with quota enforcement"
 status: active
-version: "0.1.0"
-last_updated: "2026-03-08"
+version: "1.4.1"
+last_updated: "2026-03-10"
 language: en
 ---
 
 
 # claw-memory
+
+> **重要变更 (v1.3.0 D1 决策)**
+>
+> `claw-memory` 已从内核必需组件降级为**可选应用层依赖**。
+>
+> - `memory.search` / `memory.store` IPC 路由已从 `claw-server` handler 移除
+> - `MemorySearchParams` / `MemoryStoreParams` 已从 `claw-server/src/protocol.rs` 移除
+> - 脚本层的 `claw.memory.*` / `memory:*` Bridge 已移除（`bridge/memory.rs` 已删除）
+> - **需要长期记忆的应用应在自己的 Rust 代码中直接引用 `claw-memory`**，不再通过 IPC/脚本访问
+>
+> **ADR 原因**：记忆层的语义/最层政策强烈依赖应用业务逻辑，不适合作为内核通用接口暴露。将其保持为纲层组件减少了内核的概念负担，并使应用层能自由选择嵌入向量模型/内容策略。
 
 Long-term memory layer for agent kernels — semantic search, persistent storage, and quota enforcement.
 

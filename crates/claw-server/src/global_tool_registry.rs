@@ -3,6 +3,7 @@
 //! Holds tool definitions registered via `tool.register` IPC method.
 //! All agent sessions can access these tools.
 
+use claw_tools::types::PermissionSet;
 use dashmap::DashMap;
 use tokio::sync::mpsc;
 
@@ -27,6 +28,9 @@ pub struct GlobalToolDef {
     /// Sender to notify the registering IPC client when tool is called.
     /// Weak semantics: if the connection closes, sends will fail silently.
     pub caller_tx: Option<mpsc::Sender<Vec<u8>>>,
+    /// Declared permission set. Kernel stores this for audit logging;
+    /// actual enforcement inside the external process is the client's responsibility.
+    pub permissions: PermissionSet,
 }
 
 /// Thread-safe registry of server-level tool definitions.

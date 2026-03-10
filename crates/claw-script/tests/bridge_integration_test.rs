@@ -1,16 +1,13 @@
-//! Integration tests for the new bridge implementations.
+//! Integration tests for bridge implementations.
 //!
-//! Tests are organized by bridge: dirs, memory, events, agent.
+//! Tests are organized by bridge: dirs, events, agent.
+//!
+//! Note: Memory bridge tests were removed in v1.3.0 (D1 decision).
+//! Memory operations are now application-layer responsibility; use
+//! the `claw-memory` crate's Rust API directly.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use async_trait::async_trait;
-use claw_memory::{
-    error::MemoryError,
-    traits::MemoryStore,
-    types::{EpisodicEntry, EpisodicFilter, MemoryId, MemoryItem},
-};
 use claw_runtime::{event_bus::EventBus, events::Event, orchestrator::AgentOrchestrator};
 use claw_script::{Script, ScriptContext, ScriptEngine};
 
@@ -21,70 +18,16 @@ use serde_json::json;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// A simple in-memory MemoryStore for testing.
-struct TestMemoryStore(Mutex<HashMap<String, MemoryItem>>);
-
-impl TestMemoryStore {
-    fn new() -> Arc<Self> {
-        Arc::new(Self(Mutex::new(HashMap::new())))
-    }
-}
-
-#[async_trait]
-impl MemoryStore for TestMemoryStore {
-    async fn store(&self, item: MemoryItem) -> Result<MemoryId, MemoryError> {
-        let id = item.id.clone();
-        self.0.lock().unwrap().insert(id.as_str().to_string(), item);
-        Ok(id)
-    }
-
-    async fn retrieve(&self, id: &MemoryId) -> Result<Option<MemoryItem>, MemoryError> {
-        Ok(self.0.lock().unwrap().get(id.as_str()).cloned())
-    }
-
-    async fn search_episodic(
-        &self,
-        _filter: &EpisodicFilter,
-    ) -> Result<Vec<EpisodicEntry>, MemoryError> {
-        Ok(vec![])
-    }
-
-    async fn semantic_search(
-        &self,
-        _query: &[f32],
-        top_k: usize,
-    ) -> Result<Vec<MemoryItem>, MemoryError> {
-        let store = self.0.lock().unwrap();
-        Ok(store.values().take(top_k).cloned().collect())
-    }
-
-    async fn delete(&self, id: &MemoryId) -> Result<(), MemoryError> {
-        self.0.lock().unwrap().remove(id.as_str());
-        Ok(())
-    }
-
-    async fn clear_namespace(&self, ns: &str) -> Result<usize, MemoryError> {
-        let mut store = self.0.lock().unwrap();
-        let before = store.len();
-        store.retain(|_, v| v.namespace != ns);
-        Ok(before - store.len())
-    }
-
-    async fn namespace_usage(&self, _ns: &str) -> Result<u64, MemoryError> {
-        Ok(0)
-    }
-}
-
 fn make_event_bus() -> Arc<EventBus> {
     Arc::new(EventBus::new())
 }
 
 fn make_orchestrator() -> Arc<AgentOrchestrator> {
     use claw_pal::TokioProcessManager;
-    
+
     Arc::new(AgentOrchestrator::new(
         Arc::new(EventBus::new()),
-        Arc::new(TokioProcessManager::new())
+        Arc::new(TokioProcessManager::new()),
     ))
 }
 
@@ -134,93 +77,6 @@ fn test_dirs_bridge_all_methods_in_engine() {
                     local _ = dirs:scripts_dir()
                     local _ = dirs:logs_dir()
                     return true
-                "#,
-                ),
-                &ctx,
-            )
-            .await
-            .unwrap();
-        assert_eq!(result, json!(true));
-    });
-}
-
-// ─── Memory Bridge Tests ──────────────────────────────────────────────────────
-
-#[cfg(feature = "engine-lua")]
-#[test]
-fn test_memory_bridge_set_get_via_engine() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let store = TestMemoryStore::new();
-        let engine = LuaEngine::new();
-        let ctx = ScriptContext::new("agent-mem-test").with_memory_store(store.clone());
-
-        // Set a value
-        engine
-            .execute(
-                &Script::lua("t", r#"memory:set("greeting", "hello")"#),
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        // Get it back
-        let result = engine
-            .execute(&Script::lua("t", r#"return memory:get("greeting")"#), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(result, json!("hello"));
-    });
-}
-
-#[cfg(feature = "engine-lua")]
-#[test]
-fn test_memory_bridge_namespace_isolation() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let store = TestMemoryStore::new();
-        let engine = LuaEngine::new();
-
-        let ctx_a = ScriptContext::new("agent-a").with_memory_store(store.clone());
-        let ctx_b = ScriptContext::new("agent-b").with_memory_store(store.clone());
-
-        // Agent A stores a value
-        engine
-            .execute(&Script::lua("t", r#"memory:set("key", "from-a")"#), &ctx_a)
-            .await
-            .unwrap();
-
-        // Agent B stores different value under same key
-        engine
-            .execute(&Script::lua("t", r#"memory:set("key", "from-b")"#), &ctx_b)
-            .await
-            .unwrap();
-
-        // Agent A should still see its own value (namespaced as "agent-a::key")
-        let result_a = engine
-            .execute(&Script::lua("t", r#"return memory:get("key")"#), &ctx_a)
-            .await
-            .unwrap();
-        assert_eq!(result_a, json!("from-a"));
-    });
-}
-
-#[cfg(feature = "engine-lua")]
-#[test]
-fn test_memory_bridge_missing_returns_nil() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        let store = TestMemoryStore::new();
-        let engine = LuaEngine::new();
-        let ctx = ScriptContext::new("agent-nil-test").with_memory_store(store);
-
-        let result = engine
-            .execute(
-                &Script::lua(
-                    "t",
-                    r#"
-                    local val = memory:get("missing")
-                    return val == nil
                 "#,
                 ),
                 &ctx,

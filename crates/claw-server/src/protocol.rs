@@ -2,6 +2,7 @@
 //!
 //! Defines request/response/notification types for the IPC communication protocol.
 
+use claw_tools::types::PermissionSet;
 use serde::{Deserialize, Serialize};
 
 /// JSON-RPC 2.0 Request object.
@@ -190,6 +191,11 @@ pub struct ExternalToolDef {
     pub description: String,
     /// JSON Schema for the tool's input parameters.
     pub input_schema: serde_json::Value,
+    /// Declared permission set for this tool.
+    /// Kernel cannot enforce these in the external process, but stores them
+    /// for audit logging and future policy enforcement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<PermissionSet>,
 }
 
 /// Parameters for `createSession` method.
@@ -432,6 +438,28 @@ pub struct TriggerAddWebhookParams {
     pub hmac_secret: Option<String>,
 }
 
+/// Parameters for `trigger.add_event` method (G-08).
+///
+/// Subscribes to the internal [`EventBus`] and steers `target_agent`
+/// whenever a matching event is published.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerAddEventParams {
+    /// Unique trigger identifier.
+    pub trigger_id: String,
+    /// Glob-style pattern matched against the canonical event type name
+    /// (e.g. `"agent.stopped"`, `"data.*"`, `"*"`).
+    pub event_pattern: String,
+    /// Optional condition filter applied to the serialised event JSON.
+    /// Supported form: `{ "field": "agent_id", "equals": "agent-001" }`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub condition: Option<serde_json::Value>,
+    /// Target agent ID to steer when the trigger fires.
+    pub target_agent: String,
+    /// Message injected into the agent.  Supports `{event.type}` substitution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 /// Parameters for `trigger.remove` method.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriggerRemoveParams {
@@ -484,6 +512,22 @@ pub struct AgentSteerParams {
     pub message: String,
 }
 
+// ─── G-15: Agent Discovery ────────────────────────────────────────────────────
+
+/// Parameters for `agent.announce` method.
+///
+/// Registers capability declarations for an agent so that other agents (or
+/// external clients) can discover what it can do via `agent.discover`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentAnnounceParams {
+    /// The announcing agent's ID (must already be spawned or about to be spawned).
+    pub agent_id: String,
+    /// Capability strings — free-form labels like `"summarize"`, `"translate"`,
+    /// `"code_review"`.  Replaces any previously announced capabilities for this
+    /// agent.
+    pub capabilities: Vec<String>,
+}
+
 // REMOVED in v1.3.0: memory.search / memory.store are application-layer concerns.
 // See docs/kernel-gap-analysis.md § D1 for rationale.
 
@@ -501,6 +545,11 @@ pub struct ToolRegisterParams {
     /// Executor type: "external" | "inline".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub executor: Option<String>,
+    /// Declared permission set for this tool.
+    /// Kernel cannot enforce these in the external process, but stores them
+    /// for audit logging and future policy enforcement.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<PermissionSet>,
 }
 
 /// Parameters for `tool.unregister` method.
@@ -569,6 +618,100 @@ pub struct ChannelRouteAddParams {
 pub struct ChannelRouteRemoveParams {
     /// Remove all rules targeting this agent.
     pub agent_id: String,
+}
+
+// ─── G-02 (ext): Channel broadcast ───────────────────────────────────────────
+
+/// Parameters for `channel.broadcast` method.
+///
+/// Routes `msg` through [`ChannelRouter::broadcast_route`] and steers every
+/// matched agent with the same message (fan-out).  Unlike `channel.inbound`
+/// which only steers the first-matching agent, this method is intended for
+/// monitoring/audit fan-out and multi-agent voting scenarios.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelBroadcastParams {
+    /// Channel identifier used for routing rule evaluation.
+    pub channel_id: String,
+    /// Sender identifier (stored in `metadata["sender_id"]` for routing rules).
+    pub sender_id: String,
+    /// Message content broadcast to all matched agents.
+    pub content: String,
+    /// Optional thread ID forwarded to each agent steer call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// Optional unique message ID for at-most-once deduplication (60 s TTL).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// Additional metadata forwarded verbatim to all matched agents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+// ─── G-02: Inbound message pipeline ──────────────────────────────────────────
+
+/// Parameters for `channel.inbound` method.
+///
+/// Sent by a channel adapter process when an external message arrives.
+/// The kernel will route it to the correct session via `ChannelRouter`,
+/// run the agent loop, and push the reply back through
+/// `channel_registry.send_outbound()` as a `channel/inbound_reply` notification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelInboundParams {
+    /// Channel identifier (must be registered via `channel.register`).
+    pub channel_id: String,
+    /// Sender identifier (e.g. Discord user ID, HTTP client IP).
+    pub sender_id: String,
+    /// The inbound message content.
+    pub content: String,
+    /// Optional thread ID for session continuity.
+    /// When provided, the kernel reuses the session created for this thread
+    /// rather than starting a new conversation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    /// Optional unique message ID for at-most-once deduplication (60 s TTL).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    /// Additional metadata forwarded verbatim to the agent (guild_id, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+// ─── G-11: HotLoader IPC endpoints ────────────────────────────────────────────
+
+/// Parameters for `tool.watch_dir` method.
+///
+/// Adds a directory to the server-level file watcher. Any `.lua` / `.js` (or
+/// whichever extensions were configured) changes under `path` are debounced
+/// (50 ms) and delivered to this IPC connection as `tool/hot_reloaded`
+/// push notifications.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolWatchDirParams {
+    /// Absolute path of the directory to monitor.
+    pub path: String,
+}
+
+/// Parameters for `tool.reload` method.
+///
+/// Manually triggers a `tool/hot_reloaded` notification for the given file,
+/// as if the file had been modified on disk. The 50 ms debounce still applies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolReloadParams {
+    /// Absolute path of the script file to reload.
+    pub path: String,
+}
+
+/// Parameters for `audit.list` method (G-16).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuditListParams {
+    /// Maximum number of entries to return (most-recent-first). Defaults to 100.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// If set, only events from this agent are returned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// If set, only events with timestamp_ms >= since_ms are returned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub since_ms: Option<u64>,
 }
 
 #[cfg(test)]

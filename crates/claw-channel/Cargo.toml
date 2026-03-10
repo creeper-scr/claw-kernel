@@ -13,6 +13,7 @@ webhook = ["dep:axum", "dep:reqwest", "dep:hmac", "dep:sha2", "dep:hex"]
 discord = ["dep:twilight-gateway", "dep:twilight-model", "dep:twilight-http"]
 
 [dependencies]
+claw-pal = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

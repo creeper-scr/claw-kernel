@@ -293,18 +293,26 @@ Uses native macOS sandbox:
 // (allow file-read* (subpath "/allowed/path"))
 ```
 
-### Windows (AppContainer)
+### Windows (Job Objects — degraded)
 
-> **v0.1.0**: Windows sandbox is a **stub implementation**.
-> It stores configuration but does not enforce actual restrictions.
-> Full AppContainer support is planned for v0.2.0.
+> **v1.4.0**: Windows Safe mode uses **Job Objects** for partial isolation.
+> Resource limits and subprocess blocking are enforced. Filesystem and network
+> restrictions are **not enforced** until v1.5.0 (AppContainer).
 
 ```rust
-// v0.1.0 stub - returns handle without actual sandboxing
-// Full implementation will use:
-// - AppContainer for isolation
-// - Job Objects for resource limits
+// Windows Safe mode enforces via Job Object:
+// - max_memory_bytes → JOBOBJECT_EXTENDED_LIMIT_INFORMATION::JobMemoryLimit
+// - allow_subprocess=false → ActiveProcessLimit=1 (blocks CreateProcess)
+// - max_processes → ActiveProcessLimit
+
+// The following are stored but NOT enforced on Windows:
+// sandbox.restrict_filesystem(&paths) // → no-op until v1.5.0
+// sandbox.restrict_network(&rules)    // → no-op until v1.5.0
 ```
+
+A non-suppressable `tracing::warn!` is emitted when Safe mode is applied on Windows,
+clearly listing what is and is not enforced. For full filesystem and network isolation
+on Windows, run the Linux version via WSL2.
 
 ---
 
@@ -367,7 +375,8 @@ Net disallowed: true   (blocked)
 
 ## Safe Mode Guarantees
 
-The following are **security guarantees** in Safe Mode. Violations are bugs:
+The following are **security guarantees** in Safe Mode on **Linux and macOS**.
+Violations are bugs. See the Windows caveat below.
 
 1. **Filesystem Isolation**
    - Cannot read files outside allowlist
@@ -388,6 +397,20 @@ The following are **security guarantees** in Safe Mode. Violations are bugs:
    - Cannot modify claw-kernel configuration
    - Cannot access kernel credential storage
    - Cannot start in Power Mode without key
+
+### ⚠️ Windows Safe Mode Caveats (v1.4.0)
+
+On Windows, guarantees 1 and 2 are **NOT enforced**:
+
+| Guarantee | Linux/macOS | Windows v1.4.0 | Windows v1.5.0 (planned) |
+|-----------|-------------|----------------|--------------------------|
+| Filesystem isolation | ✅ | ❌ not enforced | ✅ AppContainer |
+| Network restrictions | ✅ | ❌ not enforced | ✅ AppContainer + WFP |
+| Subprocess blocking | ✅ | ✅ Job Object | ✅ |
+| Memory limits | ✅ | ✅ Job Object | ✅ |
+
+Windows Safe mode emits a `WARN` log at activation time. If you require filesystem
+or network isolation on Windows today, run the Linux version via WSL2.
 
 ---
 

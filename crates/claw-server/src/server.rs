@@ -310,10 +310,23 @@ pub struct KernelServer {
     webhook_server: Option<Arc<claw_runtime::webhook::AxumWebhookServer>>,
     /// Persistent trigger storage.
     trigger_store: Option<Arc<crate::trigger_store::TriggerStore>>,
+    /// Active EventTrigger task handles, keyed by trigger_id.
+    /// Used to abort the background listener when `trigger.remove` is called.
+    event_trigger_handles: Arc<dashmap::DashMap<String, tokio::task::AbortHandle>>,
     /// Server-level scheduler (shared across all connections).
     scheduler: Arc<claw_runtime::TokioScheduler>,
     /// Shared channel router (for dynamic IPC-configurable routing rules).
     channel_router: Arc<claw_channel::router::ChannelRouter>,
+    /// Audit log writer handle — cloned into each connection for external tool auditing.
+    pub audit_log: claw_tools::audit::AuditLogWriterHandle,
+    /// Shared in-memory audit ring buffer — queryable via `audit.list` IPC (G-16).
+    pub audit_store: Arc<claw_tools::audit::AuditStore>,
+    /// Background task that flushes audit events to disk (kept alive for server lifetime).
+    _audit_log_task: tokio::task::JoinHandle<()>,
+    /// Server-level hot-loader handle — exposes tool.watch_dir / tool.reload (G-11).
+    hot_loader: crate::hot_loader::HotLoaderHandle,
+    /// Background task driving the debounced hot-loader fan-out (kept alive for server lifetime).
+    _hot_loader_task: tokio::task::JoinHandle<()>,
 }
 
 impl KernelServer {
@@ -394,6 +407,17 @@ impl KernelServer {
             Err(_) => None,
         };
 
+        let channel_router = Arc::new(claw_channel::router::ChannelRouterBuilder::new().build());
+
+        // Start the server-wide audit log writer (one background task for the server lifetime).
+        let (audit_log, audit_store, _audit_log_task) =
+            claw_tools::audit::AuditLogWriter::start(claw_tools::audit::AuditLogConfig::default());
+
+        // Initialise the server-level HotLoader (G-11): watches .lua/.js by default.
+        let (hot_loader, _hot_loader_task) = crate::hot_loader::HotLoaderHandle::new(
+            vec!["lua".to_string(), "js".to_string()],
+        );
+
         Self {
             config,
             session_manager,
@@ -407,8 +431,14 @@ impl KernelServer {
             skill_registry: Arc::new(GlobalSkillRegistry::new()),
             webhook_server,
             trigger_store,
+            event_trigger_handles: Arc::new(dashmap::DashMap::new()),
             scheduler: Arc::new(claw_runtime::TokioScheduler::new()),
-            channel_router: Arc::new(claw_channel::router::ChannelRouterBuilder::new().build()),
+            channel_router,
+            audit_log,
+            audit_store,
+            _audit_log_task,
+            hot_loader,
+            _hot_loader_task,
         }
     }
 
@@ -477,10 +507,67 @@ impl KernelServer {
                                     t.trigger_id
                                 );
                             }
+                            crate::trigger_store::TriggerKind::Event => {
+                                if let Some(ref pattern) = t.event_pattern {
+                                    let orch = Arc::clone(&self.orchestrator);
+                                    let agent = t.target_agent.clone();
+                                    let msg = t.message.clone();
+                                    let tid = t.trigger_id.clone();
+                                    let pattern_str = pattern.clone();
+                                    let eh = Arc::clone(&self.event_trigger_handles);
+                                    let mut rx = self.event_bus.subscribe();
+                                    let task = tokio::spawn(async move {
+                                        use claw_runtime::agent_types::AgentId;
+                                        use claw_runtime::orchestrator::SteerCommand;
+                                        let pattern_regex = match crate::event_trigger::build_event_pattern_regex(&pattern_str) {
+                                            Ok(r) => r,
+                                            Err(e) => {
+                                                tracing::warn!("Failed to restore event trigger {}: {}", tid, e);
+                                                return;
+                                            }
+                                        };
+                                        loop {
+                                            let event = match rx.recv().await {
+                                                Ok(e) => e,
+                                                Err(_) => break,
+                                            };
+                                            let name = crate::event_trigger::event_type_name(&event);
+                                            if pattern_regex.is_match(name.as_ref()) {
+                                                let payload = msg.clone().unwrap_or_default();
+                                                let aid = AgentId::new(agent.clone());
+                                                if let Err(e) = orch.steer(&aid, SteerCommand::Custom {
+                                                    command: "inject".to_string(),
+                                                    payload: Some(payload),
+                                                }).await {
+                                                    tracing::warn!("restored event trigger {}: steer failed: {}", tid, e);
+                                                }
+                                            }
+                                        }
+                                        eh.remove(&tid);
+                                    });
+                                    self.event_trigger_handles.insert(
+                                        t.trigger_id.clone(),
+                                        task.abort_handle(),
+                                    );
+                                    tracing::info!("Restored event trigger {} (pattern={})", t.trigger_id, pattern);
+                                }
+                            }
                         }
                     }
                 }
                 Err(e) => tracing::warn!("Failed to load persisted triggers: {}", e),
+            }
+        }
+
+        // Auto-scan default skill directories (G-14 fix).
+        // Priority: builtin (lowest) → ~/.claw/skills → ./skills (highest).
+        // Only directories that exist are scanned; missing dirs are silently skipped.
+        for dir in claw_skills::default_search_dirs() {
+            if dir.exists() {
+                match self.skill_registry.load_dir(dir.clone()).await {
+                    Ok(n) => info!("Auto-loaded {} skill(s) from {:?}", n, dir),
+                    Err(e) => warn!("Failed to auto-load skills from {:?}: {}", dir, e),
+                }
             }
         }
 
@@ -505,6 +592,10 @@ impl KernelServer {
         let skill_registry = Arc::clone(&self.skill_registry);
         let scheduler = Arc::clone(&self.scheduler);
         let channel_router = Arc::clone(&self.channel_router);
+        let event_trigger_handles = Arc::clone(&self.event_trigger_handles);
+        let audit_log = self.audit_log.clone();
+        let audit_store = Arc::clone(&self.audit_store);
+        let hot_loader = self.hot_loader.clone();
 
         loop {
             // Check for shutdown
@@ -532,6 +623,10 @@ impl KernelServer {
                     let channel_router_clone = Arc::clone(&channel_router);
                     let webhook_server_clone = self.webhook_server.as_ref().map(Arc::clone);
                     let trigger_store_clone = self.trigger_store.as_ref().map(Arc::clone);
+                    let event_trigger_handles_clone = Arc::clone(&event_trigger_handles);
+                    let audit_log_clone = audit_log.clone();
+                    let audit_store_clone = Arc::clone(&audit_store);
+                    let hot_loader_clone = hot_loader.clone();
                     tokio::spawn(async move {
                         if let Err(e) = crate::handler::handle_connection(
                             stream,
@@ -547,7 +642,11 @@ impl KernelServer {
                             scheduler_clone,
                             webhook_server_clone,
                             trigger_store_clone,
+                            event_trigger_handles_clone,
                             channel_router_clone,
+                            audit_log_clone,
+                            audit_store_clone,
+                            hot_loader_clone,
                         )
                         .await
                         {
@@ -640,6 +739,11 @@ impl KernelServer {
     /// Returns the channel router.
     pub fn channel_router(&self) -> &Arc<claw_channel::router::ChannelRouter> {
         &self.channel_router
+    }
+
+    /// Returns the server-level hot-loader handle.
+    pub fn hot_loader(&self) -> &crate::hot_loader::HotLoaderHandle {
+        &self.hot_loader
     }
 }
 

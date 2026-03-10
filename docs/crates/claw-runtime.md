@@ -2,8 +2,8 @@
 title: claw-runtime
 description: Event bus, async runtime, multi-agent orchestration
 status: implemented
-version: "1.0.0"
-last_updated: "2026-03-09"
+version: "1.4.1"
+last_updated: "2026-03-10"
 language: en
 ---
 
@@ -84,12 +84,13 @@ impl Runtime {
     /// Creates a fresh `EventBus`, `TokioProcessManager` (as the default
     /// process manager implementation), wires the `AgentOrchestrator` and 
     /// `IpcRouter` to them, then wraps everything in `Arc`s.
-    pub fn new(ipc_endpoint: impl Into<String>) -> Self;
-    
-    /// Start accepting IPC connections in a background task.
-    /// Required: must call before any agent operations.
+    /// Construct a new `Runtime` and auto-start the orchestrator and IPC listener (v1.1.0+).
+    pub async fn new(ipc_endpoint: impl Into<String>) -> Result<Self, RuntimeError>;
+
+    /// Deprecated since v1.1.0 — Runtime::new() now auto-starts; this is a no-op.
+    #[deprecated(since = "1.1.0")]
     pub async fn start(&self) -> Result<(), RuntimeError>;
-    
+
     /// Broadcast a `Shutdown` event to all subscribers.
     pub fn shutdown(&self) -> Result<(), RuntimeError>;
 }
@@ -246,6 +247,8 @@ orchestrator.disable_auto_restart().await;
 
 ### Steer (Control) Commands
 
+`SteerCommand::Custom` is used by the IPC handler (`claw-server`) to relay steering commands from external clients (v1.3.0+):
+
 ```rust
 use claw_runtime::orchestrator::SteerCommand;
 
@@ -260,6 +263,93 @@ orchestrator.steer(&agent_id, SteerCommand::UpdateConfig(Box::new(new_config))).
 
 // Trigger heartbeat
 orchestrator.steer(&agent_id, SteerCommand::TriggerHeartbeat).await?;
+
+// Custom command from external IPC client (v1.3.0+)
+orchestrator.steer(&agent_id, SteerCommand::Custom {
+    command: "set_priority".to_string(),
+    payload: Some("high".to_string()),
+}).await?;
+```
+
+---
+
+## IPC Token Authentication (v1.3.0+)
+
+每个连接到 kernel daemon 的客户端必须通过 `kernel.auth` 握手帧，否则后续请求会被拒绝。
+
+### 认证流程
+
+1. Daemon 启动时生成一次性 token（`DefaultHasher + SystemTime + PID`）
+2. Token 写入 `~/.local/share/claw-kernel/kernel.token`（权限 `0o600`）
+3. 客户端建立连接后，**第一帧必须**是 `kernel.auth` 类型，携带该 token
+4. 认证通过后 `authenticated = true`，否则连接立即关闭
+
+```jsonc
+// 客户端握手帧示例 (4-byte BE length prefix + JSON payload)
+{
+  "type": "kernel.auth",
+  "token": "<contents of ~/.local/share/claw-kernel/kernel.token>"
+}
+```
+
+> **Note:** Token 是每次 daemon 启动时重新生成的，客户端每次都需要重新读取文件。
+
+---
+
+## G-10 Fix: IpcAgentHandle + RestartPolicy (v1.4.1)
+
+v1.4.1 修复了 agent health_check 与 RestartPolicy 的完整实现（原 G-10 gap）。
+
+### SharedSender 热替换机制
+
+`IpcAgentHandle` 携带一个 `SharedSender`（`Arc<Mutex<Option<Sender<AgentMessage>>>>`），而非直接持有 mpsc sender。当 orchestrator 重启一个失败的 agent 时，只需原地替换 `SharedSender` 的内部值，所有已分发出去的 `IpcAgentHandle` 克隆体无需重新获取 handle 即可自动路由到新的消息循环。
+
+```rust
+use claw_runtime::{IpcAgentHandle, AgentResponse};
+use std::time::Duration;
+
+// Fire-and-forget (returns Err(AgentNotFound) during restart window)
+handle.send("task data").await?;
+
+// Wait for response with timeout
+let response: AgentResponse = handle
+    .send_await("query", Duration::from_secs(30))
+    .await?;
+println!("Agent replied: {}", response.content);
+```
+
+`IpcAgentHandle.shared_tx` 槽为 `None` 时表示 agent 正处于两次重启之间（restart backoff 期间），此时 `send` / `send_await` 返回 `Err(AgentNotFound)`。
+
+### 后台任务函数（内部实现，v1.4.1）
+
+| 函数 | 说明 |
+|------|------|
+| `spawn_ipc_message_loop()` | 为 IPC agent 启动 mpsc 消息循环；task 退出时自动将 agent 状态置为 Error 并触发 restart |
+| `trigger_restart()` | 检查 `RestartState`，等待 backoff，原地热替换 SharedSender，重新 spawn 消息循环 |
+| `start_health_check_task()` | 周期性扫描所有 agent；heartbeat 超时检测**仅在** `process_handle.is_some()` 时生效（避免对纯 in-process agent 的误判） |
+| `start_auto_restart_task()` | 全局 auto-restart 扫描（仅针对**没有**per-agent `RestartState` 的 agent）；设置 `AgentStatus::Starting` 作为重启锁，防止重复重启 |
+
+### AgentState 新字段
+
+```rust
+pub(crate) struct AgentState {
+    // ...existing fields...
+    /// Shared sender slot for IPC agents.
+    /// None for registered or out-of-process agents.
+    /// Hot-swapped by trigger_restart() on each restart.
+    pub(crate) ipc_tx: Option<SharedSender>,
+}
+```
+
+### OrchestratorConfig
+
+```rust
+pub struct OrchestratorConfig {
+    /// Heartbeat timeout (ms); agent marked unhealthy if exceeded. Default: 30_000.
+    pub heartbeat_timeout_ms: u64,
+    /// Health-check scan interval (seconds). Default: 10.
+    pub health_check_interval_secs: u64,
+}
 ```
 
 ---

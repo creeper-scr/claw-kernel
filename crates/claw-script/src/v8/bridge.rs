@@ -4,11 +4,15 @@
 //! - `claw.tools`  — tool registry access (call, list, exists)
 //! - `claw.log`    — logging helpers (info, warn, error)
 //! - `claw.fs`     — sandboxed filesystem access (read, write, exists, list_dir, mkdir)
-//! - `claw.memory` — memory store (set, get, delete, search)
 //! - `claw.events` — event bus (emit, poll)
 //! - `claw.agent`  — agent management (spawn, status, kill, list, info)
 //! - `claw.dirs`   — platform directories (config_dir, data_dir, etc.)
 //! - `claw.net`    — HTTP requests (get, post)
+//! - `claw.llm`    — LLM completions (complete, stream)
+//!
+//! Note: `claw.memory` is intentionally NOT exposed. Per the D1 architectural decision
+//! (v1.3.0), memory operations belong to the application layer. Use the `claw-memory`
+//! crate's Rust API directly for long-term memory and semantic search.
 //!
 //! # Safety
 //!
@@ -26,8 +30,7 @@ use serde_json::{json, Value as JsonValue};
 
 use crate::error::ScriptError;
 use crate::types::{FsBridgeConfig, NetBridgeConfig};
-use claw_memory::{MemoryId, MemoryItem, MemoryStore};
-use claw_provider::embedding::{Embedder, NgramEmbedder};
+use claw_provider::traits::LLMProvider;
 use claw_runtime::{
     agent_types::{AgentConfig, AgentId, AgentStatus},
     event_bus::EventBus,
@@ -49,17 +52,16 @@ pub struct BridgeState {
     pub tool_registry: Option<Arc<ToolRegistry>>,
     pub permissions: PermissionSet,
     pub agent_id: String,
-    pub memory_store: Option<Arc<dyn MemoryStore>>,
     pub event_bus: Option<Arc<EventBus>>,
     pub orchestrator: Option<Arc<AgentOrchestrator>>,
     /// Event subscription — only created when an event_bus is provided.
     pub event_rx: Option<Mutex<EventReceiver>>,
     /// Child agents spawned from this script; auto-cleaned on drop.
     pub agent_children: Mutex<Vec<AgentId>>,
-    /// Embedder for memory semantic search.
-    pub embedder: NgramEmbedder,
     /// Shared HTTP client (connection-pool reuse across net calls).
     pub net_client: Client,
+    /// LLM provider for the llm bridge.
+    pub llm_provider: Option<Arc<dyn LLMProvider>>,
 }
 
 impl BridgeState {
@@ -70,9 +72,31 @@ impl BridgeState {
         tool_registry: Option<Arc<ToolRegistry>>,
         permissions: PermissionSet,
         agent_id: String,
-        memory_store: Option<Arc<dyn MemoryStore>>,
         event_bus: Option<Arc<EventBus>>,
         orchestrator: Option<Arc<AgentOrchestrator>>,
+    ) -> Result<Self, crate::error::ScriptError> {
+        Self::new_with_llm(
+            fs_config,
+            net_config,
+            tool_registry,
+            permissions,
+            agent_id,
+            event_bus,
+            orchestrator,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_llm(
+        fs_config: FsBridgeConfig,
+        net_config: NetBridgeConfig,
+        tool_registry: Option<Arc<ToolRegistry>>,
+        permissions: PermissionSet,
+        agent_id: String,
+        event_bus: Option<Arc<EventBus>>,
+        orchestrator: Option<Arc<AgentOrchestrator>>,
+        llm_provider: Option<Arc<dyn LLMProvider>>,
     ) -> Result<Self, crate::error::ScriptError> {
         let event_rx = event_bus.as_ref().map(|bus| Mutex::new(bus.subscribe()));
         let timeout = Duration::from_secs(if net_config.timeout_secs > 0 {
@@ -90,13 +114,12 @@ impl BridgeState {
             tool_registry,
             permissions,
             agent_id,
-            memory_store,
             event_bus,
             orchestrator,
             event_rx,
             agent_children: Mutex::new(Vec::new()),
-            embedder: NgramEmbedder::new(),
             net_client,
+            llm_provider,
         })
     }
 }
@@ -137,11 +160,11 @@ pub fn register_bridges(
     register_tools_bridge(scope, claw_obj, ptr, &boxed)?;
     register_log_bridge(scope, claw_obj)?;
     register_fs_bridge(scope, claw_obj, ptr)?;
-    register_memory_bridge(scope, claw_obj, ptr)?;
     register_events_bridge(scope, claw_obj, ptr)?;
     register_agent_bridge(scope, claw_obj, ptr)?;
     register_dirs_bridge(scope, claw_obj)?;
     register_net_bridge(scope, claw_obj, ptr)?;
+    register_llm_bridge(scope, claw_obj, ptr)?;
 
     global.set(scope, claw_key.into(), claw_obj.into());
     Ok(boxed)
@@ -805,217 +828,6 @@ fn register_fs_bridge(
 
     let k = v8::String::new(scope, "fs").unwrap();
     claw_obj.set(scope, k.into(), fs_obj.into());
-    Ok(())
-}
-
-// =============================================================================
-// Memory Bridge — claw.memory.{set, get, delete, search}
-// =============================================================================
-
-/// Build the namespaced memory ID: `"{agent_id}::{key}"`.
-fn memory_item_id(agent_id: &str, key: &str) -> MemoryId {
-    MemoryId::new(format!("{}::{}", agent_id, key))
-}
-
-fn register_memory_bridge(
-    scope: &mut v8::HandleScope<'_>,
-    claw_obj: v8::Local<v8::Object>,
-    ptr: *mut std::ffi::c_void,
-) -> Result<(), ScriptError> {
-    let mem_obj = v8::Object::new(scope);
-    store_state(scope, mem_obj, ptr);
-
-    // ── claw.memory.set(key, value) ──────────────────────────────────────────
-    let set_tpl = v8::FunctionTemplate::new(
-        scope,
-        |scope: &mut v8::HandleScope<'_>,
-         args: v8::FunctionCallbackArguments<'_>,
-         mut rv: v8::ReturnValue<'_>| {
-            let state = match unsafe { get_state(scope, args.this()) } {
-                Some(s) => s,
-                None => {
-                    rv.set(v8::undefined(scope).into());
-                    return;
-                }
-            };
-            let store = match &state.memory_store {
-                Some(s) => Arc::clone(s),
-                None => {
-                    rv.set(v8::undefined(scope).into());
-                    return;
-                }
-            };
-            let key = args
-                .get(0)
-                .to_string(scope)
-                .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_default();
-            let value = args
-                .get(1)
-                .to_string(scope)
-                .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_default();
-            let id = memory_item_id(&state.agent_id, &key);
-            let embedding = state.embedder.embed(&value);
-            let agent_id = state.agent_id.clone();
-
-            let result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    let _ = store.delete(&id).await;
-                    let mut item = MemoryItem::new(agent_id, value);
-                    item.id = id;
-                    item.embedding = Some(embedding);
-                    store.store(item).await
-                })
-            });
-
-            match result {
-                Ok(_) => rv.set(v8::undefined(scope).into()),
-                Err(e) => {
-                    let msg = v8::String::new(scope, &e.to_string()).unwrap();
-                    let exc = v8::Exception::error(scope, msg);
-                    scope.throw_exception(exc);
-                }
-            }
-        },
-    );
-    set_fn(scope, mem_obj, "set", set_tpl);
-
-    // ── claw.memory.get(key) → string | null ─────────────────────────────────
-    let get_tpl = v8::FunctionTemplate::new(
-        scope,
-        |scope: &mut v8::HandleScope<'_>,
-         args: v8::FunctionCallbackArguments<'_>,
-         mut rv: v8::ReturnValue<'_>| {
-            let state = match unsafe { get_state(scope, args.this()) } {
-                Some(s) => s,
-                None => {
-                    rv.set(v8::null(scope).into());
-                    return;
-                }
-            };
-            let store = match &state.memory_store {
-                Some(s) => Arc::clone(s),
-                None => {
-                    rv.set(v8::null(scope).into());
-                    return;
-                }
-            };
-            let key = args
-                .get(0)
-                .to_string(scope)
-                .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_default();
-            let id = memory_item_id(&state.agent_id, &key);
-
-            let result = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(store.retrieve(&id))
-            });
-
-            match result {
-                Ok(Some(item)) => {
-                    let v = v8::String::new(scope, &item.content).unwrap();
-                    rv.set(v.into());
-                }
-                _ => rv.set(v8::null(scope).into()),
-            }
-        },
-    );
-    set_fn(scope, mem_obj, "get", get_tpl);
-
-    // ── claw.memory.delete(key) ───────────────────────────────────────────────
-    let del_tpl = v8::FunctionTemplate::new(
-        scope,
-        |scope: &mut v8::HandleScope<'_>,
-         args: v8::FunctionCallbackArguments<'_>,
-         mut rv: v8::ReturnValue<'_>| {
-            let state = match unsafe { get_state(scope, args.this()) } {
-                Some(s) => s,
-                None => {
-                    rv.set(v8::undefined(scope).into());
-                    return;
-                }
-            };
-            let store = match &state.memory_store {
-                Some(s) => Arc::clone(s),
-                None => {
-                    rv.set(v8::undefined(scope).into());
-                    return;
-                }
-            };
-            let key = args
-                .get(0)
-                .to_string(scope)
-                .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_default();
-            let id = memory_item_id(&state.agent_id, &key);
-            let _ = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(store.delete(&id))
-            });
-            rv.set(v8::undefined(scope).into());
-        },
-    );
-    set_fn(scope, mem_obj, "delete", del_tpl);
-
-    // ── claw.memory.search(query, top_k?) → {id,content}[] ──────────────────
-    let search_tpl = v8::FunctionTemplate::new(
-        scope,
-        |scope: &mut v8::HandleScope<'_>,
-         args: v8::FunctionCallbackArguments<'_>,
-         mut rv: v8::ReturnValue<'_>| {
-            let state = match unsafe { get_state(scope, args.this()) } {
-                Some(s) => s,
-                None => {
-                    rv.set(v8::Array::new(scope, 0).into());
-                    return;
-                }
-            };
-            let store = match &state.memory_store {
-                Some(s) => Arc::clone(s),
-                None => {
-                    rv.set(v8::Array::new(scope, 0).into());
-                    return;
-                }
-            };
-            let query = args
-                .get(0)
-                .to_string(scope)
-                .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_default();
-            let top_k = if args.length() > 1 {
-                args.get(1)
-                    .number_value(scope)
-                    .map(|n| n as usize)
-                    .unwrap_or(5)
-            } else {
-                5
-            };
-            let embedding = state.embedder.embed(&query);
-
-            let results = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current()
-                    .block_on(store.semantic_search(&embedding, top_k))
-            })
-            .unwrap_or_default();
-
-            let arr = v8::Array::new(scope, results.len() as i32);
-            for (i, item) in results.iter().enumerate() {
-                let obj = v8::Object::new(scope);
-                let id_k = v8::String::new(scope, "id").unwrap();
-                let id_v = v8::String::new(scope, item.id.0.as_str()).unwrap();
-                obj.set(scope, id_k.into(), id_v.into());
-                let c_k = v8::String::new(scope, "content").unwrap();
-                let c_v = v8::String::new(scope, &item.content).unwrap();
-                obj.set(scope, c_k.into(), c_v.into());
-                arr.set_index(scope, i as u32, obj.into());
-            }
-            rv.set(arr.into());
-        },
-    );
-    set_fn(scope, mem_obj, "search", search_tpl);
-
-    let k = v8::String::new(scope, "memory").unwrap();
-    claw_obj.set(scope, k.into(), mem_obj.into());
     Ok(())
 }
 
@@ -1697,8 +1509,305 @@ fn register_net_bridge(
 }
 
 // =============================================================================
-// Tests
+// LLM Bridge — claw.llm.{complete, stream}
 // =============================================================================
+//
+// Both methods are synchronous from JS's perspective (they run inside
+// spawn_blocking) and call block_on to drive the async LLMProvider future.
+//
+// complete(messages, opts?) -> string
+//   messages: Array<{role: string, content: string}>
+//   opts?: {model?: string, max_tokens?: number, temperature?: number}
+//   returns: assistant content string, or throws on error
+//
+// stream(messages, opts?) -> Array<string>
+//   Same arguments; collects all streaming deltas and returns them as an array.
+
+fn register_llm_bridge(
+    scope: &mut v8::HandleScope<'_>,
+    claw_obj: v8::Local<v8::Object>,
+    ptr: *mut std::ffi::c_void,
+) -> Result<(), ScriptError> {
+    let llm_obj = v8::Object::new(scope);
+    store_state(scope, llm_obj, ptr);
+
+    // ── claw.llm.complete(messages, opts?) ────────────────────────────────────
+    let complete_tpl = v8::FunctionTemplate::new(
+        scope,
+        |scope: &mut v8::HandleScope<'_>,
+         args: v8::FunctionCallbackArguments<'_>,
+         mut rv: v8::ReturnValue<'_>| {
+            let state = match unsafe { get_state(scope, args.this()) } {
+                Some(s) => s,
+                None => {
+                    let msg = v8::String::new(scope, "bridge state unavailable").unwrap();
+                    let exc = v8::Exception::error(scope, msg);
+                    scope.throw_exception(exc);
+                    return;
+                }
+            };
+
+            let provider = match &state.llm_provider {
+                Some(p) => Arc::clone(p),
+                None => {
+                    let msg = v8::String::new(scope, "llm bridge: no provider configured").unwrap();
+                    let exc = v8::Exception::error(scope, msg);
+                    scope.throw_exception(exc);
+                    return;
+                }
+            };
+
+            // Parse messages (arg 0)
+            let messages_val = args.get(0);
+            let messages = match llm_parse_messages(scope, messages_val) {
+                Ok(m) => m,
+                Err(e) => {
+                    let msg = v8::String::new(scope, &e).unwrap();
+                    let exc = v8::Exception::error(scope, msg);
+                    scope.throw_exception(exc);
+                    return;
+                }
+            };
+
+            // Parse opts (arg 1, optional)
+            let opts_val = args.get(1);
+            let options = match llm_parse_opts(scope, opts_val, provider.model_id()) {
+                Ok(o) => o,
+                Err(e) => {
+                    let msg = v8::String::new(scope, &e).unwrap();
+                    let exc = v8::Exception::error(scope, msg);
+                    scope.throw_exception(exc);
+                    return;
+                }
+            };
+
+            // Drive async via block_on (we are inside spawn_blocking)
+            let handle = tokio::runtime::Handle::current();
+            let result = handle.block_on(async move { provider.complete(messages, options).await });
+
+            match result {
+                Ok(resp) => {
+                    let content = v8::String::new(scope, &resp.message.content).unwrap();
+                    rv.set(content.into());
+                }
+                Err(e) => {
+                    let err_msg = format!("llm.complete error: {}", e);
+                    let msg = v8::String::new(scope, &err_msg).unwrap();
+                    let exc = v8::Exception::error(scope, msg);
+                    scope.throw_exception(exc);
+                }
+            }
+        },
+    );
+    set_fn(scope, llm_obj, "complete", complete_tpl);
+
+    // ── claw.llm.stream(messages, opts?) ──────────────────────────────────────
+    let stream_tpl = v8::FunctionTemplate::new(
+        scope,
+        |scope: &mut v8::HandleScope<'_>,
+         args: v8::FunctionCallbackArguments<'_>,
+         mut rv: v8::ReturnValue<'_>| {
+            let state = match unsafe { get_state(scope, args.this()) } {
+                Some(s) => s,
+                None => {
+                    let msg = v8::String::new(scope, "bridge state unavailable").unwrap();
+                    let exc = v8::Exception::error(scope, msg);
+                    scope.throw_exception(exc);
+                    return;
+                }
+            };
+
+            let provider = match &state.llm_provider {
+                Some(p) => Arc::clone(p),
+                None => {
+                    let msg = v8::String::new(scope, "llm bridge: no provider configured").unwrap();
+                    let exc = v8::Exception::error(scope, msg);
+                    scope.throw_exception(exc);
+                    return;
+                }
+            };
+
+            let messages_val = args.get(0);
+            let messages = match llm_parse_messages(scope, messages_val) {
+                Ok(m) => m,
+                Err(e) => {
+                    let msg = v8::String::new(scope, &e).unwrap();
+                    let exc = v8::Exception::error(scope, msg);
+                    scope.throw_exception(exc);
+                    return;
+                }
+            };
+
+            let opts_val = args.get(1);
+            let options = match llm_parse_opts(scope, opts_val, provider.model_id()) {
+                Ok(o) => o,
+                Err(e) => {
+                    let msg = v8::String::new(scope, &e).unwrap();
+                    let exc = v8::Exception::error(scope, msg);
+                    scope.throw_exception(exc);
+                    return;
+                }
+            };
+
+            let handle = tokio::runtime::Handle::current();
+            let result = handle.block_on(async move {
+                use futures::StreamExt;
+                let mut stream = provider.complete_stream(messages, options).await?;
+                let mut chunks: Vec<String> = Vec::new();
+                while let Some(delta) = stream.next().await {
+                    match delta {
+                        Ok(d) => {
+                            if let Some(content) = d.content {
+                                if !content.is_empty() {
+                                    chunks.push(content);
+                                }
+                            }
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(chunks)
+            });
+
+            match result {
+                Ok(chunks) => {
+                    let arr = v8::Array::new(scope, chunks.len() as i32);
+                    for (i, chunk) in chunks.iter().enumerate() {
+                        let s = v8::String::new(scope, chunk).unwrap();
+                        arr.set_index(scope, i as u32, s.into());
+                    }
+                    rv.set(arr.into());
+                }
+                Err(e) => {
+                    let err_msg = format!("llm.stream error: {}", e);
+                    let msg = v8::String::new(scope, &err_msg).unwrap();
+                    let exc = v8::Exception::error(scope, msg);
+                    scope.throw_exception(exc);
+                }
+            }
+        },
+    );
+    set_fn(scope, llm_obj, "stream", stream_tpl);
+
+    let k = v8::String::new(scope, "llm").unwrap();
+    claw_obj.set(scope, k.into(), llm_obj.into());
+    Ok(())
+}
+
+/// Parse a V8 array of message objects into Vec<claw_provider::types::Message>.
+fn llm_parse_messages(
+    scope: &mut v8::HandleScope<'_>,
+    val: v8::Local<v8::Value>,
+) -> Result<Vec<claw_provider::types::Message>, String> {
+    use claw_provider::types::{Message, Role};
+
+    if !val.is_array() {
+        return Err("messages must be an array".to_string());
+    }
+    let arr = v8::Local::<v8::Array>::try_from(val)
+        .map_err(|_| "messages must be an array".to_string())?;
+    let len = arr.length();
+    let mut messages = Vec::with_capacity(len as usize);
+
+    for i in 0..len {
+        let entry = arr
+            .get_index(scope, i)
+            .ok_or_else(|| format!("messages[{}] is undefined", i))?;
+        if !entry.is_object() {
+            return Err(format!("messages[{}] must be an object", i));
+        }
+        let obj = v8::Local::<v8::Object>::try_from(entry)
+            .map_err(|_| format!("messages[{}] must be an object", i))?;
+
+        let role_key = v8::String::new(scope, "role").unwrap();
+        let role_val = obj
+            .get(scope, role_key.into())
+            .ok_or_else(|| format!("messages[{}].role is missing", i))?;
+        let role_str = role_val
+            .to_string(scope)
+            .map(|s| s.to_rust_string_lossy(scope))
+            .unwrap_or_default();
+
+        let content_key = v8::String::new(scope, "content").unwrap();
+        let content_val = obj
+            .get(scope, content_key.into())
+            .ok_or_else(|| format!("messages[{}].content is missing", i))?;
+        let content = content_val
+            .to_string(scope)
+            .map(|s| s.to_rust_string_lossy(scope))
+            .unwrap_or_default();
+
+        let role = match role_str.to_lowercase().as_str() {
+            "user" => Role::User,
+            "assistant" => Role::Assistant,
+            "system" => Role::System,
+            "tool" => Role::Tool,
+            other => return Err(format!("messages[{}]: unknown role '{}'", i, other)),
+        };
+
+        messages.push(Message {
+            role,
+            content,
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+    Ok(messages)
+}
+
+/// Parse a V8 opts object into claw_provider::types::Options.
+fn llm_parse_opts(
+    scope: &mut v8::HandleScope<'_>,
+    val: v8::Local<v8::Value>,
+    default_model: &str,
+) -> Result<claw_provider::types::Options, String> {
+    use claw_provider::types::Options;
+
+    let model = if val.is_object() && !val.is_null() {
+        let obj = v8::Local::<v8::Object>::try_from(val).ok();
+        if let Some(obj) = obj {
+            let key = v8::String::new(scope, "model").unwrap();
+            obj.get(scope, key.into())
+                .and_then(|v| v.to_string(scope))
+                .map(|s| s.to_rust_string_lossy(scope))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| default_model.to_string())
+        } else {
+            default_model.to_string()
+        }
+    } else {
+        default_model.to_string()
+    };
+
+    let mut options = Options::new(model);
+
+    if val.is_object() && !val.is_null() {
+        if let Ok(obj) = v8::Local::<v8::Object>::try_from(val) {
+            // max_tokens
+            let key = v8::String::new(scope, "max_tokens").unwrap();
+            if let Some(v) = obj.get(scope, key.into()) {
+                if v.is_number() {
+                    let n = v.number_value(scope).unwrap_or(0.0) as u32;
+                    if n > 0 {
+                        options = options.with_max_tokens(n);
+                    }
+                }
+            }
+            // temperature
+            let key = v8::String::new(scope, "temperature").unwrap();
+            if let Some(v) = obj.get(scope, key.into()) {
+                if v.is_number() {
+                    let t = v.number_value(scope).unwrap_or(0.7) as f32;
+                    options = options
+                        .with_temperature(t)
+                        .map_err(|e| format!("opts.temperature: {}", e))?;
+                }
+            }
+        }
+    }
+
+    Ok(options)
+}
 
 #[cfg(test)]
 mod tests {
@@ -1713,7 +1822,6 @@ mod tests {
             None,
             PermissionSet::minimal(),
             "test-agent".to_string(),
-            None,
             None,
             None,
         )
@@ -1827,7 +1935,6 @@ mod tests {
         let state = make_state();
         assert_eq!(state.agent_id, "test-agent");
         assert!(state.tool_registry.is_none());
-        assert!(state.memory_store.is_none());
         assert!(state.event_rx.is_none());
         assert!(state.orchestrator.is_none());
     }
@@ -1842,7 +1949,6 @@ mod tests {
             None,
             PermissionSet::minimal(),
             "agent-1".to_string(),
-            None,
             Some(bus),
             None,
         );

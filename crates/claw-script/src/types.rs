@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use claw_memory::MemoryStore;
+use claw_provider::traits::LLMProvider;
 use claw_runtime::{AgentOrchestrator, EventBus};
 use claw_tools::{registry::ToolRegistry, types::PermissionSet};
 use serde::{Deserialize, Serialize};
@@ -115,12 +115,12 @@ pub struct ScriptContext {
     pub permissions: PermissionSet,
     /// Tool registry for executing tools from scripts.
     pub tool_registry: Option<Arc<ToolRegistry>>,
-    /// Memory store for the memory bridge.
-    pub memory_store: Option<Arc<dyn MemoryStore>>,
     /// Event bus for the events bridge.
     pub event_bus: Option<Arc<EventBus>>,
     /// Agent orchestrator for the agent bridge.
     pub orchestrator: Option<Arc<AgentOrchestrator>>,
+    /// LLM provider for the llm bridge.
+    pub llm_provider: Option<Arc<dyn LLMProvider>>,
     /// Resource holders to keep background resources alive during script execution.
     pub(crate) _resource_holders: Vec<Arc<dyn std::any::Any + Send + Sync>>,
 }
@@ -135,9 +135,9 @@ impl std::fmt::Debug for ScriptContext {
             .field("net_config", &self.net_config)
             .field("permissions", &self.permissions)
             .field("tool_registry", &self.tool_registry.is_some())
-            .field("memory_store", &self.memory_store.is_some())
             .field("event_bus", &self.event_bus.is_some())
             .field("orchestrator", &self.orchestrator.is_some())
+            .field("llm_provider", &self.llm_provider.is_some())
             .finish()
     }
 }
@@ -152,9 +152,9 @@ impl Default for ScriptContext {
             net_config: NetBridgeConfig::default(),
             permissions: PermissionSet::minimal(),
             tool_registry: None,
-            memory_store: None,
             event_bus: None,
             orchestrator: None,
+            llm_provider: None,
             _resource_holders: Vec::new(),
         }
     }
@@ -183,9 +183,9 @@ impl ScriptContext {
             net_config: NetBridgeConfig::default(),
             permissions: PermissionSet::minimal(),
             tool_registry: None,
-            memory_store: None,
             event_bus: None,
             orchestrator: None,
+            llm_provider: None,
             _resource_holders: Vec::new(),
         }
     }
@@ -334,25 +334,6 @@ impl ScriptContext {
         self
     }
 
-    /// Set the memory store for the memory bridge.
-    ///
-    /// Allows scripts to store and retrieve memories.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use claw_script::types::ScriptContext;
-    /// use claw_memory::SqliteMemoryStore;
-    /// use std::sync::Arc;
-    ///
-    /// // let store = Arc::new(SqliteMemoryStore::new_in_memory().unwrap());
-    /// // let ctx = ScriptContext::new("agent-1").with_memory_store(store);
-    /// ```
-    pub fn with_memory_store(mut self, store: Arc<dyn MemoryStore>) -> Self {
-        self.memory_store = Some(store);
-        self
-    }
-
     /// Set the event bus for the events bridge.
     ///
     /// Allows scripts to publish events to the runtime.
@@ -393,6 +374,14 @@ impl ScriptContext {
     /// ```
     pub fn with_orchestrator(mut self, orc: Arc<AgentOrchestrator>) -> Self {
         self.orchestrator = Some(orc);
+        self
+    }
+
+    /// Set the LLM provider for the llm bridge.
+    ///
+    /// Allows scripts to call LLM completions directly via `llm:complete()` / `claw.llm.complete()`.
+    pub fn with_llm_provider(mut self, provider: Arc<dyn LLMProvider>) -> Self {
+        self.llm_provider = Some(provider);
         self
     }
 }

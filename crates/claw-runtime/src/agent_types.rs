@@ -68,6 +68,24 @@ impl AgentConfig {
     }
 }
 
+// ─── ResourceUsage ────────────────────────────────────────────────────────────
+
+/// Snapshot of an agent's resource consumption.
+///
+/// Fields are `Option` to reflect platform limitations:
+/// - `cpu_ms`: cumulative CPU time is only available for out-of-process agents
+///   via OS-level proc accounting; `None` for in-process tokio task agents.
+/// - `memory_bytes`: resident-set size estimate from the OS; `None` when the
+///   agent shares the kernel process's address space (tokio task mode), since
+///   per-task isolation is not available.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ResourceUsage {
+    /// Accumulated CPU time in milliseconds.  `None` for tokio-task agents.
+    pub cpu_ms: Option<u64>,
+    /// Resident memory estimate in bytes.  `None` when process isolation is unavailable.
+    pub memory_bytes: Option<u64>,
+}
+
 // ─── AgentInfo ────────────────────────────────────────────────────────────────
 
 /// Lifecycle status of a registered agent.
@@ -101,6 +119,9 @@ pub struct AgentInfo {
     pub process_handle: Option<ProcessHandle>,
     /// Current lifecycle status.
     pub status: AgentStatus,
+    /// Latest resource consumption snapshot.  `None` before the first health
+    /// check completes or for agents that do not expose OS-level metrics.
+    pub resource_usage: Option<ResourceUsage>,
 }
 
 // ─── AgentHandle ─────────────────────────────────────────────────────────────

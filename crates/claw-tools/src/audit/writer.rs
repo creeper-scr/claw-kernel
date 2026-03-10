@@ -3,8 +3,9 @@
 //! The writer spawns a background task that receives events via channel,
 //! buffers them, and flushes to disk periodically.
 
-use super::{AuditEvent, AuditLogConfig};
+use super::{AuditEvent, AuditLogConfig, AuditStore};
 use std::io::Write;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
@@ -21,6 +22,14 @@ pub struct AuditLogWriterHandle {
 }
 
 impl AuditLogWriterHandle {
+    /// Create a no-op handle that silently drops all audit events.
+    ///
+    /// Useful in contexts where audit logging is not required (e.g. agent.spawn sessions).
+    pub fn noop() -> Self {
+        let (sender, _receiver) = mpsc::channel(1);
+        Self { sender }
+    }
+
     /// Send an audit event to the writer.
     ///
     /// This is non-blocking. Events are queued for async processing.
@@ -43,19 +52,23 @@ pub struct AuditLogWriter {
     receiver: mpsc::Receiver<AuditEvent>,
     buffer: Vec<u8>,
     current_file_size: u64,
+    store: Arc<AuditStore>,
 }
 
 impl AuditLogWriter {
     /// Create a new audit log writer and start the background task.
     ///
-    /// Returns a handle for sending events and a join handle for the background task.
-    pub fn start(config: AuditLogConfig) -> (AuditLogWriterHandle, tokio::task::JoinHandle<()>) {
+    /// Returns a handle for sending events, the shared in-memory store, and a
+    /// join handle for the background task.
+    pub fn start(config: AuditLogConfig) -> (AuditLogWriterHandle, Arc<AuditStore>, tokio::task::JoinHandle<()>) {
+        let store = Arc::new(AuditStore::new(config.max_memory_entries));
         let (sender, receiver) = mpsc::channel(10_000); // Buffer up to 10k events
         let writer = Self {
             config,
             receiver,
             buffer: Vec::with_capacity(64 * 1024), // 64KB initial buffer
             current_file_size: 0,
+            store: Arc::clone(&store),
         };
 
         let handle = tokio::spawn(async move {
@@ -64,7 +77,7 @@ impl AuditLogWriter {
             }
         });
 
-        (AuditLogWriterHandle { sender }, handle)
+        (AuditLogWriterHandle { sender }, store, handle)
     }
 
     /// Main event loop: receive events and flush periodically.
@@ -85,6 +98,8 @@ impl AuditLogWriter {
             tokio::select! {
                 // Receive audit events
                 Some(event) = self.receiver.recv() => {
+                    // Mirror into the in-memory query store before writing to disk.
+                    self.store.push(event.clone());
                     self.format_event(&event);
 
                     // Check if we need rotation before writing
@@ -305,7 +320,7 @@ mod tests {
             .with_log_dir(&temp_path)
             .with_flush_interval(1);
 
-        let (handle, _task) = AuditLogWriter::start(config.clone());
+        let (handle, _store, _task) = AuditLogWriter::start(config.clone());
 
         // Send some events
         let event = AuditEvent::ToolCall {

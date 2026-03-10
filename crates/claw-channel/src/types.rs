@@ -54,7 +54,14 @@ pub struct ChannelMessage {
     pub platform: Platform,
     /// Plain-text content.
     pub content: String,
-    /// Optional structured metadata (author, guild, etc.).
+    /// Sender's identity within the originating platform (e.g. Discord user ID,
+    /// webhook client ID).  Promoted to a top-level field for type-safe routing.
+    pub sender_id: Option<String>,
+    /// Thread or conversation identifier within the channel (e.g. Discord Thread
+    /// ID, Slack thread_ts).  Used to route messages to per-thread history
+    /// managers in multi-thread channels.
+    pub thread_id: Option<String>,
+    /// Optional structured metadata (guild, raw event payload, etc.).
     pub metadata: serde_json::Value,
     /// Unix timestamp in milliseconds.
     pub timestamp_ms: u64,
@@ -74,6 +81,8 @@ impl ChannelMessage {
             direction: MessageDirection::Inbound,
             platform,
             content: content.into(),
+            sender_id: None,
+            thread_id: None,
             metadata: serde_json::Value::Null,
             timestamp_ms: ts,
         }
@@ -107,6 +116,8 @@ mod tests {
         assert_eq!(msg.direction, MessageDirection::Inbound);
         assert_eq!(msg.content, "hello");
         assert!(msg.timestamp_ms > 0);
+        assert!(msg.sender_id.is_none());
+        assert!(msg.thread_id.is_none());
     }
 
     #[test]
@@ -121,5 +132,18 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         let back: ChannelMessage = serde_json::from_str(&json).unwrap();
         assert_eq!(back.content, "test");
+        assert!(back.sender_id.is_none());
+        assert!(back.thread_id.is_none());
+    }
+
+    #[test]
+    fn test_sender_id_and_thread_id_roundtrip() {
+        let mut msg = ChannelMessage::inbound(ChannelId::new("ch"), Platform::Discord, "hi");
+        msg.sender_id = Some("user-42".to_string());
+        msg.thread_id = Some("thread-99".to_string());
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: ChannelMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.sender_id.as_deref(), Some("user-42"));
+        assert_eq!(back.thread_id.as_deref(), Some("thread-99"));
     }
 }

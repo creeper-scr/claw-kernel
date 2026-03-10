@@ -4,11 +4,78 @@
 //! in-memory index of recent events.
 
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 mod writer;
 
 pub use writer::{AuditLogWriter, AuditLogWriterHandle};
+
+/// In-memory ring buffer of recent audit events, queryable via IPC (`audit.list`).
+///
+/// Holds at most `max_entries` events. When full, the oldest entry is dropped.
+/// Thread-safe via `Mutex`; intended to be shared as `Arc<AuditStore>`.
+#[derive(Debug)]
+pub struct AuditStore {
+    entries: Mutex<VecDeque<AuditEvent>>,
+    max_entries: usize,
+}
+
+impl AuditStore {
+    /// Create a new store with the given capacity.
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            entries: Mutex::new(VecDeque::with_capacity(max_entries)),
+            max_entries,
+        }
+    }
+
+    /// Push an event into the ring buffer, evicting the oldest if full.
+    pub fn push(&self, event: AuditEvent) {
+        if let Ok(mut q) = self.entries.lock() {
+            if q.len() >= self.max_entries {
+                q.pop_front();
+            }
+            q.push_back(event);
+        }
+    }
+
+    /// Query stored events, optionally filtered.
+    ///
+    /// - `limit`: max number of entries to return (most-recent-first). Defaults to 100.
+    /// - `agent_id`: if set, only events from this agent are returned.
+    /// - `since_ms`: if set, only events with `timestamp_ms >= since_ms` are returned.
+    pub fn list(
+        &self,
+        limit: usize,
+        agent_id: Option<&str>,
+        since_ms: Option<u64>,
+    ) -> Vec<AuditEvent> {
+        let q = match self.entries.lock() {
+            Ok(q) => q,
+            Err(_) => return vec![],
+        };
+        q.iter()
+            .rev()
+            .filter(|e| {
+                if let Some(aid) = agent_id {
+                    if e.agent_id() != aid {
+                        return false;
+                    }
+                }
+                if let Some(since) = since_ms {
+                    if e.timestamp_ms() < since {
+                        return false;
+                    }
+                }
+                true
+            })
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+}
 
 /// Types of audit events that can be logged.
 #[derive(Debug, Clone, Serialize, Deserialize)]

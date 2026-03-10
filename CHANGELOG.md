@@ -1,9 +1,9 @@
 ---
 title: Changelog
 description: Version history for claw-kernel
-status: v1.0.0
-version: "1.0.0"
-last_updated: "2026-03-08"
+status: v1.4.1
+version: "1.4.1"
+last_updated: "2026-03-10"
 language: english
 ---
 
@@ -26,37 +26,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.0] - 2026-03-10
+---
 
-### Changed
-- **F2 架构边界重划**：`claw-memory`（MemoryStore/hybrid_search/NgramEmbedder）降级为可选应用层依赖；`memory.search`/`memory.store` IPC 端点直接删除（无降级 stub）
-- **IPC 认证**：连接级 token 认证（`kernel.auth` 握手），token 以 0o600 权限写入 `kernel.token`
+## [1.4.1] - 2026-03-10
 
-### Added
-- B1: `channel.register`/`unregister`/`list` — 真实写入 ChannelRegistry
-- B3: `agent.spawn`/`kill`/`steer`/`list` — 真实对接 AgentOrchestrator
-- B2: `trigger.add_cron` cron 回调真实调用 `orchestrator.steer()`
-- Python SDK 参考实现（`examples/sdk/python/`）
+### Fixed
 
-### Architecture
-- 内核 F2 职责收窄为 `HistoryManager`（短期上下文窗口）
-- `claw-memory` crate 保留，作为独立可选应用层组件
+**G-10：Agent health_check + RestartPolicy 修复**
+
+- `agent_handle.rs`：`IpcAgentHandle.shared_tx` 类型改为 `SharedSender`（`Arc<Mutex<Option<Sender>>>`），支持重启时热替换发送端，无需替换整个 Handle 实例
+- `orchestrator.rs`：`AgentState.ipc_tx` 类型改为 `Option<SharedSender>`；`spawn_ipc_message_loop()` 提取为独立函数，task 退出时自动将 Agent 状态设置为 Error 并触发重启流程
+- `orchestrator.rs`：`trigger_restart()` 提取为独立函数 — 读取 RestartState 策略、等待指数退避时间、热替换 SharedSender、重新派生 IPC 消息循环
+- `orchestrator.rs`：`start_health_check_task()` — 移除错误的心跳自动刷新逻辑；超时检测现在仅对持有 `process_handle` 的进程型 Agent 生效
+- `orchestrator.rs`：`start_auto_restart_task()` — 仅作用于无独立 `RestartState` 的 Agent；在重新派生前设置 `Starting` 状态作为双重重启防护
+
+### Tests
+
+新增 4 个集成测试（`claw-runtime`）：
+
+- `test_spawn_agent_ipc_tx_stored`：验证 spawn 后 `AgentState.ipc_tx` 被正确存储
+- `test_health_check_heartbeat_timeout_marks_error`：验证心跳超时后 Agent 状态置为 Error
+- `test_trigger_restart_never_policy_publishes_agent_failed`：验证 `RestartPolicy::Never` 时发布 `AgentFailed` 事件而非重启
+- `test_trigger_restart_hot_swaps_sender`：验证重启后 SharedSender 被热替换，旧 Handle 持有的 Arc 自动获得新 Sender
 
 ---
 
-### Changed (Breaking)
-- **`Runtime::new()` is now `async` and returns `Result<Self, RuntimeError>`** — background tasks
-  (IPC router, event bus) start automatically. Callers must `Runtime::new(endpoint).await?`.
-  The old `start()` method is deprecated and is now a no-op with a warning.
+## [1.4.0] - 2026-03-10
 
 ### Added
-- **V8/TypeScript Engine** (`engine-v8` feature) — Full JavaScript/TypeScript support via deno_core
-  - `V8Engine` with per-execution isolate creation for strong sandboxing
-  - `V8EngineOptions` for configuring timeout, heap limits, TypeScript support
-  - `Script::javascript()` and `Script::typescript()` constructors
-  - All 7 bridges exposed to JS/TS: `claw.fs`, `claw.net`, `claw.tools`, `claw.memory`, `claw.events`, `claw.agent`, `claw.dirs`, `claw.json`
-  - See [ADR-012](docs/adr/012-v8-engine-implementation.md) for architecture details
-- **Examples**: `examples/v8-scripts/` with JavaScript and TypeScript examples
+
+- **GlobalToolRegistry**：跨 Agent 全局工具注册表，支持运行时动态注册与查询，所有 Agent 共享同一工具命名空间
+- **GlobalSkillRegistry**：全局技能注册表，支持 `SkillManifest` 扫描与索引，技能按命名空间隔离
+- **TriggerStore SQLite 持久化**：触发器定义写入 SQLite，内核重启后自动从数据库恢复全部触发器，无需重新注册
+- **AxumWebhookServer 集成**：`POST /hooks/{trigger_id}` 标准化路由；请求体自动转发至对应 TriggerStore 条目；HMAC 签名验证复用 `WebhookChannel` 逻辑
+- **ChannelRouter IPC 动态路由**：通过 IPC 消息动态注册/取消注册路由规则；`channel.route.add` / `channel.route.remove` 端点
+- **TypeScript SDK 参考实现**（`examples/sdk/typescript/`）：Node.js 原生实现，与 Python SDK 功能对等
+
+### Fixed
+
+- `trigger.add_cron` 回调现在真实调用 `orchestrator.steer()`；此前为未实现的 stub，cron 触发不会产生任何效果
+
+---
+
+## [1.3.0] - 2026-03-10
+
+### Breaking Changes
+
+- **F2 架构边界重划（D1）**：`claw-memory`（`MemoryStore` / `hybrid_search` / `NgramEmbedder`）降级为可选应用层依赖，从内核核心依赖中移除。IPC 端点 `memory.search` / `memory.store` 直接删除，无降级 stub。内核 F2 职责收窄为 `HistoryManager`（短期上下文窗口管理），`claw-memory` crate 本身保留，作为独立可选组件供应用层使用。
+- **`Runtime::new()` 改为 async**：现在签名为 `async fn new(endpoint) -> Result<Self, RuntimeError>`，后台任务（IPC router、event bus）在构造时自动启动。调用方须改为 `Runtime::new(endpoint).await?`。旧 `start()` 方法标记为 `#[deprecated(since = "1.1.0")]`，调用时打印警告并作为空操作执行。
+
+### Added
+
+- **IPC token 认证（D2）**：连接级 token 认证机制。daemon 启动时使用 `DefaultHasher + SystemTime + PID` 生成 token，以 `0o600` 权限写入 `~/.local/share/claw-kernel/kernel.token`。每条新连接的第一帧必须为 `kernel.auth` 握手帧；认证失败立即断开连接。`authenticated` 布尔字段在 `handle_connection()` 中按连接维护。
+- **ChannelRegistry（D3）**：新增 `crates/claw-server/src/channel_registry.rs`。`DashMap` 后端存储，带 60s TTL 去重缓存（防止同一 channel 重复注册事件）。`channel.register` / `channel.unregister` / `channel.list` 三个 IPC 端点完整实现。
+- **AgentOrchestrator 真实对接（D4）**：`agent.spawn` / `agent.kill` / `agent.steer` / `agent.list` 四个 IPC 端点现在真实调用 orchestrator API（`AgentId::new`、`AgentConfig::with_meta`、`SteerCommand::Custom`、`orchestrator.agent_ids()`），不再是 stub 响应。
+- **V8/TypeScript 引擎**（`engine-v8` feature）：基于 `deno_core`，per-execution isolate 强隔离。`V8Engine` + `V8EngineOptions`（超时、堆限制、TypeScript 支持配置）。`Script::javascript()` 和 `Script::typescript()` 构造器。全部 7 个 bridge 对 JS/TS 暴露：`claw.fs`、`claw.net`、`claw.tools`、`claw.memory`、`claw.events`、`claw.agent`、`claw.dirs`、`claw.json`。
+- **Python SDK 参考实现**（`examples/sdk/python/`）：仅依赖 stdlib，实现 4 字节 BE 帧协议。包含 `kernel_client.py`（客户端封装）、`example_chat.py`、`example_tools.py`、`README.md`。
+- **协议版本更新**：`handle_kernel_info()` 返回 `protocol_version: 2`。
 
 ---
 
@@ -228,6 +254,9 @@ Initial release. **9 crates, 670+ tests passing, zero clippy errors.**
 
 ---
 
-[Unreleased]: https://github.com/claw-project/claw-kernel/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/claw-project/claw-kernel/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/claw-project/claw-kernel/compare/v1.4.0...v1.4.1
+[1.4.0]: https://github.com/claw-project/claw-kernel/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/claw-project/claw-kernel/compare/v0.2.0...v1.3.0
 [0.2.0]: https://github.com/claw-project/claw-kernel/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/claw-project/claw-kernel/releases/tag/v0.1.0
