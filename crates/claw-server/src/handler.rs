@@ -95,6 +95,8 @@ pub async fn handle_connection(
     channel_registry: Arc<ChannelRegistry>,
     orchestrator: Arc<AgentOrchestrator>,
     auth_token: Arc<String>,
+    tool_registry: Arc<crate::global_tool_registry::GlobalToolRegistry>,
+    skill_registry: Arc<crate::global_skill_registry::GlobalSkillRegistry>,
 ) -> Result<(), ServerError> {
     info!("New client connection established");
 
@@ -115,7 +117,7 @@ pub async fn handle_connection(
                     Ok(data) => {
                         if let Err(e) = handle_message(
                             &data,
-                            &session_manager,
+                            Arc::clone(&session_manager),
                             &provider,
                             &registry,
                             &notify_tx,
@@ -126,6 +128,8 @@ pub async fn handle_connection(
                             &orchestrator,
                             &mut authenticated,
                             &auth_token,
+                            &tool_registry,
+                            &skill_registry,
                         )
                         .await
                         {
@@ -159,7 +163,7 @@ pub async fn handle_connection(
 /// Handles a single JSON-RPC message.
 async fn handle_message(
     data: &[u8],
-    session_manager: &SessionManager,
+    session_manager: Arc<SessionManager>,
     provider: &Arc<dyn claw_provider::traits::LLMProvider>,
     registry: &Arc<crate::server::ProviderRegistry>,
     notify_tx: &mpsc::Sender<Vec<u8>>,
@@ -170,6 +174,8 @@ async fn handle_message(
     orchestrator: &Arc<AgentOrchestrator>,
     authenticated: &mut bool,
     auth_token: &str,
+    tool_registry: &Arc<crate::global_tool_registry::GlobalToolRegistry>,
+    skill_registry: &Arc<crate::global_skill_registry::GlobalSkillRegistry>,
 ) -> Result<(), ServerError> {
     // Parse the request
     let request: Request = match serde_json::from_slice(data) {
@@ -240,11 +246,11 @@ async fn handle_message(
     // Dispatch to appropriate handler
     let result = match request.method.as_str() {
         "createSession" => {
-            handle_create_session(request.params, session_manager, provider, registry, notify_tx).await
+            handle_create_session(request.params, &session_manager, provider, registry, notify_tx).await
         }
-        "sendMessage" => handle_send_message(request.params, session_manager).await,
-        "toolResult" => handle_tool_result(request.params, session_manager).await,
-        "destroySession" => handle_destroy_session(request.params, session_manager).await,
+        "sendMessage" => handle_send_message(request.params, &session_manager).await,
+        "toolResult" => handle_tool_result(request.params, &session_manager).await,
+        "destroySession" => handle_destroy_session(request.params, &session_manager).await,
         "kernel.ping" => {
             Ok(serde_json::json!({
                 "pong": true,
@@ -254,7 +260,7 @@ async fn handle_message(
                     .as_millis() as u64
             }))
         }
-        "kernel.info" => handle_kernel_info(session_manager, registry).await,
+        "kernel.info" => handle_kernel_info(&session_manager, registry).await,
         "provider.register" => handle_provider_register(request.params, registry).await,
         "provider.list" => handle_provider_list(registry).await,
         // Session aliases
@@ -262,7 +268,7 @@ async fn handle_message(
             handle_create_session(request.params.map(|p| {
                 // session.create accepts { system_prompt, ... } directly as config
                 serde_json::json!({ "config": p })
-            }), session_manager, provider, registry, notify_tx).await
+            }), &session_manager, provider, registry, notify_tx).await
         }
         "session.close" => {
             let params = request.params.unwrap_or(serde_json::Value::Null);
@@ -279,20 +285,20 @@ async fn handle_message(
             let params: EventsSubscribeParams =
                 serde_json::from_value(request.params.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| ServerError::Serialization(format!("invalid params: {}", e)))?;
-            handle_events_subscribe(params, session_manager, event_bus.clone(), writer.clone()).await
+            handle_events_subscribe(params, &session_manager, event_bus.clone(), writer.clone()).await
         }
         "events.unsubscribe" => {
             let params: EventsUnsubscribeParams =
                 serde_json::from_value(request.params.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| ServerError::Serialization(format!("invalid params: {}", e)))?;
-            handle_events_unsubscribe(params, session_manager).await
+            handle_events_unsubscribe(params, &session_manager).await
         }
         // Scheduler
         "schedule.create" => {
             let params: ScheduleCreateParams =
                 serde_json::from_value(request.params.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| ServerError::Serialization(format!("invalid params: {}", e)))?;
-            handle_schedule_create(params, session_manager, scheduler.clone()).await
+            handle_schedule_create(params, Arc::clone(&session_manager), scheduler.clone()).await
         }
         "schedule.cancel" => {
             let params: ScheduleCancelParams =
@@ -304,7 +310,7 @@ async fn handle_message(
             let params: ScheduleListParams =
                 serde_json::from_value(request.params.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| ServerError::Serialization(format!("invalid params: {}", e)))?;
-            handle_schedule_list(params, session_manager, scheduler.clone()).await
+            handle_schedule_list(params, &session_manager, scheduler.clone()).await
         }
         // Channel management
         "channel.create" => {
@@ -386,28 +392,28 @@ async fn handle_message(
             let params: ToolRegisterParams =
                 serde_json::from_value(request.params.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| ServerError::Serialization(format!("invalid params: {}", e)))?;
-            handle_tool_register(params).await
+            handle_tool_register(params, tool_registry, notify_tx).await
         }
         "tool.unregister" => {
             let params: ToolUnregisterParams =
                 serde_json::from_value(request.params.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| ServerError::Serialization(format!("invalid params: {}", e)))?;
-            handle_tool_unregister(params).await
+            handle_tool_unregister(params, tool_registry).await
         }
-        "tool.list" => handle_tool_list().await,
+        "tool.list" => handle_tool_list(tool_registry).await,
         // ─── B6: Skill management ─────────────────────────────────────────────
         "skill.load_dir" => {
             let params: SkillLoadDirParams =
                 serde_json::from_value(request.params.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| ServerError::Serialization(format!("invalid params: {}", e)))?;
-            handle_skill_load_dir(params).await
+            handle_skill_load_dir(params, skill_registry).await
         }
-        "skill.list" => handle_skill_list().await,
+        "skill.list" => handle_skill_list(skill_registry).await,
         "skill.get_full" => {
             let params: SkillGetFullParams =
                 serde_json::from_value(request.params.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| ServerError::Serialization(format!("invalid params: {}", e)))?;
-            handle_skill_get_full(params).await
+            handle_skill_get_full(params, skill_registry).await
         }
         _ => Err(ServerError::Serialization(format!(
             "Method not found: {}",
@@ -924,7 +930,7 @@ async fn handle_events_unsubscribe(
 /// Handles `schedule.create` method.
 async fn handle_schedule_create(
     params: ScheduleCreateParams,
-    session_manager: &SessionManager,
+    session_manager: Arc<SessionManager>,
     scheduler: Arc<claw_runtime::TokioScheduler>,
 ) -> Result<serde_json::Value, ServerError> {
     use claw_runtime::{Scheduler, TaskConfig, TaskTrigger};
@@ -944,13 +950,26 @@ async fn handle_schedule_create(
     };
 
     let prompt_clone = params.prompt.clone();
+    let session_id_clone = params.session_id.clone();
+    let session_manager_clone = Arc::clone(&session_manager);
     let config = TaskConfig::new(
         task_id.clone(),
         trigger,
         move || {
-            let _prompt = prompt_clone.clone();
+            let sm = Arc::clone(&session_manager_clone);
+            let sid = session_id_clone.clone();
+            let prompt = prompt_clone.clone();
             Box::pin(async move {
-                tracing::debug!("Scheduled task fired, prompt: {}", _prompt);
+                if let Some(session) = sm.get(&sid) {
+                    let (chunk_tx, _chunk_rx) = tokio::sync::mpsc::channel::<claw_loop::StreamChunk>(64);
+                    let mut loop_guard = session.agent_loop.lock().await;
+                    match loop_guard.run_streaming(prompt.clone(), chunk_tx).await {
+                        Ok(_result) => tracing::debug!("Scheduled task completed for session {}", sid),
+                        Err(e) => tracing::error!("Scheduled task failed for session {}: {}", sid, e),
+                    }
+                } else {
+                    tracing::warn!("Scheduled task fired but session {} not found", sid);
+                }
             })
         },
     );
@@ -1311,16 +1330,21 @@ async fn handle_agent_list(
 /// Handles `tool.register` method (B5).
 ///
 /// Registers an external tool definition for later use by agent sessions.
-/// Full integration requires a server-level ToolRegistry to be added.
 async fn handle_tool_register(
     params: ToolRegisterParams,
+    tool_registry: &Arc<crate::global_tool_registry::GlobalToolRegistry>,
+    notify_tx: &mpsc::Sender<Vec<u8>>,
 ) -> Result<serde_json::Value, ServerError> {
-    // TODO: insert into a server-level ToolRegistry shared across sessions.
-    tracing::debug!(
-        "tool.register: name={}, executor={:?}",
-        params.name,
-        params.executor
-    );
+    use crate::global_tool_registry::{ExecutorType, GlobalToolDef};
+    let def = GlobalToolDef {
+        name: params.name.clone(),
+        description: params.description.clone(),
+        schema: params.schema.clone(),
+        executor: ExecutorType::External,
+        caller_tx: Some(notify_tx.clone()),
+    };
+    tool_registry.register(def);
+    tracing::debug!("tool.register: name={}", params.name);
     Ok(serde_json::json!({
         "name": params.name,
         "status": "registered",
@@ -1330,19 +1354,30 @@ async fn handle_tool_register(
 /// Handles `tool.unregister` method (B5).
 async fn handle_tool_unregister(
     params: ToolUnregisterParams,
+    tool_registry: &Arc<crate::global_tool_registry::GlobalToolRegistry>,
 ) -> Result<serde_json::Value, ServerError> {
-    // TODO: remove from server-level ToolRegistry.
-    tracing::debug!("tool.unregister: name={}", params.name);
+    let removed = tool_registry.unregister(&params.name);
+    tracing::debug!("tool.unregister: name={}, removed={}", params.name, removed);
     Ok(serde_json::json!({
         "name": params.name,
         "status": "unregistered",
+        "removed": removed,
     }))
 }
 
 /// Handles `tool.list` method (B5).
-async fn handle_tool_list() -> Result<serde_json::Value, ServerError> {
-    // TODO: list tools from server-level ToolRegistry.
-    Ok(serde_json::json!([]))
+async fn handle_tool_list(
+    tool_registry: &Arc<crate::global_tool_registry::GlobalToolRegistry>,
+) -> Result<serde_json::Value, ServerError> {
+    let tools: Vec<serde_json::Value> = tool_registry.list()
+        .into_iter()
+        .map(|t| serde_json::json!({
+            "name": t.name,
+            "description": t.description,
+            "schema": t.schema,
+        }))
+        .collect();
+    Ok(serde_json::json!(tools))
 }
 
 // ─── B6: Skill management ─────────────────────────────────────────────────────
@@ -1350,31 +1385,41 @@ async fn handle_tool_list() -> Result<serde_json::Value, ServerError> {
 /// Handles `skill.load_dir` method (B6).
 async fn handle_skill_load_dir(
     params: SkillLoadDirParams,
+    skill_registry: &Arc<crate::global_skill_registry::GlobalSkillRegistry>,
 ) -> Result<serde_json::Value, ServerError> {
-    // TODO: scan directory and load skill definitions (depends on claw-skills crate).
-    tracing::debug!("skill.load_dir: path={}", params.path);
+    let count = skill_registry.load_dir(&params.path).await
+        .map_err(|e| ServerError::Agent(format!("skill.load_dir failed: {}", e)))?;
+    tracing::debug!("skill.load_dir: path={}, count={}", params.path, count);
     Ok(serde_json::json!({
         "path": params.path,
-        "status": "loaded",
-        "count": 0,  // TODO: return actual loaded count
+        "count": count,
     }))
 }
 
 /// Handles `skill.list` method (B6).
-async fn handle_skill_list() -> Result<serde_json::Value, ServerError> {
-    // TODO: return skills from server-level SkillRegistry.
-    Ok(serde_json::json!([]))
+async fn handle_skill_list(
+    skill_registry: &Arc<crate::global_skill_registry::GlobalSkillRegistry>,
+) -> Result<serde_json::Value, ServerError> {
+    let skills: Vec<serde_json::Value> = skill_registry.list().await
+        .into_iter()
+        .map(|m| serde_json::json!({
+            "name": m.name,
+            "description": m.description,
+        }))
+        .collect();
+    Ok(serde_json::json!(skills))
 }
 
 /// Handles `skill.get_full` method (B6).
 async fn handle_skill_get_full(
     params: SkillGetFullParams,
+    skill_registry: &Arc<crate::global_skill_registry::GlobalSkillRegistry>,
 ) -> Result<serde_json::Value, ServerError> {
-    // TODO: look up skill by name in SkillRegistry and return full content.
-    tracing::debug!("skill.get_full: name={}", params.name);
+    let content = skill_registry.get_full(&params.name).await
+        .map_err(|e| ServerError::Agent(format!("skill.get_full failed: {}", e)))?;
     Ok(serde_json::json!({
         "name": params.name,
-        "content": "",  // TODO: populate from SkillRegistry
+        "content": content,
     }))
 }
 

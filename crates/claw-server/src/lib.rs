@@ -53,6 +53,8 @@
 pub mod channel_registry;
 pub mod error;
 pub mod event_publisher;
+pub mod global_skill_registry;
+pub mod global_tool_registry;
 pub mod handler;
 pub mod protocol;
 pub mod server;

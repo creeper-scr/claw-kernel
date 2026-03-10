@@ -166,6 +166,54 @@ impl AgentLoopBuilder {
         self
     }
 
+    /// Load skills from a SkillLoader and inject the index into the system prompt.
+    ///
+    /// Scans all configured search directories and generates a compact skill list
+    /// suitable for injection into the LLM system prompt. The agent can then call
+    /// the `load_skill` tool (if registered) to fetch full skill content.
+    ///
+    /// Requires the `skills` feature to be enabled.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # #[cfg(feature = "skills")]
+    /// # {
+    /// use claw_loop::AgentLoopBuilder;
+    /// use claw_skills::SkillLoader;
+    /// use claw_provider::OllamaProvider;
+    /// use std::sync::Arc;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let loader = SkillLoader::new()
+    ///     .add_dir("./skills");
+    /// let provider = Arc::new(OllamaProvider::from_env()?);
+    /// let agent = AgentLoopBuilder::new()
+    ///     .with_provider(provider)
+    ///     .with_skills(loader)
+    ///     .build()?;
+    /// # Ok(())
+    /// # }
+    /// # }
+    /// ```
+    #[cfg(feature = "skills")]
+    pub fn with_skills(self, loader: claw_skills::SkillLoader) -> Self {
+        match loader.build_index() {
+            Ok(index) => {
+                let block = index.to_prompt_block();
+                if block.is_empty() {
+                    self
+                } else {
+                    self.with_system_prompt_append(block)
+                }
+            }
+            Err(e) => {
+                tracing::warn!("with_skills: failed to build index: {}", e);
+                self
+            }
+        }
+    }
+
     /// Use SQLite-backed persistent history instead of the default in-memory history.
     ///
     /// The database is opened at `db_path`; `namespace` isolates this agent's history

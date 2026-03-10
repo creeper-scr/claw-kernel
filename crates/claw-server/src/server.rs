@@ -14,6 +14,8 @@ use claw_runtime::EventBus;
 use claw_runtime::orchestrator::AgentOrchestrator;
 use crate::channel_registry::ChannelRegistry;
 use crate::error::ServerError;
+use crate::global_skill_registry::GlobalSkillRegistry;
+use crate::global_tool_registry::GlobalToolRegistry;
 use crate::session::SessionManager;
 
 /// Configuration for the LLM provider.
@@ -296,6 +298,10 @@ pub struct KernelServer {
     orchestrator: Arc<AgentOrchestrator>,
     /// IPC auth token (shared with all connections).
     pub auth_token: Arc<String>,
+    /// Global server-level tool registry.
+    tool_registry: Arc<GlobalToolRegistry>,
+    /// Global server-level skill registry.
+    skill_registry: Arc<GlobalSkillRegistry>,
 }
 
 impl KernelServer {
@@ -356,6 +362,8 @@ impl KernelServer {
             channel_registry: Arc::new(ChannelRegistry::new()),
             orchestrator,
             auth_token: Arc::new(token),
+            tool_registry: Arc::new(GlobalToolRegistry::new()),
+            skill_registry: Arc::new(GlobalSkillRegistry::new()),
         }
     }
 
@@ -386,6 +394,8 @@ impl KernelServer {
         let channel_registry = Arc::clone(&self.channel_registry);
         let orchestrator = Arc::clone(&self.orchestrator);
         let auth_token = Arc::clone(&self.auth_token);
+        let tool_registry = Arc::clone(&self.tool_registry);
+        let skill_registry = Arc::clone(&self.skill_registry);
 
         loop {
             // Check for shutdown
@@ -407,6 +417,8 @@ impl KernelServer {
                     let channel_registry_clone = Arc::clone(&channel_registry);
                     let orchestrator_clone = Arc::clone(&orchestrator);
                     let auth_token_clone = Arc::clone(&auth_token);
+                    let tool_registry_clone = Arc::clone(&tool_registry);
+                    let skill_registry_clone = Arc::clone(&skill_registry);
                     tokio::spawn(async move {
                         if let Err(e) = crate::handler::handle_connection(
                             stream,
@@ -417,6 +429,8 @@ impl KernelServer {
                             channel_registry_clone,
                             orchestrator_clone,
                             auth_token_clone,
+                            tool_registry_clone,
+                            skill_registry_clone,
                         )
                         .await
                         {
@@ -484,6 +498,16 @@ impl KernelServer {
     /// Returns the agent orchestrator.
     pub fn orchestrator(&self) -> &Arc<AgentOrchestrator> {
         &self.orchestrator
+    }
+
+    /// Returns the global tool registry.
+    pub fn tool_registry(&self) -> &Arc<GlobalToolRegistry> {
+        &self.tool_registry
+    }
+
+    /// Returns the global skill registry.
+    pub fn skill_registry(&self) -> &Arc<GlobalSkillRegistry> {
+        &self.skill_registry
     }
 }
 

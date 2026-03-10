@@ -8,10 +8,14 @@ license.workspace = true
 description = "Agent loop engine with FSM, history management, and stop conditions"
 repository.workspace = true
 
+[features]
+skills = ["dep:claw-skills"]
+
 [dependencies]
 claw-provider = { workspace = true }
 claw-tools = { workspace = true }
 claw-memory = { workspace = true }
+claw-skills = { workspace = true, optional = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
