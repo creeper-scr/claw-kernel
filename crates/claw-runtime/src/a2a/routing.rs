@@ -43,6 +43,7 @@ impl PriorityReceiver {
     ///    `try_recv` sweep over all higher-priority channels before returning,
     ///    so a Critical message that arrived while we were suspended is never
     ///    delayed behind a Background message that woke us.
+    #[allow(clippy::never_loop)]
     pub async fn recv(&mut self) -> Option<A2AMessage> {
         loop {
             // ── fast path ──────────────────────────────────────────────────
@@ -59,25 +60,25 @@ impl PriorityReceiver {
                     return msg;
                 }
                 msg = self.rx_high.recv() => {
-                    let Some(m) = msg else { return None; };
+                    let m = msg?;
                     if let Ok(hi) = self.rx_critical.try_recv() { return Some(hi); }
                     return Some(m);
                 }
                 msg = self.rx_normal.recv() => {
-                    let Some(m) = msg else { return None; };
+                    let m = msg?;
                     if let Ok(hi) = self.rx_critical.try_recv() { return Some(hi); }
                     if let Ok(hi) = self.rx_high.try_recv()     { return Some(hi); }
                     return Some(m);
                 }
                 msg = self.rx_low.recv() => {
-                    let Some(m) = msg else { return None; };
+                    let m = msg?;
                     if let Ok(hi) = self.rx_critical.try_recv() { return Some(hi); }
                     if let Ok(hi) = self.rx_high.try_recv()     { return Some(hi); }
                     if let Ok(hi) = self.rx_normal.try_recv()   { return Some(hi); }
                     return Some(m);
                 }
                 msg = self.rx_background.recv() => {
-                    let Some(m) = msg else { return None; };
+                    let m = msg?;
                     if let Ok(hi) = self.rx_critical.try_recv()   { return Some(hi); }
                     if let Ok(hi) = self.rx_high.try_recv()       { return Some(hi); }
                     if let Ok(hi) = self.rx_normal.try_recv()     { return Some(hi); }

@@ -8,6 +8,9 @@
 //! - Semantic Search: Finding similar memories using embeddings
 
 use claw_kernel::prelude::*;
+// Explicit imports for memory types (also in prelude since v1.4.1)
+use claw_kernel::memory::sqlite::SqliteMemoryStore;
+use claw_kernel::provider::embedding::NgramEmbedder;
 use claw_kernel::memory::worker::MemoryWorker;
 use std::sync::Arc;
 

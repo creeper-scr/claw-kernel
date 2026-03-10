@@ -19,8 +19,8 @@
 //!                                    tool/hot_reloaded  ◄── JSON-RPC push
 //! ```
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
 use dashmap::{DashMap, DashSet};
@@ -34,10 +34,12 @@ struct HotLoaderInner {
     watcher: Mutex<RecommendedWatcher>,
     /// All directories currently being watched (deduplication).
     watched_dirs: DashSet<PathBuf>,
+    #[allow(dead_code)]
     /// File extensions to watch (e.g. `["lua", "js"]`).
     extensions: Vec<String>,
     /// Active subscribers: conn_id → notify_tx (raw JSON bytes, no frame prefix).
     subscribers: DashMap<u64, mpsc::Sender<Vec<u8>>>,
+    #[allow(dead_code)]
     /// Monotonic counter for subscriber IDs (== connection IDs).
     next_id: AtomicU64,
     /// Channel used by `trigger_reload()` to inject manual events.
@@ -187,7 +189,7 @@ async fn dispatch_loop(inner: Arc<HotLoaderInner>, mut rx: mpsc::Receiver<PathBu
 
 /// Build a `tool/hot_reloaded` JSON-RPC notification and push it to all
 /// live subscribers. Dead senders (closed connections) are pruned.
-fn send_reload_notification(inner: &HotLoaderInner, path: &PathBuf) {
+fn send_reload_notification(inner: &HotLoaderInner, path: &Path) {
     let msg = serde_json::to_vec(&serde_json::json!({
         "jsonrpc": "2.0",
         "method": "tool/hot_reloaded",

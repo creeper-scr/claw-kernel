@@ -150,8 +150,8 @@ impl AuditLogWriter {
     /// - **With HMAC key** — emits a JSON object with two fields:
     ///   - `"payload"`: the JSON-serialised event as a *string*
     ///   - `"signature"`: hex-encoded HMAC-SHA256(key, payload_bytes)
-    ///   This lets verifiers detect any post-write tampering by recomputing the
-    ///   signature from the payload bytes.
+    ///     This lets verifiers detect any post-write tampering by recomputing the
+    ///     signature from the payload bytes.
     ///
     /// - **Without HMAC key** — emits a flat JSON object of the event with an
     ///   additional top-level `"event_type"` field for easy grep/jq queries.
@@ -237,7 +237,11 @@ impl AuditLogWriter {
 
 /// Encode a byte slice as a lowercase hex string.
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    bytes.iter().fold(String::new(), |mut acc, b| {
+        use std::fmt::Write;
+        let _ = write!(acc, "{:02x}", b);
+        acc
+    })
 }
 
 /// Format timestamp as ISO 8601 without milliseconds.
@@ -319,11 +323,14 @@ mod tests {
     /// Create a temporary directory path for testing.
     /// Note: We don't use the tempfile crate to avoid additional dependencies.
     fn temp_dir() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("claw-tools-test-{}", unique))
+        let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!("claw-tools-test-{}-{}", unique, counter))
     }
 
     #[tokio::test]

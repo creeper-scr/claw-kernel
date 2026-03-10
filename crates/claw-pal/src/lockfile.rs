@@ -42,6 +42,7 @@ impl DaemonLock {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(lock_path)?;
 
         #[cfg(unix)]

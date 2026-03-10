@@ -1382,6 +1382,7 @@ impl AgentOrchestrator {
     /// Delegates to [`trigger_restart`] which publishes [`Event::AgentRestarted`]
     /// on each successful attempt and [`Event::AgentFailed`] when retries are
     /// exhausted.
+    #[allow(dead_code)]
     pub(crate) async fn handle_agent_exit(&self, agent_id: AgentId, reason: &str) {
         if let Some(mut entry) = self.agents.get_mut(&agent_id) {
             if matches!(entry.status, AgentStatus::Running | AgentStatus::Starting) {

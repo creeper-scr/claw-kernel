@@ -71,6 +71,7 @@ pub trait Channel: Send + Sync {
     ///     println!("received: {}", msg.content);
     /// }
     /// ```
+    #[allow(clippy::wrong_self_convention)]
     fn into_stream(&self) -> impl Stream<Item = ChannelMessage> + '_
     where
         Self: Sized,

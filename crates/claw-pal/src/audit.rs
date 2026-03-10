@@ -122,6 +122,7 @@ impl ChannelAuditSink {
     /// `capacity` is the number of events that can be queued before the sink
     /// starts dropping events (fire-and-forget semantics).  A value of 256 is
     /// a reasonable default for interactive workloads.
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(capacity: usize) -> (AuditSinkHandle, SecurityEventReceiver) {
         let (tx, rx) = mpsc::channel(capacity);
         let sink = Arc::new(Self { sender: tx });

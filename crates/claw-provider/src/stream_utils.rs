@@ -42,8 +42,8 @@ use crate::types::Delta;
 /// ```
 pub fn parse_sse_line(line: &str) -> Option<&str> {
     let line = line.trim();
-    if line.starts_with("data: ") {
-        Some(&line["data: ".len()..])
+    if let Some(stripped) = line.strip_prefix("data: ") {
+        Some(stripped)
     } else {
         None
     }

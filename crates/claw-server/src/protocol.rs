@@ -309,15 +309,19 @@ pub struct KernelInfoResult {
 /// JSON-RPC 2.0 Notification (server-push, no id).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsonRpcNotification {
+    /// JSON-RPC protocol version (always "2.0").
     pub jsonrpc: String,
+    /// Notification method name.
     pub method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional notification parameters.
     pub params: Option<serde_json::Value>,
 }
 
 /// Parameters for events.subscribe.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventsSubscribeParams {
+    /// Target session identifier.
     pub session_id: String,
     /// Filter: "all", "agent_lifecycle", "tool_calls", "llm_requests", "a2a", "shutdown"
     #[serde(default = "default_event_filter")]
@@ -331,62 +335,76 @@ fn default_event_filter() -> String {
 /// Parameters for events.unsubscribe.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventsUnsubscribeParams {
+    /// Target session identifier.
     pub session_id: String,
 }
 
 /// Parameters for schedule.create.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduleCreateParams {
+    /// Target session identifier.
     pub session_id: String,
     /// Cron expression or "once" for one-shot.
     pub cron: String,
     /// The agent message / prompt to run.
     pub prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional human-readable label for the scheduled task.
     pub label: Option<String>,
 }
 
 /// Parameters for schedule.cancel.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduleCancelParams {
+    /// Identifier of the scheduled task to cancel.
     pub task_id: String,
 }
 
 /// Parameters for schedule.list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduleListParams {
+    /// Target session identifier.
     pub session_id: String,
 }
 
 /// Information about a scheduled task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScheduledTaskInfo {
+    /// Unique task identifier.
     pub task_id: String,
+    /// Cron expression or "once".
     pub cron: String,
+    /// Optional human-readable label.
     pub label: Option<String>,
+    /// Current task status.
     pub status: String,
 }
 
 /// Parameters for channel.create.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelCreateParams {
+    /// Target session identifier.
     pub session_id: String,
     /// Channel type: "websocket"
     pub channel_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional port number for the channel.
     pub port: Option<u16>,
 }
 
 /// Parameters for channel.send.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelSendParams {
+    /// Channel identifier.
     pub channel_id: String,
+    /// Message content to send.
     pub message: String,
 }
 
 /// Parameters for channel.close.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelCloseParams {
+    /// Channel identifier.
     pub channel_id: String,
 }
 

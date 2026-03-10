@@ -9,3 +9,17 @@ examples/*/target/
 examples/*/Cargo.lock
 **/node_modules/
 
+# AI agent workspace (never commit)
+.sisyphus/
+
+# Python caches and build artifacts
+.ruff_cache/
+sdk/python/__pycache__/
+sdk/python/.pytest_cache/
+sdk/python/claw_kernel.egg-info/
+**/claw_kernel.egg-info/
+**/__pycache__/
+**/*.pyc
+
+# Corrupted/incomplete SDK directory
+sdks/

@@ -91,9 +91,12 @@ async fn write_frame_locked(
     data: &[u8],
 ) -> Result<(), ServerError> {
     let mut w = writer.lock().await;
-    write_frame(&mut *w, data).await
+    write_frame(&mut w, data).await
 }
 
+#[allow(deprecated)]
+#[allow(clippy::too_many_arguments)]
+/// Handles a client connection.
 /// Handles a client connection.
 ///
 /// Reads JSON-RPC requests from the stream (4-byte BE length-prefixed frames)
@@ -194,6 +197,9 @@ pub async fn handle_connection(
     Ok(())
 }
 
+#[allow(deprecated)]
+#[allow(clippy::too_many_arguments)]
+/// Handles a single JSON-RPC message.
 /// Handles a single JSON-RPC message.
 async fn handle_message(
     data: &[u8],
@@ -762,15 +768,12 @@ async fn handle_send_message(
         let session_for_chunks = Arc::clone(&session_clone);
         tokio::spawn(async move {
             while let Some(chunk) = chunk_rx.recv().await {
-                match chunk {
-                    StreamChunk::Text { content, is_final } => {
-                        if !content.is_empty() || is_final {
-                            let _ = notify_chunk(&session_for_chunks, content, is_final).await;
-                        }
+                if let StreamChunk::Text { content, is_final } = chunk {
+                    if !content.is_empty() || is_final {
+                        let _ = notify_chunk(&session_for_chunks, content, is_final).await;
                     }
-                    // Tool, usage, finish, error chunks are handled by the outer task
-                    _ => {}
                 }
+                // Tool, usage, finish, error chunks are handled by the outer task
             }
         });
 
@@ -1234,7 +1237,7 @@ async fn handle_channel_register(
 ) -> Result<serde_json::Value, ServerError> {
     channel_registry
         .register(params.r#type.clone(), params.channel_id.clone(), params.config, Some(notify_tx.clone()))
-        .map_err(|e| ServerError::Serialization(e))?;
+        .map_err(ServerError::Serialization)?;
     info!("Channel registered: id={} type={}", params.channel_id, params.r#type);
     Ok(serde_json::json!({
         "ok": true,
@@ -1264,7 +1267,7 @@ async fn handle_channel_send(
     channel_registry
         .send_outbound(&params.channel_id, frame)
         .await
-        .map_err(|e| ServerError::Serialization(e))?;
+        .map_err(ServerError::Serialization)?;
     info!("channel.send: routed message to channel={}", params.channel_id);
     Ok(serde_json::json!({ "ok": true, "channel_id": params.channel_id }))
 }
@@ -1474,6 +1477,9 @@ async fn handle_trigger_add_cron(
     }))
 }
 
+#[allow(deprecated)]
+#[allow(clippy::too_many_arguments)]
+/// Handles `trigger.add_webhook` method (B2).
 /// Handles `trigger.add_webhook` method (B2).
 async fn handle_trigger_add_webhook(
     params: TriggerAddWebhookParams,
@@ -1748,10 +1754,9 @@ async fn handle_agent_spawn(
     // 3. Create a Session that owns the AgentLoop and bind it to the AgentId.
     let session = session_manager
         .create_for_agent(agent_id.clone(), notify_tx.clone(), agent_loop)
-        .map_err(|e| {
+        .inspect_err(|_| {
             // Roll back orchestrator registration if session creation fails.
             let _ = orchestrator.unregister(&agent_id, "session_create_failed");
-            e
         })?;
 
     info!("Agent spawned: agent_id={} session_id={}", agent_id, session.id);

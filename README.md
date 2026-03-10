@@ -6,7 +6,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.83%2B-orange.svg)](https://www.rust-lang.org)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](docs/platform/)
 [![Tests](https://img.shields.io/badge/tests-670+%20passing-brightgreen.svg)](#)
-[![Version](https://img.shields.io/badge/version-1.4.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](CHANGELOG.md)
 
 ---
 
@@ -68,7 +68,7 @@ async fn main() {
 }
 ```
 
-See [`examples/`](examples/) for `simple-agent`, `custom-tool`, and `self-evolving-agent`.
+See [`examples/`](examples/) for `simple-agent` and `custom-tool`.
 
 ## Crates
 
@@ -135,7 +135,13 @@ Details: [Safe Mode](docs/guides/safe-mode.md) · [Power Mode](docs/guides/power
 | [ADRs](docs/adr/) | Architecture Decision Records (001–008) |
 | [Changelog](CHANGELOG.md) | Version history |
 | [Roadmap](ROADMAP.md) | Future milestones |
-| [AGENTS.md](AGENTS.md) | Guide for AI coding agents |
+
+## SDKs
+
+| SDK | Language | Location | Status |
+|-----|----------|----------|--------|
+| Python SDK | Python 3.9+ | [`sdk/python/`](sdk/python/) | ✅ Stable |
+| TypeScript SDK | TypeScript/Node.js | — | 🚧 Coming soon |
 
 ## Contributing
 

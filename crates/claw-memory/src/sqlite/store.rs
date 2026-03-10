@@ -562,7 +562,7 @@ impl MemoryStore for SqliteMemoryStore {
         let mut seen = std::collections::HashSet::new();
         let mut combined: Vec<(f32, MemoryItem)> = semantic_results
             .into_iter()
-            .chain(keyword_results.into_iter())
+            .chain(keyword_results)
             .filter_map(|item| {
                 if seen.insert(item.id.0.clone()) {
                     let score = scores.get(&item.id.0).copied().unwrap_or(0.0);

@@ -100,6 +100,7 @@ impl AgentRestartPolicy {
 /// Created when an agent registers with a non-zero `AgentRestartPolicy` and
 /// updated after each restart attempt.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) struct RestartState {
     /// The agent being tracked.
     pub agent_id: AgentId,

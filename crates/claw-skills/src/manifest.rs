@@ -13,6 +13,7 @@ struct RawFrontmatter {
     description: String,
     version: Option<String>,
     tags: Option<Vec<String>>,
+    #[allow(dead_code)]
     #[serde(flatten)]
     extra: HashMap<String, serde_yaml::Value>,
 }

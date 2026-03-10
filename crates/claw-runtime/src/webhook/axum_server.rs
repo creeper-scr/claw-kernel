@@ -60,6 +60,7 @@ pub struct AxumWebhookServer {
     running: AtomicUsize,
 }
 
+#[allow(deprecated)]
 impl AxumWebhookServer {
     /// Create a new AxumWebhookServer with the given configuration.
     pub fn new(config: WebhookConfig) -> Self {
@@ -334,6 +335,7 @@ impl AxumWebhookServer {
     }
 }
 
+#[allow(deprecated)]
 #[async_trait::async_trait]
 impl WebhookServer for AxumWebhookServer {
     async fn register(&self, config: EndpointConfig) -> Result<(), WebhookError> {
@@ -436,6 +438,7 @@ impl WebhookServer for AxumWebhookServer {
     }
 }
 
+#[allow(deprecated)]
 impl Default for AxumWebhookServer {
     fn default() -> Self {
         Self::new(WebhookConfig::new("127.0.0.1", 8080))

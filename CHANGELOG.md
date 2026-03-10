@@ -1,8 +1,8 @@
 ---
 title: Changelog
 description: Version history for claw-kernel
-status: v1.4.1
-version: "1.4.1"
+status: v0.4.0
+version: "0.4.0"
 last_updated: "2026-03-10"
 language: english
 ---
@@ -24,7 +24,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.4.0] - 2026-03-10
+
+### Added
+
+- **GAP-01: `claw.llm` LLM Bridge** (`claw-script`) — `LlmBridge` with `complete()` and `stream()` methods; registered in both Lua engine (`crates/claw-script/src/bridge/llm.rs`) and V8 bridge, enabling scripts to call LLM providers directly
+- **GAP-02: `ChannelRouter::broadcast_route()`** (`claw-channel`) — Fan-out to all matching agents with automatic deduplication (`router.rs`)
+- **GAP-03: `RetryableChannel`** (`claw-channel`) — Exponential backoff retry wrapper for channel `send()`; 14 new integration tests (`retry.rs`)
+- **GAP-06: `ResourceSnapshot` + `resource_monitor_task`** (`claw-runtime`) — Per-`AgentState` resource snapshot; `start_resource_monitor_task()` samples via `sysinfo` every 5s
+
+### Fixed
+
+- **GAP-04: `ChannelMessage` top-level fields** (`claw-channel`) — `sender_id: Option<String>` and `thread_id: Option<String>` promoted from nested to top-level fields in `types.rs` (per ADR-014)
+- **GAP-05: Inbound → EventBus pipeline** (`claw-server`) — `handler.rs:2417` now calls `event_bus.publish()` to close the inbound channel message → EventBus pipeline
+- **GAP-07: `tokio::spawn` panic isolation** (`claw-runtime`) — Nested `tokio::spawn` in `spawn_ipc_message_loop()` catches and isolates panics, preventing task agent crashes from propagating to the orchestrator
+
+### Documentation
+
+- **ROADMAP.md**: Corrected GAP-01 status from `❌ Not started` to `✅ Fixed` — `claw.llm` Lua + V8 bridge is fully implemented in `crates/claw-script/src/bridge/llm.rs` (both `complete()` and `stream()` methods, registered in Lua engine and V8 bridge)
+- **ROADMAP.md**: Corrected streaming support status for Gemini/Mistral/Azure OpenAI providers — all three inherit `complete_stream()` via `OpenAIProvider` (they are OpenAI-compatible aliases); marked as `✅` in v1.6.0 section
+- **docs/KNOWN-ISSUES.md**: Updated KI-001 Windows sandbox description from "stub implementation" to accurate "Job Objects partial implementation" — Windows sandbox enforces memory limits and blocks child processes via Job Objects, but filesystem and network isolation are NOT enforced (AppContainer planned for v1.7.0); added explicit security warning
 
 ---
 
@@ -254,7 +273,8 @@ Initial release. **9 crates, 670+ tests passing, zero clippy errors.**
 
 ---
 
-[Unreleased]: https://github.com/claw-project/claw-kernel/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/claw-project/claw-kernel/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/claw-project/claw-kernel/compare/v1.4.1...v0.4.0
 [1.4.1]: https://github.com/claw-project/claw-kernel/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/claw-project/claw-kernel/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/claw-project/claw-kernel/compare/v0.2.0...v1.3.0

@@ -20,7 +20,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.3.0"
+version = "0.4.0"
 authors = ["claw-project contributors"]
 edition = "2021"
 rust-version = "1.83"  # 已验证：PyO3 0.28+ 需要 1.83+
@@ -37,17 +37,17 @@ homepage = "https://github.com/claw-project/claw-kernel"
 # 内部 crates (Internal Crates) - 发布到 crates.io
 # ============================================
 [workspace.dependencies]
-claw-pal = { path = "crates/claw-pal", version = "1.0.0" }
-claw-runtime = { path = "crates/claw-runtime", version = "1.0.0" }
-claw-provider = { path = "crates/claw-provider", version = "1.0.0" }
-claw-tools = { path = "crates/claw-tools", version = "1.0.0" }
-claw-loop = { path = "crates/claw-loop", version = "1.0.0" }
-claw-memory = { path = "crates/claw-memory", version = "1.0.0" }
-claw-channel = { path = "crates/claw-channel", version = "1.0.0" }
-claw-channels = { path = "crates/claw-channels", version = "1.0.0" }
-claw-script = { path = "crates/claw-script", version = "1.0.0" }
-claw-server = { path = "crates/claw-server", version = "1.0.0" }
-claw-skills = { path = "crates/claw-skills", version = "1.0.0" }
+claw-pal = { path = "crates/claw-pal", version = "0.4.0" }
+claw-runtime = { path = "crates/claw-runtime", version = "0.4.0" }
+claw-provider = { path = "crates/claw-provider", version = "0.4.0" }
+claw-tools = { path = "crates/claw-tools", version = "0.4.0" }
+claw-loop = { path = "crates/claw-loop", version = "0.4.0" }
+claw-memory = { path = "crates/claw-memory", version = "0.4.0" }
+claw-channel = { path = "crates/claw-channel", version = "0.4.0" }
+claw-channels = { path = "crates/claw-channels", version = "0.4.0" }
+claw-script = { path = "crates/claw-script", version = "0.4.0" }
+claw-server = { path = "crates/claw-server", version = "0.4.0" }
+claw-skills = { path = "crates/claw-skills", version = "0.4.0" }
 
 # ============================================
 # 核心依赖 (Core Dependencies) - 已验证兼容
@@ -164,11 +164,6 @@ panic = "unwind"
 [profile.release]
 panic = "unwind"
 
-[profile.test]
-# Note: panic setting is ignored for test profile by Cargo,
-# but we keep it here for documentation purposes and consistency.
-# mlua requires panic = "unwind" in all other profiles.
-panic = "unwind"
 
 
 # ============================================

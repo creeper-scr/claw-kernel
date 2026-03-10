@@ -84,13 +84,15 @@ pub mod prelude {
     };
 
     // ── Memory ───────────────────────────────────────────────────────────────
-    // Note: SqliteMemoryStore, SecureMemoryStore, and NgramEmbedder are no longer
-    // re-exported here. Use the `claw-memory` crate directly for LTM/semantic-search.
     pub use claw_memory::{
         error::MemoryError,
         traits::MemoryStore,
         types::{MemoryId, MemoryItem},
     };
+    // Concrete implementations re-exported for convenience
+    pub use claw_memory::sqlite::SqliteMemoryStore;
+    // NgramEmbedder lives in claw_provider::embedding (moved from claw_memory in v0.2.0)
+    pub use claw_provider::embedding::NgramEmbedder;
 
     // ── Channel ──────────────────────────────────────────────────────────────
     pub use claw_channel::{

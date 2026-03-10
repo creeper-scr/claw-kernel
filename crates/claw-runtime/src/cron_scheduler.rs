@@ -349,7 +349,7 @@ impl CronScheduler {
                 }
             };
 
-            let target_agent = record.target_agent.map(|s| AgentId::new(s));
+            let target_agent = record.target_agent.map(AgentId::new);
             let created_at = DateTime::from_timestamp(record.created_at, 0)
                 .unwrap_or_else(Utc::now);
 

@@ -9,22 +9,32 @@
 > 
 > See [SECURITY.md](../SECURITY.md) for vulnerability reporting guidelines.
 
-## KI-001: Windows sandbox is stub implementation
+## KI-001: Windows sandbox has partial isolation (Job Objects only)
 
 **Severity**: Medium
 **Affects**: Windows
 
-The Windows sandbox backend (AppContainer) stores configuration but does not
-enforce it in v1.0.0. Linux (seccomp-bpf) and macOS (Seatbelt) sandbox
-backends are fully implemented and enforce restrictions.
+The Windows sandbox backend uses **Job Objects** to enforce memory limits and
+block child process spawning, but does **not** enforce filesystem or network
+isolation. Linux (seccomp-bpf + Landlock LSM) and macOS (Seatbelt/`sandbox_init()`)
+sandbox backends are fully implemented and enforce all restrictions.
 
 **Status per platform:**
-- ✅ Linux: Full seccomp-bpf + namespaces implementation
-- ✅ macOS: Full Seatbelt sandbox profile implementation  
-- ⚠️ Windows: Stub implementation (returns handle without enforcing limits)
+- ✅ Linux: Full seccomp-bpf + Landlock LSM implementation
+- ✅ macOS: Full Seatbelt sandbox profile (`sandbox_init()` FFI + SBPL)
+- ⚠️ Windows: **Partial** — Job Objects enforce memory limits and block child
+  processes, but **filesystem and network isolation are NOT enforced**.
+  AppContainer-based FS/network isolation is planned for v1.7.0.
 
-**Mitigation**: On Windows, run agents in separate processes and use OS-level controls.
-**Target fix**: v1.5.0 (Windows sandbox full implementation).
+> **⚠️ Windows Security Warning**: On Windows, agents running in "sandboxed" mode
+> can still read/write arbitrary files and make unrestricted network connections.
+> Do NOT rely on claw-kernel's sandbox for filesystem or network isolation on Windows.
+> Use OS-level controls (ACLs, Windows Firewall) as a compensating control.
+
+**Mitigation**: On Windows, run agents in separate processes and use OS-level
+access controls (NTFS ACLs, Windows Firewall rules) to restrict filesystem and
+network access.
+**Target fix**: v1.7.0 (AppContainer + full Job Objects integration).
 
 ## KI-002: Windows claw-script not tested in CI
 

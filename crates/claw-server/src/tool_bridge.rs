@@ -76,6 +76,7 @@ impl ExternalToolBridge {
     ///   removes it when the response arrives.
     /// * `audit_log` — writer handle; every call writes a `ToolCall` + `ToolResult`
     ///   pair (or error variant) so external tool invocations appear in the audit trail.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         tool_name: impl Into<String>,
         tool_desc: impl Into<String>,

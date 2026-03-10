@@ -334,6 +334,7 @@ pub struct KernelServer {
 }
 
 impl KernelServer {
+    #[allow(deprecated)]
     /// Creates a new KernelServer with the given configuration.
     ///
     /// # Example
@@ -813,6 +814,7 @@ impl KernelServer {
         &self.skill_registry
     }
 
+    #[allow(deprecated)]
     /// Returns the webhook server if configured.
     pub fn webhook_server(&self) -> Option<&Arc<claw_runtime::webhook::AxumWebhookServer>> {
         self.webhook_server.as_ref()

@@ -1,8 +1,8 @@
 ---
 title: claw-kernel Roadmap
 description: Milestone-based roadmap for claw-kernel
-status: v1.4.1-released
-version: "1.4.1"
+status: v0.4.0-released
+version: "0.4.0"
 last_updated: "2026-03-10"
 language: bilingual
 ---
@@ -26,9 +26,33 @@ language: bilingual
 | Core implementation (13 crates) | ✅ Complete |
 | 129+ unit + integration tests (claw-runtime) | ✅ All passing |
 | Clippy / fmt / doc checks | ✅ Clean (zero warnings) |
-| Current release | ✅ v1.4.1 |
+|| Current release | ✅ v0.4.0 |
+| Kernel Features (F1-F9) | 📚 See [kernel-features.md](docs/kernel-features.md) |
 
 See [CHANGELOG.md](CHANGELOG.md) for full version history.
+
+---
+
+## Kernel Features Coverage (v0.4.0)
+
+**Reference:** [docs/kernel-features.md](docs/kernel-features.md) — comprehensive specification of internal vs. application-layer boundaries.
+
+| Feature | Description | Status | Version |
+|---------|-------------|--------|---------|
+| **F1** | Message Channel Abstraction | ✅ Complete | v1.0.0+ |
+| **F2** | Conversation Context Management | ✅ Complete | v1.0.0+ |
+| **F3** | LLM Provider Abstraction | ✅ Complete | v1.2.0+ |
+| **F4** | Tool Execution Runtime | ✅ Complete (G-1 audit fix) | v1.5.0-dev |
+| **F5** | Skill On-Demand Loading Engine | ✅ Complete | v1.4.0+ |
+| **F6** | Event Trigger System (Cron + Webhook) | ✅ Complete | v1.4.0+ |
+| **F7** | Multi-Agent Orchestration | ✅ Complete (G-10 restart fix) | v1.4.1+ |
+| **F8** | Security & Isolation Model | ✅ Complete | v1.0.0+ |
+| **F9** | Script Extension Foundation | ✅ Complete (Lua + V8) | v1.3.0+ |
+
+**Legend:**
+- ✅ = Fully implemented and tested
+- 🔧 = In-progress (see v1.5.0 sprint plan below)
+- ⬜ = Deferred to future release
 
 ---
 
@@ -131,7 +155,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
   - [x] `examples/simple-agent` — basic agent with tools
   - [x] `examples/custom-tool` — writing Lua tools
   - [x] `examples/memory-agent` — using SqliteMemoryStore with overflow callback
-  - `examples/self-evolving-agent` — **intentionally not implemented here**; self-evolution is the showcase of the evoclaw application, not a kernel concern. The kernel provides the infrastructure (AgentBridge, HotLoader, LuaEngine); evoclaw owns the demo.
+  - ~~`examples/self-evolving-agent`~~ — **intentionally not implemented here**; self-evolution is the showcase of the evoclaw application, not a kernel concern. The kernel provides the infrastructure (AgentBridge, HotLoader, LuaEngine); evoclaw owns the demo.
 
 - [x] **Script Bridges** — all 4 shipped ahead of schedule in v0.1.0 (see [ADR-009](docs/adr/009-bridge-roadmap.md))
   - [x] `DirsBridge` — platform config/data/cache/tools paths
@@ -159,8 +183,8 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
 **Goal:** Establish stable API baseline and ecosystem presence.
 
-- [x] **crates.io Publication**
-  - [x] All 9 crates published with stable version
+- [ ] **crates.io Publication**
+  - [ ] All 9 crates published with stable version
   - [ ] README, LICENSE, metadata complete
   - [ ] `claw-kernel` meta-crate ready for `cargo install`
   
@@ -264,40 +288,49 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
 ---
 
-## Active — v1.5.0 (Planned)
+## Completed — v1.5.0 ✅
 
 **Target:** 2026 Q2 (2026-03-24 estimated, 5-week sprint)
 
 **Goal:** Close the most critical gaps identified in `docs/v1.5-gap-report.md`.
 
+**Kernel Features Enhanced:**
+- **F4** (Tool Execution Runtime) — Audit logging with HMAC-signed events (G-1)
+- **F1** (Message Channels) — Retry logic and deduplication refinements
+- **F7** (Multi-Agent Orchestration) — Process isolation and restart policies (G-10)
+
 ### Gap Summary
 
-| Gap | Priority | Description |
-|-----|----------|-------------|
-| GAP-01 | P0 | `claw.llm` bridge missing — scripts cannot call LLM |
-| GAP-02 | P1 | `ChannelRouter.broadcast()` not implemented |
-| GAP-03 | P1 | Channel `send()` has no exponential backoff retry |
-| GAP-04 | P2 | `UnifiedMessage` / `ChannelMessage` missing top-level `sender_id` / `thread_id` |
-| GAP-05 | P2 | Inbound → EventBus pipeline not closed |
-| GAP-06 | P2 | `AgentHandle` has no `resource_usage` field |
-| GAP-07 | P2 | Task agent panics may propagate (needs `catch_unwind`) |
-| GAP-08 | P3 | Webhook URL format non-standard |
+| Gap | Priority | Description | Status |
+|-----|----------|-------------|--------|
+| GAP-01 | P0 | `claw.llm` bridge missing — scripts cannot call LLM | ✅ Fixed (`LlmBridge` in `claw-script`; Lua + V8 bridges fully implemented) |
+| GAP-02 | P1 | `ChannelRouter.broadcast()` not implemented | ✅ Fixed (`broadcast_route()` in `router.rs`) |
+| GAP-03 | P1 | Channel `send()` has no exponential backoff retry | ✅ Fixed (`RetryableChannel` in `retry.rs`) |
+| GAP-04 | P2 | `UnifiedMessage` / `ChannelMessage` missing top-level `sender_id` / `thread_id` | ✅ Fixed (top-level fields in `types.rs`) |
+| GAP-05 | P2 | Inbound → EventBus pipeline not closed | ✅ Fixed (`handler.rs:2417` — `event_bus.publish()`) |
+| GAP-06 | P2 | `AgentHandle` has no `resource_usage` field | ✅ Fixed (G-6: `ResourceSnapshot` + `resource_monitor_task`) |
+| GAP-07 | P2 | Task agent panics may propagate (needs `catch_unwind`) | ✅ Fixed (GAP-07: nested `tokio::spawn` panic isolation in `orchestrator.rs`) |
+| GAP-08 | P3 | Webhook URL format non-standard | ⬜ Deferred to v1.5.1 |
 
 ### Sprint Plan
 
 **Sprint 1 (2 weeks, 2026-03-10 → 2026-03-24):** Stability & Script LLM Access
 
-- [ ] **GAP-07** — Wrap task agent futures in `catch_unwind`; convert panics to `AgentStatus::Error`
+- [x] **GAP-07** — ✅ Panic isolation via nested `tokio::spawn` in `spawn_ipc_message_loop()`
 - [ ] **GAP-08** — Normalize webhook URL format; add validation and structured path helper
-- [ ] **GAP-01** — Implement `claw.llm` Lua bridge + V8 bridge (calls `LLMProvider` via tokio channel); see [ADR-014](docs/adr/014-channel-message-protocol-v2.md) for related context
-- [ ] **GAP-05** — Close inbound → EventBus pipeline: channel adapters publish `ChannelEvent::Inbound` to EventBus on receive
+- [x] **GAP-01** — ✅ Implemented: `claw.llm` Lua bridge + V8 bridge fully implemented in `crates/claw-script/src/bridge/llm.rs`; `complete()` and `stream()` methods available in both Lua and V8 engines
+- [x] **GAP-05** — ✅ Fixed: `handler.rs:2417` — `event_bus.publish()` closes inbound → EventBus pipeline
 
 **Sprint 2 (3 weeks, 2026-03-24 → 2026-04-14):** Channel Layer Hardening
 
-- [ ] **GAP-03** — Add exponential backoff retry (claw-pal `retry.rs` already started) to `Channel::send()`; configurable max retries and base delay
-- [ ] **GAP-04** — Promote `sender_id: Option<String>` and `thread_id: Option<String>` to top-level fields on `ChannelMessage` (see [ADR-014](docs/adr/014-channel-message-protocol-v2.md)); semver bump
-- [ ] **GAP-02** — Implement `ChannelRouter::broadcast(msg)` — fan-out to all registered channels
-- [ ] **GAP-06** — Add `resource_usage: Option<ResourceUsage>` to `AgentHandle` (CPU %, memory bytes, uptime)
+- [x] **GAP-03** — ✅ Fixed: `RetryableChannel` wrapper with exponential backoff (`retry.rs`); supports 14 tests
+- [x] **GAP-04** — ✅ Fixed: `sender_id: Option<String>` and `thread_id: Option<String>` promoted to top-level `ChannelMessage` fields
+- [x] **GAP-02** — ✅ Fixed: `ChannelRouter::broadcast_route(msg)` — fan-out to all matching agents (deduplicated)
+- [x] **GAP-06** — ✅ Fixed (G-6): `resource_snapshot` per `AgentState`; `start_resource_monitor_task()` samples via `sysinfo` every 5s
+
+**Remaining for Sprint 1:**
+- [x] **GAP-01** — ✅ `claw.llm` Lua + V8 bridge (implemented — `LlmBridge` with `complete()` + `stream()`)
+- [ ] **GAP-08** — Webhook URL normalization (P3 — deferred)
 
 ---
 
@@ -315,7 +348,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
 - [x] ~~Gemini (Google) provider~~ — ✅ Implemented in `claw-provider` (`gemini` feature)
 - [x] ~~Mistral provider~~ — ✅ Implemented in `claw-provider` (`mistral` feature)
 - [x] ~~Azure OpenAI provider~~ — ✅ Implemented in `claw-provider` (`azure-openai` feature)
-- [ ] Streaming response support across all providers
+- [x] ~~Streaming response support across all providers~~ — ✅ Gemini/Mistral/Azure OpenAI inherit `complete_stream()` via `OpenAIProvider` (all three are OpenAI-compatible aliases)
 
 ### v1.7.0 — Sandbox Hardening
 
@@ -397,9 +430,33 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 | 核心实现（13 个 crate） | ✅ 已完成 |
 | 129+ 个单元+集成测试（claw-runtime） | ✅ 全部通过 |
 | Clippy / fmt / 文档检查 | ✅ 干净 |
-| 当前版本 | ✅ v1.4.1 |
+|| 当前版本 | ✅ v0.4.0 |
+| 内核功能（F1-F9） | 📚 见 [kernel-features.md](docs/kernel-features.md) |
 
 完整版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+
+---
+
+## 内核功能覆盖度（v0.4.0）
+
+**参考文档：** [docs/kernel-features.md](docs/kernel-features.md) — 完整定义内核职责与应用层边界。
+
+| 功能 | 描述 | 状态 | 版本 |
+|------|------|------|------|
+| **F1** | 消息渠道抽象 | ✅ 完成 | v1.0.0+ |
+| **F2** | 对话上下文管理 | ✅ 完成 | v1.0.0+ |
+| **F3** | LLM 提供商抽象 | ✅ 完成 | v1.2.0+ |
+| **F4** | 工具执行运行时 | ✅ 完成（G-1 审计修复） | v1.5.0-dev |
+| **F5** | 技能按需加载引擎 | ✅ 完成 | v1.4.0+ |
+| **F6** | 事件触发系统（Cron + Webhook） | ✅ 完成 | v1.4.0+ |
+| **F7** | 多 Agent 编排 | ✅ 完成（G-10 重启修复） | v1.4.1+ |
+| **F8** | 安全与隔离模型 | ✅ 完成 | v1.0.0+ |
+| **F9** | 脚本扩展基础 | ✅ 完成（Lua + V8） | v1.3.0+ |
+
+**图例：**
+- ✅ = 已完整实现和测试
+- 🔧 = 进行中（见下方 v1.5.0 冲刺计划）
+- ⬜ = 推迟到后续版本
 
 ---
 
@@ -449,7 +506,7 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
   - [x] `examples/simple-agent` —— 带工具的基础 Agent
   - [x] `examples/custom-tool` —— 编写 Lua 工具
   - [x] `examples/memory-agent` —— 使用 SqliteMemoryStore + overflow_callback
-  - `examples/self-evolving-agent` —— **有意不在此实现**；自进化是 evoclaw 应用层的核心卖点，不是内核职责。内核提供基础设施（AgentBridge、HotLoader、LuaEngine），evoclaw 负责展示。
+  - ~~`examples/self-evolving-agent`~~ —— **有意不在此实现**；自进化是 evoclaw 应用层的核心卖点，不是内核职责。内核提供基础设施（AgentBridge、HotLoader、LuaEngine），evoclaw 负责展示。
 
 - [x] **脚本 Bridge** —— 全部 4 个在 v0.1.0 提前完成（见 [ADR-009](docs/adr/009-bridge-roadmap.md)）
   - [x] `DirsBridge` —— 平台配置/数据/缓存/工具目录路径
@@ -584,40 +641,49 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
-## 进行中 — v1.5.0（计划中）
+## 已完成 — v1.5.0 ✅
 
 **目标时间：** 2026 Q2（预计 2026-03-24，5 周冲刺）
 
 **目标：** 修复 `docs/v1.5-gap-report.md` 中识别的最关键缺口。
 
+**内核功能增强：**
+- **F4**（工具执行运行时）— 含 HMAC 签名事件的审计日志（G-1）
+- **F1**（消息渠道）— 重试逻辑和去重机制完善
+- **F7**（多 Agent 编排）— 进程隔离和重启策略（G-10）
+
 ### Gap 汇总
 
-| Gap | 优先级 | 描述 |
-|-----|--------|------|
-| GAP-01 | P0 | `claw.llm` bridge 缺失 — 脚本层无法调用 LLM |
-| GAP-02 | P1 | `ChannelRouter.broadcast()` 未实现 |
-| GAP-03 | P1 | 渠道 `send()` 无指数退避重试 |
-| GAP-04 | P2 | `UnifiedMessage` / `ChannelMessage` 缺少顶层 `sender_id` / `thread_id` |
-| GAP-05 | P2 | 入站 → EventBus 链路未闭合 |
-| GAP-06 | P2 | `AgentHandle` 无 `resource_usage` 字段 |
-| GAP-07 | P2 | Task Agent 崩溃可能传播（需要 `catch_unwind`） |
-| GAP-08 | P3 | Webhook URL 格式不规范 |
+| Gap | 优先级 | 描述 | 状态 |
+|-----|--------|------|------|
+| GAP-01 | P0 | `claw.llm` bridge 缺失 — 脚本层无法调用 LLM | ✅ 已修复（`LlmBridge` in `claw-script`；Lua + V8 bridge 均已完整实现） |
+| GAP-02 | P1 | `ChannelRouter.broadcast()` 未实现 | ✅ 已修复（`broadcast_route()` in `router.rs`） |
+| GAP-03 | P1 | 渠道 `send()` 无指数退避重试 | ✅ 已修复（`RetryableChannel` in `retry.rs`） |
+| GAP-04 | P2 | `UnifiedMessage` / `ChannelMessage` 缺少顶层 `sender_id` / `thread_id` | ✅ 已修复（`types.rs` 顶层字段） |
+| GAP-05 | P2 | 入站 → EventBus 链路未闭合 | ✅ 已修复（`handler.rs:2417` — `event_bus.publish()`） |
+| GAP-06 | P2 | `AgentHandle` 无 `resource_usage` 字段 | ✅ 已修复（G-6: `ResourceSnapshot` + `resource_monitor_task`） |
+| GAP-07 | P2 | Task Agent 崩溃可能传播（需要 `catch_unwind`） | ✅ 已修复（GAP-07: `orchestrator.rs` 嵌套 `tokio::spawn` panic 隔离） |
+| GAP-08 | P3 | Webhook URL 格式不规范 | ⬜ 延至 v1.5.1 |
 
 ### Sprint 计划
 
 **Sprint 1（2 周，2026-03-10 → 2026-03-24）：** 稳定性与脚本 LLM 访问
 
-- [ ] **GAP-07** — 用 `catch_unwind` 包装 task agent future；将 panic 转换为 `AgentStatus::Error`
+- [x] **GAP-07** — ✅ 通过 `spawn_ipc_message_loop()` 中嵌套 `tokio::spawn` 实现 panic 隔离
 - [ ] **GAP-08** — 规范化 webhook URL 格式；添加验证和结构化路径 helper
-- [ ] **GAP-01** — 实现 `claw.llm` Lua bridge + V8 bridge（通过 tokio channel 调用 `LLMProvider`）；相关上下文见 [ADR-014](docs/adr/014-channel-message-protocol-v2.md)
-- [ ] **GAP-05** — 闭合入站 → EventBus 链路：渠道适配器在收到消息时向 EventBus 发布 `ChannelEvent::Inbound`
+- [x] **GAP-01** — ✅ 已实现：`claw.llm` Lua bridge + V8 bridge 已在 `crates/claw-script/src/bridge/llm.rs` 完整实现；Lua 和 V8 引擎均支持 `complete()` 和 `stream()` 方法
+- [x] **GAP-05** — ✅ 已修复：`handler.rs:2417` — `event_bus.publish()` 闭合入站 → EventBus 链路
 
 **Sprint 2（3 周，2026-03-24 → 2026-04-14）：** 渠道层加固
 
-- [ ] **GAP-03** — 在 `Channel::send()` 中添加指数退避重试（`claw-pal/retry.rs` 已有初步实现）；可配置最大重试次数和基础延迟
-- [ ] **GAP-04** — 将 `sender_id: Option<String>` 和 `thread_id: Option<String>` 提升为 `ChannelMessage` 顶层字段（见 [ADR-014](docs/adr/014-channel-message-protocol-v2.md)）；semver bump
-- [ ] **GAP-02** — 实现 `ChannelRouter::broadcast(msg)` — 向所有注册渠道广播
-- [ ] **GAP-06** — 为 `AgentHandle` 添加 `resource_usage: Option<ResourceUsage>`（CPU %、内存字节、运行时间）
+- [x] **GAP-03** — ✅ 已修复：`RetryableChannel` 包装器实现指数退避（`retry.rs`），含 14 个测试
+- [x] **GAP-04** — ✅ 已修复：`sender_id`/`thread_id` 已提升为 `ChannelMessage` 顶层字段
+- [x] **GAP-02** — ✅ 已修复：`ChannelRouter::broadcast_route(msg)` — 向所有匹配 agent 广播（自动去重）
+- [x] **GAP-06** — ✅ 已修复（G-6）：每 `AgentState` 的 `resource_snapshot`；`sysinfo` 每 5s 采样
+
+**Sprint 1 剩余工作：**
+- [x] **GAP-01** — ✅ `claw.llm` Lua + V8 bridge（已实现 — `LlmBridge` 含 `complete()` + `stream()`）
+- [ ] **GAP-08** — Webhook URL 规范化（P3 — 已延期）
 
 ---
 
@@ -635,7 +701,7 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 - [x] ~~Gemini（Google）Provider~~ — ✅ 已在 `claw-provider` 中实现（`gemini` feature）
 - [x] ~~Mistral Provider~~ — ✅ 已在 `claw-provider` 中实现（`mistral` feature）
 - [x] ~~Azure OpenAI Provider~~ — ✅ 已在 `claw-provider` 中实现（`azure-openai` feature）
-- [ ] 所有 Provider 的流式响应支持
+- [x] ~~所有 Provider 的流式响应支持~~ — ✅ Gemini/Mistral/Azure OpenAI 通过 `OpenAIProvider` 继承 `complete_stream()`（三者均为 OpenAI 兼容别名）
 
 ### v1.7.0 — 沙箱加固
 

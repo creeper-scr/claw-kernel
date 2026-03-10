@@ -40,6 +40,7 @@ pub struct RuntimeChannelEventPublisher {
 
 impl RuntimeChannelEventPublisher {
     /// Create a new publisher and wrap it in an `Arc<dyn ChannelEventPublisher>`.
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(event_bus: EventBus) -> Arc<dyn ChannelEventPublisher> {
         Arc::new(Self { event_bus })
     }

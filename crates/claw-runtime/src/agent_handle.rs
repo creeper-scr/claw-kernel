@@ -35,6 +35,7 @@ use crate::{agent_types::{AgentId, ResourceUsage}, error::RuntimeError};
 /// Shared read-only view of the orchestrator's agent map, used by
 /// [`IpcAgentHandle`] to query per-agent resource usage without holding a
 /// reference to the full orchestrator.
+#[allow(dead_code)]
 pub(crate) type AgentsMap<S> = Arc<DashMap<AgentId, S>>;
 
 // ─── Response types ───────────────────────────────────────────────────────────

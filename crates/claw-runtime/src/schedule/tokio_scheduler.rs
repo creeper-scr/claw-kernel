@@ -88,9 +88,8 @@ impl TokioScheduler {
         let handler = state.config.handler.clone();
         let result: Result<(), ()> = {
             let fut = handler();
-            match fut.await {
-                _ => Ok(()), // Task completed (we don't have result type, so assume success)
-            }
+            let _ = fut.await;
+            Ok(())
         };
 
         // Update stats based on result
@@ -202,13 +201,9 @@ impl TokioScheduler {
         let task_id = state.config.id.clone();
 
         Ok(tokio::spawn(async move {
-            loop {
+            while let Some(next) = schedule.upcoming(Utc).next() {
                 // Recompute next occurrence each iteration to follow DST / leap-second
                 // corrections rather than drifting with a fixed interval.
-                let next = match schedule.upcoming(Utc).next() {
-                    Some(t) => t,
-                    None => break, // expression exhausted
-                };
 
                 let now = Utc::now();
                 let delay = (next - now).to_std().unwrap_or(Duration::ZERO);
@@ -241,6 +236,7 @@ impl TokioScheduler {
             rt.block_on(async { t.stats.read().await.clone() })
         })
     }
+
 }
 
 impl Default for TokioScheduler {
@@ -248,6 +244,8 @@ impl Default for TokioScheduler {
         Self::new()
     }
 }
+
+#[async_trait::async_trait]
 
 #[async_trait::async_trait]
 impl Scheduler for TokioScheduler {
