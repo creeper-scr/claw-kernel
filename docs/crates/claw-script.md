@@ -1,15 +1,15 @@
 ---
 title: claw-script
-description: Embedded script engines (Lua default, Deno/V8 and Python planned)
+description: Embedded script engines (Lua default, V8 optional)
 status: implemented
 version: "0.1.0"
-last_updated: "2026-03-08"
+last_updated: "2026-03-09"
 language: en
 ---
 
 
 
-Embedded script engines (Lua, Deno/V8, Python) with unified RustBridge API.
+Embedded script engines (Lua, V8/TypeScript) with unified RustBridge API.
 
 ## Architecture
 
@@ -17,8 +17,8 @@ Embedded script engines (Lua, Deno/V8, Python) with unified RustBridge API.
 
 `claw-script` provides the kernel's script execution layer:
 
-- **Multi-engine support**: Lua (default), Deno/V8, Python
-- **Hot-loading**: Load/unload scripts without restart
+- **Multi-engine support**: Lua (default), V8/TypeScript (optional)
+- **Hot-loading**: Load/unload scripts without restart (see [Hot Reload](#hot-reload))
 - **RustBridge API**: Expose kernel capabilities to scripts
 - **Sandboxed execution**: Enforce security boundaries
 
@@ -29,9 +29,8 @@ Embedded script engines (Lua, Deno/V8, Python) with unified RustBridge API.
 ## Overview
 
 `claw-script` embeds scripting languages:
-- **Lua** (default, implemented): Fast, zero dependencies
-- **Deno/V8** (planned): Full TypeScript/JavaScript support
-- **Python** (planned): ML ecosystem access
+- **Lua** (default, implemented): Fast, zero dependencies, ~500KB
+- **V8/TypeScript** (optional, implemented): Full ES2022+ support, ~100MB
 
 ---
 
@@ -42,12 +41,11 @@ Embedded script engines (Lua, Deno/V8, Python) with unified RustBridge API.
 # Lua only (default)
 claw-script = "0.1"
 
-# With Deno/V8 (planned)
-# claw-script = { version = "0.1", features = ["engine-v8"] }
-
-# With Python (planned)
-# claw-script = { version = "0.1", features = ["engine-py"] }
+# With V8/TypeScript support
+claw-script = { version = "0.1", features = ["engine-v8"] }
 ```
+
+### Lua Example
 
 ```rust
 use claw_script::{ScriptEngine, LuaEngine};
@@ -66,6 +64,46 @@ let script = Script::lua("example", r#"
 
 let ctx = ScriptContext::new("agent-1");
 let result = engine.execute(&script, &ctx).await?;
+```
+
+### V8/TypeScript Example
+
+```rust
+use claw_script::{ScriptEngine, V8Engine, V8EngineOptions};
+use claw_script::types::{Script, ScriptContext};
+
+// Create V8 engine with default options
+let engine = V8Engine::new();
+
+// Or with custom options
+let engine = V8Engine::with_options(V8EngineOptions {
+    timeout: Duration::from_secs(60),
+    heap_limit_mb: 256,
+    typescript: true,
+    max_recursion_depth: 64,
+});
+
+// Execute JavaScript
+let script = Script::javascript("example", r#"
+    const data = { message: "Hello from V8!", timestamp: Date.now() };
+    claw.events.emit("data_ready", data);
+    return data.message;
+"#);
+
+let ctx = ScriptContext::new("agent-1")
+    .with_event_bus(event_bus);
+
+let result = engine.execute(&script, &ctx).await?;
+
+// Or execute TypeScript (transpiled automatically)
+let ts_script = Script::typescript("example", r#"
+    interface Config {
+        name: string;
+        value: number;
+    }
+    const cfg: Config = { name: "test", value: 42 };
+    return cfg;
+"#);
 ```
 
 ---
@@ -115,7 +153,7 @@ interface RustBridge {
     post(url: string, headers: Headers, body: string): Promise<Response>;
   };
 
-  // JSON (native Lua support)
+  // JSON (native Lua support, V8 uses native JSON)
   json: {
     parse(text: string): any;
     stringify(value: any, opts?: { pretty?: boolean }): string;
@@ -183,51 +221,62 @@ local resp = net:get("https://api.example.com/data")
 
 ---
 
-## TypeScript Example (Deno) 🚧 Planned
-
-> **Note:** Deno/V8 engine support is planned but not yet implemented.
+## TypeScript/JavaScript Example
 
 ```typescript
-// @name summarizer
-// @permissions fs.read, tools.call
+// Example: Using all available bridges in JavaScript/TypeScript
 
-interface Params {
-    path: string;
-}
+// Dirs bridge: platform-aware paths
+const cfg = claw.dirs.configDir();
+const data = claw.dirs.dataDir();
 
-export async function execute(params: Params) {
-    const content = await rust.fs.read(params.path);
-    const text = new TextDecoder().decode(content);
+// Memory bridge
+await claw.memory.set("user_pref", "dark_mode");
+const pref = await claw.memory.get("user_pref");
+const items = await claw.memory.search("dark", 5);
 
-    const result = await rust.tools.call("summarize", { text });
+// Events bridge
+claw.events.on("task_done", (data) => {
+    console.log("Task done:", data);
+});
+claw.events.emit("task_started", { name: "my_task" });
 
-    return { success: result.success, result: result.output };
-}
+// Agent bridge
+const childId = claw.agent.spawn("worker");
+const status = claw.agent.status(childId);
+claw.agent.kill(childId);
+
+// Tools bridge
+const result = await claw.tools.call("summarize", { text: "..." });
+
+// Filesystem bridge
+const content = await claw.fs.read("/path/to/file.txt");
+await claw.fs.write("/path/to/out.txt", content);
+
+// Network bridge
+const resp = await claw.net.get("https://api.example.com/data");
+const body = await resp.text();
+
+// JSON utilities
+const obj = claw.json.parse('{"key": "value"}');
+const str = claw.json.stringify(obj, { pretty: true });
 ```
 
 ---
 
-## Python Example 🚧 Planned
+## Engine Comparison
 
-> **Note:** Python engine support is planned but not yet implemented.
-
-```python
-# @name data_analyzer
-# @permissions fs.read, tools.call
-
-import json
-
-async def execute(params):
-    content = await rust.fs.read(params["path"])
-    data = json.loads(content)
-
-    # Use Python ecosystem
-    import numpy as np
-    values = np.array([d["value"] for d in data])
-    mean = np.mean(values)
-
-    return {"success": True, "result": {"mean": float(mean)}}
-```
+| Feature | Lua | V8/TypeScript |
+|---------|-----|---------------|
+| Binary size | ~500KB | ~100MB |
+| Startup time | <1ms | ~10-50ms |
+| Memory per execution | ~1MB | ~10-50MB |
+| Language features | Minimal | Full ES2022+ |
+| TypeScript | No | Yes |
+| Sandboxing | Limited | Strong (isolate) |
+| Async/await | No | Yes |
+| Ecosystem | Small | Massive (npm) |
+| Use case | Simple tools | Complex agents |
 
 ---
 
@@ -236,27 +285,250 @@ async def execute(params):
 ```toml
 [features]
 default = ["engine-lua"]
-engine-lua = ["mlua"]          # Zero deps, fast compile ✅
-# engine-v8 = ["deno_core"]    # Full JS/TS, ~100MB 🚧 Planned
-# engine-py = ["pyo3"]         # Python ecosystem 🚧 Planned
+engine-lua = ["mlua"]           # Zero deps, fast compile ✅
+engine-v8 = ["deno_core"]       # Full JS/TS, ~100MB ✅
 ```
 
 ---
 
 ## Engine Selection
 
-Currently only Lua engine is available:
+```rust
+use claw_script::{ScriptEngine, LuaEngine, V8Engine};
+
+// Lua engine (default, lightweight)
+let lua_engine = LuaEngine::new();
+
+// V8 engine (feature = "engine-v8")
+let v8_engine = V8Engine::new();
+
+// V8 with custom options
+let v8_engine = V8Engine::with_options(V8EngineOptions {
+    timeout: Duration::from_secs(60),
+    heap_limit_mb: 256,
+    typescript: true,
+    max_recursion_depth: 64,
+});
+
+// Create script for specific engine
+let lua_script = Script::lua("tool", "return 42");
+let js_script = Script::javascript("tool", "return 42");
+let ts_script = Script::typescript("tool", "return 42 as number");
+```
+
+---
+
+## V8EngineOptions
+
+Configuration options for the V8 engine:
 
 ```rust
-use claw_script::{ScriptEngine, LuaEngine};
-
-// Create Lua engine
-let engine = LuaEngine::new();
-
-// Planned: Auto-detect from file extension
-// let engine = ScriptEngine::for_file("tool.lua")?;  // LuaEngine
-// let engine = ScriptEngine::for_file("tool.ts")?;   // V8Engine (planned)
-// let engine = ScriptEngine::for_file("tool.py")?;   // PythonEngine (planned)
+pub struct V8EngineOptions {
+    /// Script execution timeout (default: 30s)
+    pub timeout: Duration,
+    /// V8 heap limit in MB (default: 128MB)
+    pub heap_limit_mb: usize,
+    /// Enable TypeScript support (default: true)
+    pub typescript: bool,
+    /// Maximum recursion depth for JSON conversion (default: 32)
+    pub max_recursion_depth: u32,
+}
 ```
+
+---
+
+## Security Notes
+
+### Lua Engine
+- Sandboxing relies on runtime permission checks
+- Scripts can potentially crash the host process
+- Use Safe Mode OS sandbox for untrusted code
+
+### V8 Engine
+- Each execution runs in a fresh V8 isolate
+- Memory limits enforced by V8 heap constraints
+- Stronger sandboxing than Lua
+- Still recommend Safe Mode for untrusted code
+
+---
+
+## Hot Reload
+
+Layer 3 provides a **hot-reload mechanism** for scripts, enabling runtime updates without restart.
+
+### Hot Reload Architecture
+
+```
+File System ──► ScriptWatcher ──► ScriptEvent ──► HotReloadManager ──► ScriptRegistry
+                     │                                │
+                     └─ debounce (50ms)               ├─ compile & validate
+                                                      ├─ hot-swap (atomic)
+                                                      └─ event notify
+```
+
+### Key Components
+
+| Component | Purpose |
+|-----------|---------|
+| `ScriptWatcher` | File system watcher with debouncing |
+| `HotReloadManager` | Coordinates loading, validation, and event emission |
+| `ScriptRegistry` | Thread-safe registry with version history |
+| `ScriptModule` | Versioned script with atomic swap support |
+| `ScriptEventBus` | Event publishing for hot-reload events |
+
+### Usage Example
+
+```rust
+use std::sync::Arc;
+use claw_script::{LuaEngine, HotReloadManager, HotReloadConfig};
+
+// Create engine and hot-reload manager
+let engine = Arc::new(LuaEngine::new());
+let config = HotReloadConfig::new()
+    .watch_dir("./scripts")
+    .extension("lua")
+    .extension("js")
+    .auto_reload(true);
+
+let mut manager = HotReloadManager::new(config, engine)?;
+
+// Subscribe to events
+let mut events = manager.subscribe();
+tokio::spawn(async move {
+    while let Ok(event) = events.recv().await {
+        match event {
+            ScriptEvent::Loaded { entry, path } => {
+                println!("Loaded: {} from {:?}", entry.name, path);
+            }
+            ScriptEvent::Reloaded { entry, previous_version, new_version, .. } => {
+                println!("Reloaded: {} v{} -> v{}", 
+                    entry.name, previous_version, new_version);
+            }
+            ScriptEvent::Failed { path, error, .. } => {
+                eprintln!("Failed to load {:?}: {}", path, error);
+            }
+            _ => {}
+        }
+    }
+});
+
+// Start watching (blocks until stopped)
+manager.start().await?;
+```
+
+### Manual Script Loading
+
+```rust
+// Load a script manually (not via file watcher)
+let module = manager.load_file("./my_script.lua").await?;
+println!("Loaded: {} (v{})", module.current().name, module.version());
+
+// Execute the loaded script
+let ctx = ScriptContext::new("agent-1");
+let result = manager.execute("my_script", &ctx).await?;
+```
+
+### Configuration Options
+
+```rust
+pub struct HotReloadConfig {
+    /// Directories to watch
+    pub watch_dirs: Vec<PathBuf>,
+    /// File extensions to watch
+    pub extensions: HashSet<String>,
+    /// Debounce delay for file events
+    pub debounce_delay: Duration,
+    /// Maximum versions to keep in history
+    pub max_history_size: usize,
+    /// Enable auto-reload on file change
+    pub auto_reload: bool,
+    /// Validate scripts before reloading
+    pub validate_before_reload: bool,
+    /// Engine type filter (None = all)
+    pub engine_filter: Option<EngineType>,
+    /// Watch subdirectories recursively
+    pub recursive: bool,
+}
+```
+
+### Version Management & Rollback
+
+Scripts maintain version history for rollback:
+
+```rust
+// Get current script info
+let entry = manager.get_script("my_tool").unwrap();
+println!("Current version: {}", entry.version);
+
+// Rollback to previous version
+if manager.rollback("my_tool") {
+    println!("Rolled back successfully");
+}
+
+// Access version history via ScriptModule
+let module = manager.registry()
+    .get_or_create("my_tool")
+    .unwrap();
+    
+for (version, loaded_at) in module.history_versions() {
+    println!("v{} at {:?}", version, loaded_at);
+}
+```
+
+### Events
+
+The hot-reload system emits the following events:
+
+| Event | Trigger |
+|-------|---------|
+| `ScriptEvent::Loaded` | New script detected |
+| `ScriptEvent::Reloaded` | Script file modified |
+| `ScriptEvent::Unloaded` | Script file deleted |
+| `ScriptEvent::Failed` | Validation/compilation error |
+| `ScriptEvent::Debounced` | Batch of rapid changes |
+| `ScriptEvent::Started` | Watcher started |
+| `ScriptEvent::Stopped` | Watcher stopped |
+| `ScriptEvent::CacheUpdated` | Script cache invalidated |
+
+### Event Filtering
+
+```rust
+use claw_script::hot_reload::EventFilter;
+
+// Subscribe only to successful loads/reloads
+let mut success_events = EventFilter::success_only(&manager.event_bus());
+
+// Subscribe only to errors
+let mut error_events = EventFilter::errors_only(&manager.event_bus());
+
+// Subscribe to specific script
+let mut specific = EventFilter::for_script(&manager.event_bus(), "my_tool");
+```
+
+### Cancellation Support
+
+```rust
+use tokio::sync::watch;
+
+let (tx, rx) = watch::channel(false);
+
+// Run with cancellation token
+tokio::spawn(async move {
+    manager.run_with_cancel(rx).await.unwrap();
+});
+
+// Stop the manager
+tx.send(true).unwrap();
+```
+
+---
+
+## References
+
+- [ADR-002: Multi-Engine Script Support](../adr/002-script-engine-selection.md)
+- [ADR-004: Tool Hot-Loading](../adr/004-hot-loading-mechanism.md)
+- [ADR-012: V8 Engine Implementation](../adr/012-v8-engine-implementation.md)
+- [deno_core documentation](https://docs.rs/deno_core)
+- [V8 Engine documentation](https://v8.dev/docs)
 
 ---

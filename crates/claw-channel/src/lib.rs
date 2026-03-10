@@ -20,20 +20,21 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use claw_channel::{Channel, StdinChannel};
+//! use claw_channel::{Channel, ChannelId, StdinChannel};
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Create a stdin channel
-//! let mut channel = StdinChannel::new();
+//! // Create a stdin channel — requires a ChannelId.
+//! let channel = StdinChannel::new(ChannelId::new("cli"));
 //!
-//! // In a real application, you would run the channel
-//! // channel.run().await?;
+//! // In a real application, connect first then receive messages:
+//! // channel.connect().await?;
 //! # Ok(())
 //! # }
 //! ```
 
 pub mod error;
+pub mod router;
 pub mod stdin;
 pub mod traits;
 pub mod types;
@@ -45,8 +46,9 @@ pub mod webhook;
 pub mod discord;
 
 pub use error::ChannelError;
+pub use router::{AgentId as RouterAgentId, ChannelRouter, ChannelRouterBuilder, RouterError, RoutingRule};
 pub use stdin::StdinChannel;
-pub use traits::Channel;
+pub use traits::{Channel, ChannelEvent, ChannelEventPublisher, NoopChannelEventPublisher};
 pub use types::{ChannelId, ChannelMessage, MessageDirection, Platform};
 
 #[cfg(feature = "webhook")]

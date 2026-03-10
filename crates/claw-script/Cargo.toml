@@ -19,8 +19,20 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 mlua = { workspace = true, optional = true }
+deno_core = { version = "0.280", optional = true }
+regex = { workspace = true }
 reqwest = { workspace = true }
+notify = { workspace = true, optional = true }
+arc-swap = "1.7"
+glob = "0.3"
+tracing = { workspace = true }
 
 [features]
-default = ["engine-lua"]
+default = ["engine-lua", "hot-reload"]
 engine-lua = ["dep:mlua"]
+engine-v8 = ["dep:deno_core"]
+hot-reload = ["dep:notify"]
+
+[dev-dependencies]
+claw-pal = { workspace = true }
+tempfile = "3"

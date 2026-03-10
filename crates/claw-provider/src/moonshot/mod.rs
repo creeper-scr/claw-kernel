@@ -2,7 +2,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::{Stream, StreamExt};
+use futures::Stream;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::{
     error::ProviderError,
@@ -13,8 +14,9 @@ use crate::{
     types::{CompletionResponse, Delta, Message, Options},
 };
 
+use crate::stream_utils::parse_sse_stream;
 pub struct MoonshotProvider {
-    api_key: String,
+    api_key: SecretString,
     model: String,
     transport: Arc<dyn HttpTransport>,
     retry_config: Option<RetryConfig>,
@@ -23,7 +25,7 @@ pub struct MoonshotProvider {
 impl MoonshotProvider {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SecretString::new(api_key.into()),
             model: model.into(),
             transport: Arc::new(DefaultHttpTransport::new("https://api.moonshot.cn")),
             retry_config: None,
@@ -38,7 +40,7 @@ impl MoonshotProvider {
         transport: Arc<dyn HttpTransport>,
     ) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SecretString::new(api_key.into()),
             model: model.into(),
             transport,
             retry_config: None,
@@ -75,7 +77,7 @@ impl MoonshotProvider {
         vec![
             (
                 "Authorization".to_string(),
-                format!("Bearer {}", self.api_key),
+                format!("Bearer {}", self.api_key.expose_secret()),
             ),
             ("Content-Type".to_string(), "application/json".to_string()),
         ]
@@ -133,28 +135,7 @@ impl LLMProvider for MoonshotProvider {
             .collect();
         let byte_stream = self.transport.post_stream(&url, &headers, &body).await?;
 
-        let delta_stream = byte_stream.flat_map(move |chunk_result| {
-            let deltas: Vec<Result<Delta, ProviderError>> = match chunk_result {
-                Err(e) => vec![Err(e)],
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    text.lines()
-                        .filter_map(|line| {
-                            let trimmed = line.trim();
-                            if trimmed.is_empty() {
-                                return None;
-                            }
-                            match OpenAIFormat::parse_stream_chunk(trimmed.as_bytes()) {
-                                Ok(Some(delta)) => Some(Ok(delta)),
-                                Ok(None) => None,
-                                Err(e) => Some(Err(ProviderError::Other(e.to_string()))),
-                            }
-                        })
-                        .collect()
-                }
-            };
-            futures::stream::iter(deltas)
-        });
+        let delta_stream = parse_sse_stream::<OpenAIFormat>(byte_stream);
 
         Ok(Box::pin(delta_stream))
     }
@@ -167,8 +148,8 @@ mod tests {
 
     #[test]
     fn test_moonshot_provider_new() {
-        let p = MoonshotProvider::new("ms-key", "moonshot-v1-8k");
-        assert_eq!(p.api_key, "ms-key");
+        let p = MoonshotProvider::new("test-key-placeholder", "moonshot-v1-8k");
+        assert_eq!(p.api_key.expose_secret(), "test-key-placeholder");
         assert_eq!(p.model, "moonshot-v1-8k");
         assert_eq!(p.provider_id(), "moonshot");
         assert_eq!(p.model_id(), "moonshot-v1-8k");
@@ -178,21 +159,21 @@ mod tests {
     #[test]
     fn test_moonshot_provider_with_retry() {
         let config = RetryConfig::new().with_max_retries(3);
-        let p = MoonshotProvider::new("ms-key", "moonshot-v1-8k").with_retry(config);
+        let p = MoonshotProvider::new("test-key-placeholder", "moonshot-v1-8k").with_retry(config);
         assert_eq!(p.retry_config().unwrap().max_retries, 3);
     }
 
     /// 验证 Moonshot base URL 包含 /v1 路径前缀（与 DeepSeek 不同）
     #[test]
     fn test_moonshot_base_url_includes_v1() {
-        let p = MoonshotProvider::new("key", "moonshot-v1-128k");
+        let p = MoonshotProvider::new("test-key-placeholder", "moonshot-v1-128k");
         assert_eq!(p.base_url(), "https://api.moonshot.cn/v1");
     }
 
     /// 验证请求头包含 Bearer token 和 Content-Type
     #[test]
     fn test_moonshot_build_headers() {
-        let p = MoonshotProvider::new("moonshot-secret", "moonshot-v1-8k");
+        let p = MoonshotProvider::new("test-key-placeholder", "moonshot-v1-8k");
         let headers = p.build_headers();
         let auth = headers
             .iter()
@@ -202,15 +183,15 @@ mod tests {
             .iter()
             .find(|(k, _)| k == "Content-Type")
             .map(|(_, v)| v.as_str());
-        assert_eq!(auth, Some("Bearer moonshot-secret"));
+        assert_eq!(auth, Some("Bearer test-key-placeholder"));
         assert_eq!(content_type, Some("application/json"));
     }
 
     /// 验证 provider_id 固定为 "moonshot"
     #[test]
     fn test_moonshot_provider_id_is_stable() {
-        let p1 = MoonshotProvider::new("key", "moonshot-v1-8k");
-        let p2 = MoonshotProvider::new("key", "moonshot-v1-128k");
+        let p1 = MoonshotProvider::new("test-key-placeholder", "moonshot-v1-8k");
+        let p2 = MoonshotProvider::new("test-key-placeholder", "moonshot-v1-128k");
         assert_eq!(p1.provider_id(), "moonshot");
         assert_eq!(p2.provider_id(), "moonshot");
     }
@@ -218,9 +199,9 @@ mod tests {
     /// 验证 model_id 返回构造时传入的模型名
     #[test]
     fn test_moonshot_model_id_variants() {
-        let p8k = MoonshotProvider::new("key", "moonshot-v1-8k");
-        let p32k = MoonshotProvider::new("key", "moonshot-v1-32k");
-        let p128k = MoonshotProvider::new("key", "moonshot-v1-128k");
+        let p8k = MoonshotProvider::new("test-key-placeholder", "moonshot-v1-8k");
+        let p32k = MoonshotProvider::new("test-key-placeholder", "moonshot-v1-32k");
+        let p128k = MoonshotProvider::new("test-key-placeholder", "moonshot-v1-128k");
         assert_eq!(p8k.model_id(), "moonshot-v1-8k");
         assert_eq!(p32k.model_id(), "moonshot-v1-32k");
         assert_eq!(p128k.model_id(), "moonshot-v1-128k");
@@ -246,7 +227,7 @@ mod tests {
     /// 验证 retry_config 在未设置时为 None
     #[test]
     fn test_moonshot_no_retry_by_default() {
-        let p = MoonshotProvider::new("key", "moonshot-v1-8k");
+        let p = MoonshotProvider::new("test-key-placeholder", "moonshot-v1-8k");
         assert!(p.retry_config().is_none());
     }
 }

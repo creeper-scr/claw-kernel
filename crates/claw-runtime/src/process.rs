@@ -5,8 +5,8 @@
 //! `wait` or `kill` a process without holding a reference to the manager
 //! separately.
 
-use claw_pal::traits::ProcessManager as _;
-use claw_pal::{ExitStatus, ProcessHandle, TokioProcessManager};
+use claw_pal::traits::ProcessManager;
+use claw_pal::{ExitStatus, ProcessHandle};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -23,18 +23,17 @@ pub enum ProcessError {
 
 /// A running OS process paired with its process manager.
 ///
-/// Obtained by calling [`claw_pal::TokioProcessManager::spawn`] and wrapping the
-/// result. Provides ergonomic [`wait`](ManagedProcess::wait) and
-/// [`kill`](ManagedProcess::kill) methods without requiring the caller to hold a
-/// separate reference to the manager.
+/// Wraps a [`ProcessHandle`] and a [`ProcessManager`] implementation to provide
+/// ergonomic [`wait`](ManagedProcess::wait) and [`kill`](ManagedProcess::kill) 
+/// methods without requiring the caller to hold a separate reference to the manager.
 pub struct ManagedProcess {
     handle: ProcessHandle,
-    manager: Arc<TokioProcessManager>,
+    manager: Arc<dyn ProcessManager>,
 }
 
 impl ManagedProcess {
     /// Wrap a raw [`ProcessHandle`] and its owning manager.
-    pub fn new(handle: ProcessHandle, manager: Arc<TokioProcessManager>) -> Self {
+    pub fn new(handle: ProcessHandle, manager: Arc<dyn ProcessManager>) -> Self {
         Self { handle, manager }
     }
 

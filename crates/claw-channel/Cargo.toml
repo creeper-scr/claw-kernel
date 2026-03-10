@@ -9,17 +9,23 @@ description = "Channel integrations — Discord, Webhook, Stdin"
 repository.workspace = true
 
 [features]
-webhook = ["dep:axum", "dep:reqwest"]
+webhook = ["dep:axum", "dep:reqwest", "dep:hmac", "dep:sha2", "dep:hex"]
 discord = ["dep:twilight-gateway", "dep:twilight-model", "dep:twilight-http"]
 
 [dependencies]
 async-trait = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["io-std"] }
+regex = { workspace = true }
+toml = "0.8"
 axum = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
+hex = { version = "0.4", optional = true }
 twilight-gateway = { workspace = true, optional = true }
 twilight-model = { workspace = true, optional = true }
 twilight-http = { version = "0.15.4", optional = true }

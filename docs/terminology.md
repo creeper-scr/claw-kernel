@@ -45,7 +45,7 @@ last_updated: "2026-03-01"
 | Hot-loading | 热加载 (Hot-loading) | 运行时加载/卸载 |
 | Hot-reload | 热重载 | 避免使用，统一用 Hot-loading |
 | Tool Registry | 工具注册表 | 工具管理 |
-| Script Engine | 脚本引擎 | Lua/V8/Python |
+| Script Engine | 脚本引擎 | Lua/V8 |
 | Extension Foundation | 扩展基础 | Layer 3 定位 |
 | Self-Evolution | 自进化 | 应用层能力 |
 | Dynamic Registration | 动态注册 | 运行时注册工具 |
@@ -59,7 +59,6 @@ last_updated: "2026-03-01"
 | Feature Flag | 特性标志 (Feature Flag) | Cargo 特性 |
 | engine-lua | engine-lua | 连字符格式 |
 | engine-v8 | engine-v8 | 连字符格式 |
-| engine-py | engine-py | 连字符格式 |
 | Crate | Crate | Rust 包单位 |
 | Trait | Trait | Rust 接口 |
 | IPC | IPC | 进程间通信 |
@@ -87,7 +86,7 @@ last_updated: "2026-03-01"
 2. **技术术语**：首次出现时用 `(English)` 标注，如 `热加载 (Hot-loading)`
 3. **Feature Flag**：统一使用连字符格式 `engine-lua`，不用下划线
 4. **架构层数**：统一使用 **五层架构 (Five-Layer Architecture)**，Layer 3 统一使用 **Extension Foundation / 扩展基础**
-5. **版本号**：Rust **1.83+**, Node.js ≥ 20, Python ≥ 3.10
+5. **版本号**：Rust **1.83+**, Node.js ≥ 20
 
 ---
 

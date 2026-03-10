@@ -1,5 +1,15 @@
 //! Discord channel adapter — wraps twilight-gateway (receive) and
 //! twilight-http (send) to implement the [`Channel`] trait.
+//!
+//! # Compatibility Notice
+//!
+//! This module is maintained for backwards compatibility.
+//! New users should prefer the `claw-channels` crate with the `discord` feature,
+//! which provides the same implementation under a dedicated crate:
+//!
+//! ```toml
+//! claw-channels = { version = "1", features = ["discord"] }
+//! ```
 
 use crate::{
     error::ChannelError,
@@ -28,6 +38,8 @@ pub struct DiscordChannel {
     token: String,
     /// Numeric Discord channel ID.
     discord_channel_id: u64,
+    /// Reusable HTTP client shared across all `send()` calls.
+    http_client: Arc<HttpClient>,
     /// Sender side of the inbound message queue.
     inbound_tx: mpsc::Sender<ChannelMessage>,
     /// Receiver side of the inbound message queue (consumed by `recv()`).
@@ -45,10 +57,13 @@ impl DiscordChannel {
     /// to start the shard.
     pub fn new(id: ChannelId, token: impl Into<String>, discord_channel_id: u64) -> Self {
         let (tx, rx) = mpsc::channel(128);
+        let token = token.into();
+        let http_client = Arc::new(HttpClient::new(token.clone()));
         Self {
             id,
-            token: token.into(),
+            token,
             discord_channel_id,
+            http_client,
             inbound_tx: tx,
             inbound_rx: Mutex::new(rx),
             shard_handle: Mutex::new(None),
@@ -150,8 +165,19 @@ impl Channel for DiscordChannel {
     }
 
     /// Send a message to the Discord channel.
+    ///
+    /// Returns `Err(ChannelError::SendFailed)` if the message content exceeds
+    /// Discord's 2000-character limit.
     async fn send(&self, message: ChannelMessage) -> Result<(), ChannelError> {
-        let client = HttpClient::new(self.token.clone());
+        // FIX-16: Validate Discord 2000-character message length limit.
+        const DISCORD_MAX_MSG_LEN: usize = 2000;
+        if message.content.len() > DISCORD_MAX_MSG_LEN {
+            return Err(ChannelError::SendFailed(format!(
+                "message exceeds Discord 2000-character limit ({} chars)",
+                message.content.len()
+            )));
+        }
+        let client = Arc::clone(&self.http_client);
         client
             .create_message(self.discord_id())
             .content(&message.content)
@@ -226,5 +252,22 @@ mod tests {
         assert_eq!(received.content, "hello from discord");
         assert_eq!(received.direction, MessageDirection::Inbound);
         assert_eq!(received.platform, Platform::Discord);
+    }
+
+    #[tokio::test]
+    async fn test_discord_send_rejects_overlong_message() {
+        let ch = make_channel();
+        // Construct a message that exceeds Discord's 2000-character limit.
+        let long_content = "a".repeat(2001);
+        let msg = ChannelMessage::outbound(
+            ChannelId::new("test-discord-ch"),
+            Platform::Discord,
+            long_content,
+        );
+        let err = ch.send(msg).await.unwrap_err();
+        assert!(
+            err.to_string().contains("2000-character limit"),
+            "expected 2000-character limit error, got: {err}"
+        );
     }
 }

@@ -4,7 +4,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::{Stream, StreamExt};
+use futures::Stream;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::{
     error::ProviderError,
@@ -15,9 +16,10 @@ use crate::{
 };
 
 pub use format::OpenAIFormat;
+use crate::stream_utils::parse_sse_stream;
 
 pub struct OpenAIProvider {
-    pub(crate) api_key: String,
+    pub(crate) api_key: SecretString,
     pub(crate) model: String,
     pub(crate) base_url: String,
     pub(crate) transport: Arc<dyn HttpTransport>,
@@ -27,7 +29,7 @@ pub struct OpenAIProvider {
 impl OpenAIProvider {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SecretString::new(api_key.into()),
             model: model.into(),
             base_url: "https://api.openai.com/v1".to_string(),
             transport: Arc::new(DefaultHttpTransport::new("https://api.openai.com")),
@@ -81,7 +83,7 @@ impl OpenAIProvider {
         vec![
             (
                 "Authorization".to_string(),
-                format!("Bearer {}", self.api_key),
+                format!("Bearer {}", self.api_key.expose_secret()),
             ),
             ("Content-Type".to_string(), "application/json".to_string()),
         ]
@@ -138,28 +140,7 @@ impl LLMProvider for OpenAIProvider {
             .collect();
         let byte_stream = self.transport.post_stream(&url, &headers, &body).await?;
 
-        let delta_stream = byte_stream.flat_map(move |chunk_result| {
-            let deltas: Vec<Result<Delta, ProviderError>> = match chunk_result {
-                Err(e) => vec![Err(e)],
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    text.lines()
-                        .filter_map(|line| {
-                            let trimmed = line.trim();
-                            if trimmed.is_empty() {
-                                return None;
-                            }
-                            match OpenAIFormat::parse_stream_chunk(trimmed.as_bytes()) {
-                                Ok(Some(delta)) => Some(Ok(delta)),
-                                Ok(None) => None,
-                                Err(e) => Some(Err(ProviderError::Serialization(e.to_string()))),
-                            }
-                        })
-                        .collect()
-                }
-            };
-            futures::stream::iter(deltas)
-        });
+        let delta_stream = parse_sse_stream::<OpenAIFormat>(byte_stream);
 
         Ok(Box::pin(delta_stream))
     }
@@ -172,28 +153,28 @@ mod tests {
 
     #[test]
     fn test_openai_provider_new() {
-        let p = OpenAIProvider::new("sk-test", "gpt-4o");
-        assert_eq!(p.api_key, "sk-test");
+        let p = OpenAIProvider::new("test-key-placeholder", "gpt-4o");
+        assert_eq!(p.api_key.expose_secret(), "test-key-placeholder");
         assert_eq!(p.model, "gpt-4o");
         assert!(p.retry_config().is_none());
     }
 
     #[test]
     fn test_openai_provider_id() {
-        let p = OpenAIProvider::new("key", "gpt-4o");
+        let p = OpenAIProvider::new("test-key-placeholder", "gpt-4o");
         assert_eq!(p.provider_id(), "openai");
     }
 
     #[test]
     fn test_openai_model_id() {
-        let p = OpenAIProvider::new("key", "gpt-4o-mini");
+        let p = OpenAIProvider::new("test-key-placeholder", "gpt-4o-mini");
         assert_eq!(p.model_id(), "gpt-4o-mini");
     }
 
     #[test]
     fn test_openai_provider_with_retry() {
         let config = RetryConfig::new().with_max_retries(5);
-        let p = OpenAIProvider::new("sk-test", "gpt-4o").with_retry(config);
+        let p = OpenAIProvider::new("test-key-placeholder", "gpt-4o").with_retry(config);
         assert_eq!(p.retry_config().unwrap().max_retries, 5);
     }
 }

@@ -45,6 +45,10 @@ pub enum WebhookError {
     #[error("webhook shutdown failed: {0}")]
     ShutdownFailed(String),
 
+    /// Request body is empty (HMAC verification requires a non-empty body).
+    #[error("request body is empty")]
+    EmptyBody,
+
     /// Internal error.
     #[error("internal error: {0}")]
     Internal(String),

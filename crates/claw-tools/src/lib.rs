@@ -11,7 +11,7 @@
 //! - [`PermissionSet`] - Permissions required by tools
 //! - [`ToolContext`] - Execution context passed to tools
 //! - [`ToolResult`] - Result type for tool execution
-//! - [`HotLoader`] - Hot-reloading for tool scripts
+//! - [`HotReloadProcessor`] - Hot-reloading for tool scripts (requires ScriptEngine)
 //!
 //! # Example
 //!
@@ -53,8 +53,9 @@
 //! ```
 
 pub mod audit;
+#[cfg(feature = "builtins")]
+pub mod builtins;
 pub mod error;
-pub mod hot_loader;
 pub mod hot_reload;
 pub mod registry;
 pub mod traits;
@@ -62,10 +63,8 @@ pub mod types;
 
 pub use audit::{AuditEvent, AuditLogConfig, AuditLogWriter, AuditLogWriterHandle};
 pub use error::{RegistryError, ValidationError};
-#[allow(deprecated)]
-pub use hot_loader::HotLoader;
 pub use registry::ToolRegistry;
-pub use traits::Tool;
+pub use traits::{Tool, ToolEventPublisher, NoopToolEventPublisher};
 pub use types::{
     FsPermissions, HotLoadingConfig, LoadedToolMeta, LoadError, LogEntry, NetworkPermissions,
     PermissionSet, ScriptLanguage, SubprocessPolicy, ToolContext, ToolError, ToolErrorCode, ToolMeta,

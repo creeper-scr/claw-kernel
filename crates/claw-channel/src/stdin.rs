@@ -25,6 +25,9 @@ pub struct StdinChannel {
     rx: Mutex<mpsc::Receiver<ChannelMessage>>,
     connected: Arc<AtomicBool>,
     task_handle: Mutex<Option<JoinHandle<()>>>,
+    /// Maximum time to wait for the next inbound message.
+    /// A value of `Duration::ZERO` means wait indefinitely (original behaviour).
+    recv_timeout: std::time::Duration,
 }
 
 impl StdinChannel {
@@ -37,7 +40,21 @@ impl StdinChannel {
             rx: Mutex::new(rx),
             connected: Arc::new(AtomicBool::new(false)),
             task_handle: Mutex::new(None),
+            recv_timeout: std::time::Duration::ZERO,
         }
+    }
+
+    /// Set the maximum time to wait for the next inbound message.
+    ///
+    /// When set to a non-zero duration, `recv()` returns
+    /// `Err(ChannelError::ReceiveFailed("recv timeout"))` if no message
+    /// arrives within the deadline.
+    ///
+    /// A value of `Duration::ZERO` (the default) disables the timeout so
+    /// that `recv()` blocks indefinitely, preserving the original behaviour.
+    pub fn with_recv_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.recv_timeout = timeout;
+        self
     }
 
     /// Inject a message directly into the queue (test helper).
@@ -113,13 +130,22 @@ impl Channel for StdinChannel {
     }
 
     /// Receive the next message from the internal queue.
+    ///
+    /// If `recv_timeout` is non-zero, returns `Err(ReceiveFailed)` if no
+    /// message arrives within the configured deadline.
     async fn recv(&self) -> Result<ChannelMessage, ChannelError> {
-        self.rx
-            .lock()
-            .await
-            .recv()
-            .await
-            .ok_or_else(|| ChannelError::ReceiveFailed("disconnected".to_string()))
+        let recv_fut = async { self.rx.lock().await.recv().await };
+        if self.recv_timeout.is_zero() {
+            // FIX-17: original behaviour — block indefinitely.
+            recv_fut
+                .await
+                .ok_or_else(|| ChannelError::ReceiveFailed("disconnected".to_string()))
+        } else {
+            tokio::time::timeout(self.recv_timeout, recv_fut)
+                .await
+                .map_err(|_| ChannelError::ReceiveFailed("recv timeout".to_string()))?
+                .ok_or_else(|| ChannelError::ReceiveFailed("disconnected".to_string()))
+        }
     }
 }
 

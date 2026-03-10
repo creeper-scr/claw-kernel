@@ -1,16 +1,21 @@
 # Known Issues — claw-kernel v1.0.0
 
-## KI-001: Sandbox backends are stub implementations
+## KI-001: Windows sandbox is stub implementation
 
 **Severity**: Medium
-**Affects**: Linux, macOS, Windows
+**Affects**: Windows
 
-All three platform sandbox backends (seccomp, Seatbelt, AppContainer)
-store configuration but do not enforce it in v1.0.0.
-Safe Mode filesystem/network rules are NOT enforced at the OS level.
+The Windows sandbox backend (AppContainer) stores configuration but does not
+enforce it in v1.0.0. Linux (seccomp-bpf) and macOS (Seatbelt) sandbox
+backends are fully implemented and enforce restrictions.
 
-**Mitigation**: Run agents in separate processes and use OS-level controls.
-**Target fix**: v1.5.0 (Linux seccomp-bpf full implementation).
+**Status per platform:**
+- ✅ Linux: Full seccomp-bpf + namespaces implementation
+- ✅ macOS: Full Seatbelt sandbox profile implementation  
+- ⚠️ Windows: Stub implementation (returns handle without enforcing limits)
+
+**Mitigation**: On Windows, run agents in separate processes and use OS-level controls.
+**Target fix**: v1.5.0 (Windows sandbox full implementation).
 
 ## KI-002: Windows claw-script not tested in CI
 

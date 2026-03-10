@@ -89,7 +89,8 @@ impl RetryConfig {
             0
         };
 
-        Duration::from_millis(std::cmp::max(delay_ms, jitter))
+        let total = std::cmp::min(delay_ms + jitter, self.max_delay.as_millis() as u64);
+        Duration::from_millis(total)
     }
 }
 

@@ -50,12 +50,16 @@
 
 #![warn(missing_docs)]
 
+pub mod channel_registry;
 pub mod error;
+pub mod event_publisher;
 pub mod handler;
 pub mod protocol;
 pub mod server;
 pub mod session;
+pub mod tool_bridge;
 
+pub use channel_registry::ChannelRegistry;
 pub use error::ServerError;
 pub use server::{KernelServer, ProviderConfig, ServerConfig};
 pub use session::SessionManager;

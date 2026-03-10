@@ -71,6 +71,8 @@ Agents register themselves in a filesystem directory:
 
 ### Message Protocol
 
+> **Implementation Note (v1.0.0)**: The actual implementation evolved from this design. See [Architecture Overview](../architecture/overview.md) and [Crate Map](../architecture/crate-map.md) for current A2AMessage definition.
+
 ```rust
 pub struct A2AMessage {
     pub from: AgentId,

@@ -1,8 +1,8 @@
 ---
 title: Extension Capabilities Guide
 description: Extension points and runtime evolution guide
-status: design-phase
-version: "0.1.0"
+status: implemented
+version: "1.0.0"
 last_updated: "2026-03-01"
 language: en
 ---
@@ -13,7 +13,7 @@ language: en
 
 claw-kernel provides **infrastructure** for building extensible agents. This guide explains the capabilities the kernel offers at Layer 2 (Agent Kernel Protocol) and Layer 3 (Extension Foundation).
 
-> [Warning]  **Note**: This guide shows the **target API design**. The `claw-kernel` crate is not yet implemented.
+> [Info] **Note**: This guide documents the implemented API in v1.0.0.
 
 ---
 

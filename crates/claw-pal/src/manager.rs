@@ -65,6 +65,7 @@ fn send_windows_signal(_pid: u32, _signal: ProcessSignal) -> Result<(), ProcessE
     Ok(())
 }
 
+#[async_trait::async_trait]
 impl ProcessManager for TokioProcessManager {
     /// Spawn a new process with the given configuration.
     async fn spawn(&self, config: ProcessConfig) -> Result<ProcessHandle, ProcessError> {
@@ -89,6 +90,28 @@ impl ProcessManager for TokioProcessManager {
             .ok_or_else(|| ProcessError::SpawnFailed("failed to obtain PID".to_string()))?;
 
         let name = config.program.clone();
+
+        // Guard against PID reuse: check if this PID is already tracked.
+        if self.children.contains_key(&pid) {
+            tracing::warn!(pid = pid, "PID already tracked; possible PID reuse or stale entry");
+            // Check whether the old process has already exited.
+            let still_running = {
+                let old_entry = self.children.get_mut(&pid).unwrap();
+                let mut old_child = old_entry.value().try_lock();
+                match old_child {
+                    Ok(ref mut child) => child.try_wait().ok().flatten().is_none(),
+                    Err(_) => true, // Mutex is locked — assume process is still running.
+                }
+            };
+            if still_running {
+                // Old process is still running — refuse the insert.
+                return Err(ProcessError::SpawnFailed(
+                    format!("PID {} collision: previous process still running", pid)
+                ));
+            }
+            self.children.remove(&pid);
+        }
+
         self.children.insert(pid, Mutex::new(child));
 
         Ok(ProcessHandle { pid, name })
@@ -115,29 +138,41 @@ impl ProcessManager for TokioProcessManager {
         #[cfg(windows)]
         let _ = send_windows_signal(pid, ProcessSignal::Term);
 
-        // Retrieve the child entry; if it is not found the process was
-        // already waited on.
-        let entry = self.children.get(&pid).ok_or(ProcessError::NotFound(pid))?;
-
-        let mut child = entry.lock().await;
-
-        // Wait up to grace_period for the process to exit on its own.
-        let timed_out = tokio::time::timeout(grace_period, child.wait())
-            .await
-            .is_err();
-
-        if timed_out {
-            // Force-kill and wait to reap the zombie.
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+        // Poll every 10 ms to detect early exit, then force-kill on timeout.
+        let deadline = tokio::time::Instant::now() + grace_period;
+        loop {
+            {
+                let entry = self
+                    .children
+                    .get_mut(&pid)
+                    .ok_or(ProcessError::NotFound(pid))?;
+                let mut child = entry.lock().await;
+                if let Ok(Some(_)) = child.try_wait() {
+                    drop(child);
+                    drop(entry);
+                    self.children.remove(&pid);
+                    return Ok(());
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
-        drop(child);
-        drop(entry);
-
-        // Remove from the map to avoid holding a dead entry.
+        // Grace period expired — force-kill.
+        {
+            let entry = self
+                .children
+                .get(&pid)
+                .ok_or(ProcessError::NotFound(pid))?;
+            let mut child = entry.lock().await;
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            drop(child);
+            drop(entry);
+        }
         self.children.remove(&pid);
-
         Ok(())
     }
 

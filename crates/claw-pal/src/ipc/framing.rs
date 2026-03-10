@@ -7,6 +7,7 @@
 //! Maximum frame payload size: 16 MiB (0x100_0000 bytes).
 
 use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::error::IpcError;
 
@@ -14,7 +15,7 @@ use crate::error::IpcError;
 pub const DEFAULT_MAX_FRAME_SIZE: usize = 0x100_0000;
 
 /// Maximum allowed payload size (configurable).
-static mut MAX_FRAME_SIZE: usize = DEFAULT_MAX_FRAME_SIZE;
+static MAX_FRAME_SIZE: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_FRAME_SIZE);
 
 /// Frame configuration builder.
 ///
@@ -24,27 +25,17 @@ pub struct FrameConfig;
 impl FrameConfig {
     /// Get the current maximum frame size.
     pub fn max_frame_size() -> usize {
-        unsafe { MAX_FRAME_SIZE }
+        MAX_FRAME_SIZE.load(Ordering::Relaxed)
     }
-
-    /// Set the maximum frame size.
-    ///
-    /// # Safety
-    /// This function is unsafe because it modifies a global static variable.
-    /// It should only be called during initialization before any IPC operations.
+    /// Set the maximum frame size. Should be called only once during process initialization.
     #[allow(dead_code)]
-    pub(crate) unsafe fn set_max_frame_size(size: usize) {
-        MAX_FRAME_SIZE = size;
+    pub(crate) fn set_max_frame_size(size: usize) {
+        MAX_FRAME_SIZE.store(size, Ordering::Relaxed);
     }
-
-    /// Reset to the default maximum frame size (16 MiB).
-    ///
-    /// # Safety
-    /// This function modifies a global static variable and should only be called
-    /// during initialization before any IPC operations.
+    /// Reset to the default maximum frame size.
     #[allow(dead_code)]
-    pub(crate) unsafe fn reset() {
-        MAX_FRAME_SIZE = DEFAULT_MAX_FRAME_SIZE;
+    pub(crate) fn reset() {
+        MAX_FRAME_SIZE.store(DEFAULT_MAX_FRAME_SIZE, Ordering::Relaxed);
     }
 }
 

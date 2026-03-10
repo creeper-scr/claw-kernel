@@ -13,8 +13,9 @@ name = "claw-kernel-server"
 path = "src/main.rs"
 
 [dependencies]
-claw-server   = { workspace = true }
+claw-server   = { workspace = true, features = ["gemini", "mistral", "azure-openai"] }
 claw-provider = { workspace = true }
+claw-pal      = { workspace = true }
 
 clap          = { version = "4.5", features = ["derive", "env"] }
 tokio         = { workspace = true }

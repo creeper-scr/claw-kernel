@@ -4,7 +4,6 @@ description: PAL architecture, core traits, and platform-specific implementation
 status: implemented
 version: "1.0.0"
 last_updated: "2026-03-09"
-version: "1.0.0"
 language: en
 ---
 
@@ -764,6 +763,11 @@ cargo test --features sandbox-tests
 - **Process management**: ✅ **Full implementation** via Tokio
 - **AppContainer sandbox**: ⚠️ **Stub implementation** — returns handle without actual sandbox enforcement
 
+> ⚠️ **v1.0.0 Status**: `WindowsSandbox` is a stub. Configuration is accepted but
+> no OS-level restrictions are enforced. For security-sensitive deployments on Windows,
+> run agents inside Windows containers (Docker/WSL2) or virtual machines.
+> AppContainer support is planned for v1.1.0.
+
 **Windows Sandbox Limitations:**
 The Windows sandbox is currently a stub that stores configuration but does not enforce restrictions.
 For production use on Windows, additional security measures are recommended:
@@ -809,6 +813,158 @@ To add support for a new platform (e.g., FreeBSD, Android):
 3. **Add platform to CI matrix**
 
 4. **Document in `docs/platform/freebsd.md`**
+
+---
+
+## Trait Design Principles
+
+The PAL layer follows specific design principles for its core traits:
+
+### 1. Object Safety
+
+All core traits are object-safe (can be used as `dyn Trait`):
+
+```rust
+// ✅ Object-safe (methods don't use generic type parameters)
+#[async_trait]
+pub trait ProcessManager: Send + Sync {
+    async fn spawn(&self, config: ProcessConfig) -> Result<ProcessHandle, ProcessError>;
+}
+
+// This enables dependency injection
+pub struct MyComponent {
+    pm: Arc<dyn ProcessManager>,  // Object-safe trait object
+}
+```
+
+### 2. Send + Sync Bounds
+
+All traits require `Send + Sync` for thread-safe usage across async boundaries:
+
+```rust
+pub trait MyPalTrait: Send + Sync {
+    // Methods must be thread-safe
+}
+```
+
+### 3. Associated Types vs Type Parameters
+
+Traits use explicit types rather than associated types for simplicity:
+
+```rust
+// ✅ Simple error types
+#[async_trait]
+pub trait IpcTransport: Send + Sync {
+    async fn send(&self, msg: &[u8]) -> Result<(), IpcError>;
+    async fn recv(&self) -> Result<Vec<u8>, IpcError>;
+}
+```
+
+### 4. Builder Pattern Support
+
+Types support method chaining for ergonomic configuration:
+
+```rust
+let config = ProcessConfig::new("worker".to_string())
+    .with_arg("--verbose".to_string())
+    .with_env("RUST_LOG".to_string(), "debug".to_string())
+    .with_working_dir(PathBuf::from("/tmp"));
+```
+
+---
+
+## Dependency Injection
+
+PAL is designed for dependency injection, enabling testability:
+
+### Example: Testing with MockProcessManager
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    struct MockProcessManager {
+        mock_pid: AtomicU32,
+    }
+    
+    #[async_trait]
+    impl ProcessManager for MockProcessManager {
+        async fn spawn(&self, _config: ProcessConfig) -> Result<ProcessHandle, ProcessError> {
+            let pid = self.mock_pid.fetch_add(1, Ordering::SeqCst);
+            Ok(ProcessHandle { pid, name: "mock".to_string() })
+        }
+        
+        async fn terminate(&self, _handle: ProcessHandle, _grace: Duration) -> Result<(), ProcessError> {
+            Ok(())
+        }
+        
+        // ... other methods
+    }
+    
+    #[tokio::test]
+    async fn test_with_mock() {
+        let mock_pm = Arc::new(MockProcessManager::default());
+        let orchestrator = AgentOrchestrator::new(event_bus, mock_pm);
+        
+        // Test without spawning real processes
+        let handle = orchestrator.spawn(config, process_config).await.unwrap();
+        assert_eq!(handle.agent_id.as_str(), "test-agent");
+    }
+}
+```
+
+### Benefits
+
+| Benefit | Description |
+|---------|-------------|
+| **Testability** | Mock implementations for unit tests |
+| **Flexibility** | Swap implementations without code changes |
+| **Composability** | Layer multiple implementations |
+| **Platform Abstraction** | Same code runs on all platforms |
+
+---
+
+## Mock Implementations
+
+PAL provides mock implementations for testing:
+
+### MockIpcTransport
+
+```rust
+use claw_pal::traits::ipc::MockIpcTransport;
+
+let transport = MockIpcTransport::new("/tmp/test".to_string());
+transport.send(b"test").await?;
+let msg = transport.recv().await?;
+assert_eq!(msg, vec![1, 2, 3, 4]);  // Returns fixed data
+```
+
+### Creating Custom Mocks
+
+```rust
+pub struct MockSandboxBackend {
+    config: SandboxConfig,
+}
+
+impl SandboxBackend for MockSandboxBackend {
+    fn create(config: SandboxConfig) -> Result<Self, SandboxError> {
+        Ok(Self { config })
+    }
+    
+    fn restrict_filesystem(&mut self, _whitelist: &[PathBuf]) -> &mut Self {
+        self
+    }
+    
+    fn apply(self) -> Result<SandboxHandle, SandboxError> {
+        Ok(SandboxHandle {
+            platform_handle: PlatformHandle::Unsupported,
+        })
+    }
+    
+    // ... other methods
+}
+```
 
 ---
 

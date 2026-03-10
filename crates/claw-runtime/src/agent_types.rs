@@ -5,7 +5,7 @@ use std::collections::HashMap;
 // ─── AgentId ──────────────────────────────────────────────────────────────────
 
 /// Unique agent identifier (UUID-style string).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct AgentId(pub String);
 
 impl AgentId {
@@ -14,11 +14,11 @@ impl AgentId {
         Self(id.into())
     }
 
-    /// Generate a new unique `AgentId` using a nanosecond-based hex token.
-    ///
-    /// No external `uuid` / `rand` dependency required.
+    /// Generate a new unique `AgentId` using a cryptographically secure random token.
     pub fn generate() -> Self {
-        Self(format!("agent-{}", rand_hex(16)))
+        use rand::Rng;
+        let random: u128 = rand::thread_rng().gen();
+        Self(format!("agent-{:032x}", random))
     }
 
     /// Return the underlying string slice.
@@ -31,38 +31,6 @@ impl std::fmt::Display for AgentId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
-}
-
-/// Simple non-cryptographic hex token derived from the current nanosecond
-/// timestamp, atomic counter, process ID, and thread ID.
-/// Guarantees uniqueness within a single process lifetime even on very fast
-/// hardware where nanos may repeat, and across different processes/threads.
-fn rand_hex(n: usize) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
-
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let pid = std::process::id() as u128;
-
-    // Hash thread ID to get a stable u64 value (thread_id_value is unstable)
-    let thread_id = std::thread::current().id();
-    let mut hasher = DefaultHasher::new();
-    thread_id.hash(&mut hasher);
-    let tid = hasher.finish() as u128;
-
-    // Mix nanos with sequence number, PID, and TID to eliminate collisions.
-    let raw = t.as_nanos()
-        ^ ((seq as u128).wrapping_mul(0x9e37_79b9_7f4a_7c15))
-        ^ (pid << 48)
-        ^ (tid << 32);
-    format!("{:0>width$x}", raw & ((1u128 << (n * 4)) - 1), width = n)
 }
 
 // ─── AgentConfig ──────────────────────────────────────────────────────────────
@@ -142,19 +110,6 @@ pub struct AgentInfo {
 pub struct AgentHandle {
     pub agent_id: AgentId,
     pub event_bus: crate::event_bus::EventBus,
-}
-
-// ─── A2AMessage ───────────────────────────────────────────────────────────────
-
-/// Agent-to-Agent message envelope (serialized over IPC).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct A2AMessage {
-    pub from: AgentId,
-    pub to: AgentId,
-    /// Unique identifier for request/response correlation.
-    pub correlation_id: String,
-    /// Arbitrary JSON payload.
-    pub payload: serde_json::Value,
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

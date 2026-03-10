@@ -2,7 +2,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::{Stream, StreamExt};
+use futures::Stream;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::{
     error::ProviderError,
@@ -14,8 +15,9 @@ use crate::{
     types::{CompletionResponse, Delta, Message, Options},
 };
 
+use crate::stream_utils::parse_sse_stream;
 pub struct DeepSeekProvider {
-    api_key: String,
+    api_key: SecretString,
     model: String,
     transport: Arc<dyn HttpTransport>,
     retry_config: Option<RetryConfig>,
@@ -24,7 +26,7 @@ pub struct DeepSeekProvider {
 impl DeepSeekProvider {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SecretString::new(api_key.into()),
             model: model.into(),
             transport: Arc::new(DefaultHttpTransport::new("https://api.deepseek.com")),
             retry_config: None,
@@ -40,7 +42,7 @@ impl DeepSeekProvider {
         transport: Arc<dyn HttpTransport>,
     ) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SecretString::new(api_key.into()),
             model: model.into(),
             transport,
             retry_config: None,
@@ -76,7 +78,7 @@ impl DeepSeekProvider {
         vec![
             (
                 "Authorization".to_string(),
-                format!("Bearer {}", self.api_key),
+                format!("Bearer {}", self.api_key.expose_secret()),
             ),
             ("Content-Type".to_string(), "application/json".to_string()),
         ]
@@ -138,28 +140,7 @@ impl LLMProvider for DeepSeekProvider {
             .collect();
         let byte_stream = self.transport.post_stream(&url, &headers, &body).await?;
 
-        let delta_stream = byte_stream.flat_map(move |chunk_result| {
-            let deltas: Vec<Result<Delta, ProviderError>> = match chunk_result {
-                Err(e) => vec![Err(e)],
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    text.lines()
-                        .filter_map(|line| {
-                            let trimmed = line.trim();
-                            if trimmed.is_empty() {
-                                return None;
-                            }
-                            match OpenAIFormat::parse_stream_chunk(trimmed.as_bytes()) {
-                                Ok(Some(delta)) => Some(Ok(delta)),
-                                Ok(None) => None,
-                                Err(e) => Some(Err(ProviderError::Other(e.to_string()))),
-                            }
-                        })
-                        .collect()
-                }
-            };
-            futures::stream::iter(deltas)
-        });
+        let delta_stream = parse_sse_stream::<OpenAIFormat>(byte_stream);
 
         Ok(Box::pin(delta_stream))
     }
@@ -172,8 +153,8 @@ mod tests {
 
     #[test]
     fn test_deepseek_provider_new() {
-        let p = DeepSeekProvider::new("ds-key", "deepseek-chat");
-        assert_eq!(p.api_key, "ds-key");
+        let p = DeepSeekProvider::new("test-key-placeholder", "deepseek-chat");
+        assert_eq!(p.api_key.expose_secret(), "test-key-placeholder");
         assert_eq!(p.model, "deepseek-chat");
         assert_eq!(p.provider_id(), "deepseek");
         assert_eq!(p.model_id(), "deepseek-chat");
@@ -183,21 +164,21 @@ mod tests {
     #[test]
     fn test_deepseek_provider_with_retry() {
         let config = RetryConfig::new().with_max_retries(3);
-        let p = DeepSeekProvider::new("ds-key", "deepseek-chat").with_retry(config);
+        let p = DeepSeekProvider::new("test-key-placeholder", "deepseek-chat").with_retry(config);
         assert_eq!(p.retry_config().unwrap().max_retries, 3);
     }
 
     /// 验证 DeepSeek base URL 固定为 api.deepseek.com
     #[test]
     fn test_deepseek_base_url() {
-        let p = DeepSeekProvider::new("key", "deepseek-reasoner");
+        let p = DeepSeekProvider::new("test-key-placeholder", "deepseek-reasoner");
         assert_eq!(p.base_url(), "https://api.deepseek.com");
     }
 
     /// 验证请求头包含 Bearer token 和 Content-Type
     #[test]
     fn test_deepseek_build_headers() {
-        let p = DeepSeekProvider::new("my-secret-key", "deepseek-chat");
+        let p = DeepSeekProvider::new("test-key-placeholder", "deepseek-chat");
         let headers = p.build_headers();
         let auth = headers
             .iter()
@@ -207,15 +188,15 @@ mod tests {
             .iter()
             .find(|(k, _)| k == "Content-Type")
             .map(|(_, v)| v.as_str());
-        assert_eq!(auth, Some("Bearer my-secret-key"));
+        assert_eq!(auth, Some("Bearer test-key-placeholder"));
         assert_eq!(content_type, Some("application/json"));
     }
 
     /// 验证 provider_id 固定为 "deepseek"（不随 model 变化）
     #[test]
     fn test_deepseek_provider_id_is_stable() {
-        let p1 = DeepSeekProvider::new("key", "deepseek-chat");
-        let p2 = DeepSeekProvider::new("key", "deepseek-reasoner");
+        let p1 = DeepSeekProvider::new("test-key-placeholder", "deepseek-chat");
+        let p2 = DeepSeekProvider::new("test-key-placeholder", "deepseek-reasoner");
         assert_eq!(p1.provider_id(), "deepseek");
         assert_eq!(p2.provider_id(), "deepseek");
     }
@@ -223,7 +204,7 @@ mod tests {
     /// 验证 model_id 返回构造时传入的模型名
     #[test]
     fn test_deepseek_model_id() {
-        let p = DeepSeekProvider::new("key", "deepseek-reasoner");
+        let p = DeepSeekProvider::new("test-key-placeholder", "deepseek-reasoner");
         assert_eq!(p.model_id(), "deepseek-reasoner");
     }
 

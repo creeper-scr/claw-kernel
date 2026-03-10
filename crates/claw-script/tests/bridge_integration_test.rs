@@ -80,14 +80,18 @@ fn make_event_bus() -> Arc<EventBus> {
 }
 
 fn make_orchestrator() -> Arc<AgentOrchestrator> {
-    Arc::new(AgentOrchestrator::new(Arc::new(EventBus::new())))
+    use claw_pal::TokioProcessManager;
+    
+    Arc::new(AgentOrchestrator::new(
+        Arc::new(EventBus::new()),
+        Arc::new(TokioProcessManager::new())
+    ))
 }
 
 // ─── Dirs Bridge Tests ────────────────────────────────────────────────────────
 
 #[cfg(feature = "engine-lua")]
 #[test]
-#[ignore]
 fn test_dirs_bridge_in_lua_engine() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -111,7 +115,6 @@ fn test_dirs_bridge_in_lua_engine() {
 
 #[cfg(feature = "engine-lua")]
 #[test]
-#[ignore]
 fn test_dirs_bridge_all_methods_in_engine() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -145,7 +148,6 @@ fn test_dirs_bridge_all_methods_in_engine() {
 
 #[cfg(feature = "engine-lua")]
 #[test]
-#[ignore]
 fn test_memory_bridge_set_get_via_engine() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -173,7 +175,6 @@ fn test_memory_bridge_set_get_via_engine() {
 
 #[cfg(feature = "engine-lua")]
 #[test]
-#[ignore]
 fn test_memory_bridge_namespace_isolation() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -206,7 +207,6 @@ fn test_memory_bridge_namespace_isolation() {
 
 #[cfg(feature = "engine-lua")]
 #[test]
-#[ignore]
 fn test_memory_bridge_missing_returns_nil() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -235,7 +235,6 @@ fn test_memory_bridge_missing_returns_nil() {
 
 #[cfg(feature = "engine-lua")]
 #[test]
-#[ignore]
 fn test_events_bridge_emit_and_subscribe() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -268,7 +267,6 @@ fn test_events_bridge_emit_and_subscribe() {
 
 #[cfg(feature = "engine-lua")]
 #[test]
-#[ignore]
 fn test_events_bridge_on_and_poll() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -305,7 +303,6 @@ fn test_events_bridge_on_and_poll() {
 
 #[cfg(feature = "engine-lua")]
 #[test]
-#[ignore]
 fn test_agent_bridge_spawn_and_status() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -332,7 +329,6 @@ fn test_agent_bridge_spawn_and_status() {
 
 #[cfg(feature = "engine-lua")]
 #[test]
-#[ignore]
 fn test_agent_bridge_auto_cleanup() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -370,7 +366,6 @@ fn test_agent_bridge_auto_cleanup() {
 
 #[cfg(feature = "engine-lua")]
 #[test]
-#[ignore]
 fn test_agent_bridge_kill() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {

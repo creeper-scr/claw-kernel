@@ -37,10 +37,10 @@ This ADR separates two scenarios that must not be conflated:
 
 | Scenario | Who writes the code | Language | Purpose |
 |----------|---------------------|----------|---------|
-| **Agent self-evolution** | The agent itself, at runtime | Lua / JS / Python (embedded) | Agent generates and executes new tools/behaviors |
+| **Agent self-evolution** | The agent itself, at runtime | Lua / JS (embedded) | Agent generates and executes new tools/behaviors |
 | **Application development** | Human developers | Any language | Build Openclaw-equivalent applications |
 
-**Embedded script engines (`claw-script`) address scenario 1 only.** Lua, V8, and PyO3 run agent-generated code inside the kernel process. They are not the right mechanism for building full applications in other languages.
+**Embedded script engines (`claw-script`) address scenario 1 only.** Lua and V8 run agent-generated code inside the kernel process. They are not the right mechanism for building full applications in other languages.
 
 ### Why embedded scripts are insufficient for scenario 2
 

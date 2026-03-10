@@ -50,7 +50,7 @@ Script Layer = Userland programs (hot-swappable, extensible)
 
 1. **Immutable Core, Mutable Scripts**
    - Rust code is stable, tested, and never hot-patched
-   - All extensible logic lives in scripts (Lua/Deno/Python)
+   - All extensible logic lives in scripts (Lua/Deno)
 
 2. **Cross-Platform First**
    - No Unix-isms, no Windows-isms in core code
@@ -76,7 +76,7 @@ Script Layer = Userland programs (hot-swappable, extensible)
 │  ┌─────────────────────────────────────────────────────┐│
 │  │  Layer 3: Extension Foundation                      ││
 │  │  Extension Foundation · Hot-loading · Dynamic Reg.  ││
-│  │  Lua (default) · Deno/V8 (full) · PyO3 (ML)         ││
+│  │  Lua (default) · Deno/V8 (full)                     ││
 │  │                                                     ││
 │  │  Architecture: Independent + Bridge (via IPC)       ││
 │  │  - claw-script runs in separate per-Agent process   ││
@@ -268,22 +268,34 @@ pub trait MessageFormat: Send + Sync {
 
 **Level 2: HttpTransport (Reusable Logic)**
 
+> **Note:** This trait uses RPITIT (Return Position Impl Trait In Trait), a Rust 2021+ feature. This allows generic async methods without `async_trait`.
+
 ```rust
-#[async_trait]
 pub trait HttpTransport: Send + Sync {
     fn base_url(&self) -> &str;
-    fn auth_headers(&self) -> HeaderMap;
-    fn http_client(&self) -> &Client;
+    fn auth_headers(&self) -> reqwest::header::HeaderMap;
+    fn http_client(&self) -> &reqwest::Client;
     
-    async fn request<F: MessageFormat>(
-        &self, messages: &[Message], opts: &Options
-    ) -> Result<CompletionResponse, ProviderError> {
-        // Generic HTTP logic reused by ALL providers
-    }
+    /// Generic request using MessageFormat — reused by ALL providers.
+    fn request<F: MessageFormat>(
+        &self,
+        messages: &[Message],
+        opts: &Options,
+    ) -> impl Future<Output = Result<CompletionResponse, ProviderError>> + Send
+    where
+        <F as MessageFormat>::Request: Send;
     
-    async fn stream_request<F: MessageFormat>(
-        &self, messages: &[Message], opts: &Options
-    ) -> Result<BoxStream<'static, Result<Delta, ProviderError>>, ProviderError>;
+    /// Generic streaming request.
+    fn stream_request<F: MessageFormat>(
+        &self,
+        messages: &[Message],
+        opts: &Options,
+    ) -> impl Future<
+        Output = Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError>,
+    > + Send
+    where
+        <F as MessageFormat>::Request: Send,
+        <F as MessageFormat>::Error: std::error::Error + Send + Sync + 'static;
 }
 ```
 
@@ -339,6 +351,23 @@ pub struct Options {
     pub tools: Option<Vec<ToolDef>>,        // Available tools for function calling
     pub timeout_seconds: u64,               // Request timeout in seconds, default: 60
     pub max_retries: u32,                   // Max retry attempts, default: 3
+}
+
+impl Options {
+    /// Create new options with the given model.
+    pub fn new(model: impl Into<String>) -> Self {
+        Self {
+            model: model.into(),
+            max_tokens: 4096,
+            temperature: 0.7,
+            stream: false,
+            system: None,
+            stop_sequences: Vec::new(),
+            tools: None,
+            timeout_seconds: 60,
+            max_retries: 3,
+        }
+    }
 }
 
 // Streaming response delta
@@ -432,10 +461,9 @@ pub struct PermissionSet {
     pub subprocess: SubprocessPolicy,
 }
 
-pub enum FsPermissions {
-    ReadOnly(Vec<PathBuf>),                  // Allowlisted read-only paths
-    ReadWrite(Vec<PathBuf>),                 // Allowlisted read-write paths
-    None,                                    // No filesystem access
+pub struct FsPermissions {
+    pub read_paths: HashSet<String>,         // Allowlisted read paths (glob patterns or absolute)
+    pub write_paths: HashSet<String>,        // Allowlisted write paths
 }
 
 pub struct NetworkPermissions {
@@ -457,11 +485,8 @@ impl Default for NetworkPermissions {
 }
 
 pub enum SubprocessPolicy {
-    Allow { 
-        allowed_commands: Vec<String>,       // Allowlisted commands
-        max_concurrent: usize,               // Maximum concurrent subprocesses
-    },
-    Deny,
+    Denied,
+    Allowed,
 }
 
 pub struct ToolRegistry {
@@ -513,7 +538,6 @@ pub enum ToolSource {
 pub enum ScriptLanguage {
     Lua,
     TypeScript,
-    Python,
 }
 
 pub struct HotLoadingConfig {
@@ -684,10 +708,13 @@ pub trait MemoryStore: Send + Sync {
 
 pub struct MemoryItem {
     pub id: MemoryId,
+    pub namespace: String,
     pub content: String,
-    pub score: f32,                         // Cosine similarity
-    pub metadata: serde_json::Value,
-    pub created_at: SystemTime,
+    pub embedding: Option<Vec<f32>>,       // Optional embedding vector
+    pub tags: Vec<String>,
+    pub created_at_ms: u64,                // Unix timestamp in milliseconds
+    pub accessed_at_ms: u64,
+    pub importance: f32,                   // 0.0-1.0, affects retention
 }
 
 pub struct EpisodicEntry {
@@ -735,7 +762,7 @@ Multi-engine support with unified interface. This layer provides the **foundatio
 |--------|-------------|----------|----------|
 | **Lua (mlua)** | ~500KB | Zero deps, fast | Default, simple tools |
 | **Deno/V8** | ~100MB | Full TS/JS, strong sandbox | Complex agents |
-| **PyO3** | Varies | ML ecosystem | Data/ML tools |
+
 
 **Key Capabilities:**
 - **Hot-loading**: Load/unload scripts without restart

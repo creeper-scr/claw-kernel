@@ -40,6 +40,11 @@ use crate::types::{NetRule, ResourceLimits};
 
 use std::path::PathBuf;
 
+/// ⚠️ **Stub implementation (v1.0.0)**: configuration is stored but no sandboxing
+/// restrictions are actually enforced on Windows.
+/// Production deployments on Windows should use containers or VMs for isolation.
+/// AppContainer implementation is planned for v1.1.0.
+///
 /// Windows sandbox implementation using AppContainer (stub).
 ///
 /// Provides process-level isolation through:
@@ -181,10 +186,21 @@ impl SandboxBackend for WindowsSandbox {
             });
         }
 
-        // In Safe mode, return a stub handle
-        // Full implementation would call AppContainer APIs here
-        Ok(SandboxHandle {
-            platform_handle: PlatformHandle::Windows(1),
+        // Safe mode (AppContainer) is NOT implemented — refuse to proceed.
+        // Silently returning a stub handle would create false security assumptions:
+        // callers believe restrictions are active when they are not.
+        tracing::error!(
+            platform = "windows",
+            mode = "Safe",
+            "Windows AppContainer (Safe mode) not implemented until v1.5.0. \
+             Use Power Mode explicitly or wait for v1.5.0. \
+             Refusing to proceed to avoid false security assumptions."
+        );
+        Err(SandboxError::NotSupported {
+            platform: "windows",
+            mode: "Safe",
+            reason: "AppContainer not implemented until v1.5.0",
+            workaround: "Use ExecutionMode::Power explicitly, or wait for v1.5.0",
         })
     }
 }

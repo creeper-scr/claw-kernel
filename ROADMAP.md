@@ -3,7 +3,7 @@ title: claw-kernel Roadmap
 description: Milestone-based roadmap for claw-kernel
 status: v1.0.0-released
 version: "1.0.0"
-last_updated: "2026-03-08"
+last_updated: "2026-03-09"
 language: bilingual
 ---
 
@@ -52,6 +52,7 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
 - [x] Security key validation (`argon2`)
 - [x] Linux and macOS sandbox groundwork
 - [x] Windows IPC skeleton (Named Pipe foundation)
+- [x] Windows Named Pipe IPC (full implementation in claw-pal/src/ipc/)
 
 ### claw-runtime (System Runtime)
 - [x] `EventBus` (Tokio broadcast, capacity 1024)
@@ -95,6 +96,16 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
 - [x] `ScriptEngine` trait + `EngineType` enum
 - [x] `LuaEngine` (mlua 0.9.4, Lua 5.4, spawn_blocking)
 - [x] `ToolsBridge` (tool registry → Lua)
+- [x] All 7 Lua bridges: `tools`, `fs`, `net`, `memory`, `agent`, `events`, `dirs`
+- [x] `V8Engine` (deno_core, ES2022+, TypeScript) — `engine-v8` feature
+- [x] All V8 bridges: `tools`, `fs`, `net`, `memory`, `agent`, `events`, `dirs`
+- [x] Hot-reload support for scripts
+
+### claw-server (KernelServer / IPC Daemon)
+- [x] JSON-RPC 2.0 server over Unix Domain Socket / Named Pipe
+- [x] Session lifecycle: `create_session`, `send_message`, `tool_result`, `destroy_session`
+- [x] Server-push streaming: `chunk`, `tool_call`, `finish` events
+- [x] Tool bridge: exposes host ToolRegistry to IPC sessions
 
 ### claw-kernel (Meta-Crate)
 - [x] Re-exports all sub-crates
@@ -183,16 +194,16 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
 **Rationale:** Per [ADR-011](docs/adr/011-multi-language-ipc-daemon.md), the kernel cannot exist as an isolated Rust library — it requires multi-language support to become a shared ecosystem asset. Non-Rust applications must be able to leverage the kernel's unified AI infrastructure without reimplementation.
 
 **KernelServer (claw-server crate):**
-- [ ] Unix Domain Socket / Named Pipe transport with claw-pal framing
-- [ ] JSON-RPC 2.0 protocol: `create_session`, `send_message`, `tool_result`, `destroy_session`
-- [ ] Server → client streaming: `chunk`, `tool_call`, `finish` events
-- [ ] Session lifecycle management (parallel sessions, isolation)
-- [ ] Integration with existing AgentLoop, Provider, ToolRegistry (no core changes)
+- [x] Unix Domain Socket / Named Pipe transport with claw-pal framing
+- [x] JSON-RPC 2.0 protocol: `create_session`, `send_message`, `tool_result`, `destroy_session`
+- [x] Server → client streaming: `chunk`, `tool_call`, `finish` events
+- [x] Session lifecycle management (parallel sessions, isolation)
+- [x] Integration with existing AgentLoop, Provider, ToolRegistry (no core changes)
 
 **claw-kernel-server binary:**
-- [ ] CLI: `--socket-path`, `--provider`, `--model`, `--power-key`, `--max-sessions`
-- [ ] Graceful shutdown on SIGTERM
-- [ ] Process lifecycle management (systemd / launchd compatible)
+- [x] CLI: `--socket-path`, `--provider`, `--model`, `--power-key`, `--max-sessions`
+- [x] Graceful shutdown on SIGTERM
+- [x] Process lifecycle management (systemd / launchd compatible)
 
 **Design:** The kernel daemon is infrastructure, not a feature. It enables the entire ecosystem (OpenClaw, ZeroClaw, PicoClaw) to unify on one Rust core regardless of implementation language. IPC overhead (~0.001% of LLM latency) is negligible.
 
@@ -218,12 +229,18 @@ See [CHANGELOG.md](CHANGELOG.md) for what shipped in v0.1.0.
 - [ ] Mistral provider
 - [ ] Azure OpenAI provider
 
-### v1.3.0 — Enhanced Scripting
+### v1.3.0 — Enhanced Scripting (Revised)
+
+> **Note:** V8 engine shipped early in v0.1.0 (2026-03-09).
 
 **Target:** 2026 Q4
 
-- [ ] Deno/V8 engine (`engine-v8` feature)
-- [ ] Python engine (`engine-py` feature)
+- [x] **Deno/V8 engine** (`engine-v8` feature) — ✅ Shipped early in v0.1.0 (2026-03-09)
+  - Full ES2022+ JavaScript support
+  - TypeScript transpilation via deno_core
+  - V8 isolate sandboxing (stronger than Lua)
+  - All 7 bridges: `fs`, `net`, `tools`, `dirs`, `memory`, `events`, `agent`
+  - See [ADR-012](docs/adr/012-v8-engine-implementation.md)
 - [x] `AgentBridge` — shipped ahead of schedule in v0.1.0 (see ADR-009)
 - [x] Full `RustBridge` API: `llm`, `tools`, `memory`, `events`, `fs`, `net`, `agent`, `dirs` — all bridges shipped in v0.1.0
 
@@ -280,7 +297,6 @@ Current priority areas to reach v1.0.0:
 
 **Deferred (post-v1.0):**
 - New providers (Gemini, Mistral, Azure)
-- Additional script engines (Deno, Python)
 - GGUF local models
 - Advanced sandbox features
 
@@ -293,7 +309,7 @@ Key architectural choices are recorded as ADRs in [docs/adr/](docs/adr/):
 | ADR | Decision |
 |-----|----------|
 | 001 | 5-layer architecture |
-| 002 | Script engine selection (Lua default, V8/Python optional) |
+| 002 | Script engine selection (Lua default✅, V8✅) |
 | 003 | Security model (Safe/Power dual-mode) |
 | 004 | Hot-loading mechanism |
 | 005 | IPC and multi-agent protocol |
@@ -310,10 +326,10 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 **Current priority areas:**
 - New LLM providers: Gemini, Mistral, local GGUF
-- **Windows Named Pipe IPC support (High Priority)**
+- ~~**Windows Named Pipe IPC support**~~ — ✅ Implemented (claw-pal/src/ipc/)
 - Windows sandbox implementation
-- Deno/V8 engine bridge
-- `claw-server` KernelServer implementation (see ADR-011)
+- ~~Deno/V8 engine~~ — ✅ Implemented (see ADR-012)
+- ~~`claw-server` KernelServer implementation~~ — ✅ Implemented (see ADR-011)
 - Expanded integration test coverage
 
 ---
@@ -331,11 +347,11 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 | 项目 | 状态 |
 |------|------|
 | 架构设计 | ✅ 已完成 |
-| ADR（001-011） | ✅ 001-010 已接受，011 待议 |
+| ADR（001-011） | ✅ 001-011 已接受 |
 | 核心实现（9 个 crate） | ✅ 已完成 |
 | 670+ 个单元+集成测试 | ✅ 全部通过 |
 | Clippy / fmt / 文档检查 | ✅ 干净 |
-| 发布到 crates.io | ⬜ v1.0.0 目标 |
+| 发布到 crates.io | ✅ v1.0.0 |
 
 v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -356,14 +372,15 @@ v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 ### 核心亮点
 
-- [x] **claw-pal**：Unix Domain Socket IPC + Windows Named Pipe 骨架 + 进程管理 + 安全密钥验证
+- [x] **claw-pal**：Unix Domain Socket IPC + Windows Named Pipe 完整实现 + 进程管理 + 安全密钥验证
 - [x] **claw-runtime**：EventBus + AgentOrchestrator + IpcRouter + Runtime
 - [x] **claw-provider**：5 个 LLM Provider（Anthropic/OpenAI/Ollama/DeepSeek/Moonshot）
 - [x] **claw-tools**：工具注册表 + 热加载 + JSON Schema 生成
 - [x] **claw-loop**：环形历史 + 三种停止条件 + Builder
 - [x] **claw-memory**：Ngram 嵌入 + SQLite 检索 + 安全配额存储
 - [x] **claw-channel**：Discord / Webhook / Stdin 三种适配器
-- [x] **claw-script**：Lua 引擎 + ToolsBridge
+- [x] **claw-script**：Lua 引擎 + 全部 7 个 Lua bridge + V8/TypeScript 引擎 + 全部 V8 bridge
+- [x] **claw-server**：JSON-RPC 2.0 KernelServer IPC 守护进程
 - [x] **claw-kernel**：元 crate + prelude
 
 ---
@@ -447,16 +464,16 @@ v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 **设计理由：** 根据 [ADR-011](docs/adr/011-multi-language-ipc-daemon.md)，内核不能作为隔离的 Rust 库而存在 —— 它需要多语言支持才能成为真正的共享生态资产。非 Rust 应用必须能够无需重新实现就利用内核的统一 AI 基础设施。
 
 **KernelServer（claw-server crate）：**
-- [ ] Unix Domain Socket / Named Pipe 传输，使用 claw-pal 帧协议
-- [ ] JSON-RPC 2.0 协议：`create_session`、`send_message`、`tool_result`、`destroy_session`
-- [ ] 服务器推流：`chunk`、`tool_call`、`finish` 事件
-- [ ] 会话生命周期管理（并行会话、隔离）
-- [ ] 与现有 AgentLoop、Provider、ToolRegistry 集成（无核心变更）
+- [x] Unix Domain Socket / Named Pipe 传输，使用 claw-pal 帧协议
+- [x] JSON-RPC 2.0 协议：`create_session`、`send_message`、`tool_result`、`destroy_session`
+- [x] 服务器推流：`chunk`、`tool_call`、`finish` 事件
+- [x] 会话生命周期管理（并行会话、隔离）
+- [x] 与现有 AgentLoop、Provider、ToolRegistry 集成（无核心变更）
 
 **claw-kernel-server 二进制：**
-- [ ] CLI：`--socket-path`、`--provider`、`--model`、`--power-key`、`--max-sessions`
-- [ ] SIGTERM 优雅关闭
-- [ ] 进程生命周期管理（systemd / launchd 兼容）
+- [x] CLI：`--socket-path`、`--provider`、`--model`、`--power-key`、`--max-sessions`
+- [x] SIGTERM 优雅关闭
+- [x] 进程生命周期管理（systemd / launchd 兼容）
 
 **设计原则：** 内核守护进程是基础设施，不是功能。它使得整个生态（OpenClaw、ZeroClaw、PicoClaw）无论使用何种实现语言都能在统一的 Rust 核心上运行。IPC 开销（≈ LLM 延迟的 0.001%）可忽略不计。
 
@@ -486,8 +503,12 @@ v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 
 **目标时间：** 2026 Q4
 
-- [ ] Deno/V8 引擎（`engine-v8` feature）
-- [ ] Python 引擎（`engine-py` feature）
+- [x] **Deno/V8 引擎**（`engine-v8` feature）— ✅ 提前在 v0.1.0 交付（2026-03-09）
+  - 完整 ES2022+ JavaScript 支持
+  - 通过 deno_core 实现 TypeScript 转译
+  - V8 isolate 沙箱（比 Lua 更强）
+  - 全部 7 个 Bridge：`fs`、`net`、`tools`、`dirs`、`memory`、`events`、`agent`
+  - 参见 [ADR-012](docs/adr/012-v8-engine-implementation.md)
 - [x] `AgentBridge` —— v0.1.0 已提前完成（见 ADR-009）
 - [x] 完整 `RustBridge` API：全部 7 个 Bridge 已在 v0.1.0 完成
 
@@ -538,14 +559,13 @@ v0.1.0 详细发布内容见 [CHANGELOG.md](CHANGELOG.md)。
 达到 v1.0.0 的当前优先领域：
 
 1. **文档** —— 示例、指南、rustdoc
-2. **脚本 Bridge** —— DirsBridge（P0）、MemoryBridge（P1）、EventsBridge（P2）
+2. **脚本 Bridge** —— ✅ 全部 7 个 Lua bridge 已完成；✅ 全部 V8 bridge 已完成
 3. **跨平台 CI** —— Windows 测试、macOS CI
 4. **API 审计** —— 确保 semver 合规性
 5. **Provider 测试** —— 全部 5 个 Provider 的集成测试
 
 **推迟（v1.0 之后）：**
 - 新 Provider（Gemini、Mistral、Azure）
-- 额外脚本引擎（Deno、Python）+ AgentBridge（v1.3.0）
-- KernelServer 多语言 IPC 守护进程（v1.4.0，见 ADR-011）
+- ~~KernelServer 多语言 IPC 守护进程~~ —— ✅ 已在 v1.0.0 实现（见 ADR-011）
 - GGUF 本地模型
 - 高级沙箱功能

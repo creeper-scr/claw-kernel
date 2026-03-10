@@ -6,6 +6,9 @@ use std::time::Duration;
 use mlua::{Lua, Result as LuaResult, UserData, UserDataMethods};
 use reqwest::Client;
 
+/// Maximum response body size: 4 MiB.
+const MAX_RESPONSE_BODY_SIZE: usize = 4 * 1024 * 1024;
+
 /// HTTP response wrapper for Lua.
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
@@ -268,10 +271,20 @@ impl NetBridge {
             })
             .collect();
 
-        let body = response
-            .text()
+        let body_bytes = response
+            .bytes()
             .await
             .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+        if body_bytes.len() > MAX_RESPONSE_BODY_SIZE {
+            return Err(format!(
+                "Response body too large: {} bytes (max {} bytes)",
+                body_bytes.len(),
+                MAX_RESPONSE_BODY_SIZE
+            ));
+        }
+
+        let body = String::from_utf8_lossy(&body_bytes).to_string();
 
         Ok(HttpResponse {
             status,
@@ -289,22 +302,24 @@ impl Default for NetBridge {
 
 impl UserData for NetBridge {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
-        methods.add_async_method(
+        methods.add_method(
             "get",
-            |lua, this, (url, headers): (String, Option<mlua::Table>)| async move {
+            |lua, this, (url, headers): (String, Option<mlua::Table>)| {
+                // Note: Called from spawn_blocking context; use block_on for async operations.
                 let header_map = this.parse_headers(lua, headers)?;
-                this.get(&url, Some(header_map))
-                    .await
+                tokio::runtime::Handle::current()
+                    .block_on(this.get(&url, Some(header_map)))
                     .map_err(mlua::Error::runtime)
             },
         );
 
-        methods.add_async_method(
+        methods.add_method(
             "post",
-            |lua, this, (url, body, headers): (String, String, Option<mlua::Table>)| async move {
+            |lua, this, (url, body, headers): (String, String, Option<mlua::Table>)| {
+                // Note: Called from spawn_blocking context; use block_on for async operations.
                 let header_map = this.parse_headers(lua, headers)?;
-                this.post(&url, body, Some(header_map))
-                    .await
+                tokio::runtime::Handle::current()
+                    .block_on(this.post(&url, body, Some(header_map)))
                     .map_err(mlua::Error::runtime)
             },
         );

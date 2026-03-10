@@ -40,6 +40,9 @@ pub enum ProviderError {
 
     #[error("provider error: {0}")]
     Other(String),
+
+    #[error("transport build failed: {0}")]
+    BuildFailed(String),
 }
 
 #[cfg(test)]

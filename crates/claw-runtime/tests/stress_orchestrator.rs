@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use claw_runtime::{AgentConfig, AgentId, AgentOrchestrator, Event, EventBus};
+use claw_pal::TokioProcessManager;
 
 // ─── Agent State Definition for Testing ──────────────────────────────────────
 
@@ -132,10 +133,9 @@ impl Default for AgentStateManager {
 /// 标记为 ignore，因为在全量测试中与其他压力测试相互干扰
 #[tokio::test]
 #[ignore]
-#[ignore]
 async fn test_orchestrator_mass_agent_registration() {
     let bus = Arc::new(EventBus::new());
-    let orchestrator = Arc::new(AgentOrchestrator::new(bus));
+    let orchestrator = Arc::new(AgentOrchestrator::new(bus, Arc::new(TokioProcessManager::new())));
     let state_manager = Arc::new(AgentStateManager::new());
 
     let agent_count = 500;
@@ -192,7 +192,7 @@ async fn test_orchestrator_mass_agent_registration() {
 #[ignore]
 async fn test_orchestrator_state_machine_cycles() {
     let bus = Arc::new(EventBus::new());
-    let orchestrator = Arc::new(AgentOrchestrator::new(bus));
+    let orchestrator = Arc::new(AgentOrchestrator::new(bus, Arc::new(TokioProcessManager::new())));
     let state_manager = Arc::new(AgentStateManager::new());
 
     // 注册一批 Agent
@@ -288,7 +288,7 @@ async fn test_orchestrator_state_machine_cycles() {
 #[ignore]
 async fn test_orchestrator_concurrent_state_transitions() {
     let bus = Arc::new(EventBus::new());
-    let orchestrator = Arc::new(AgentOrchestrator::new(bus));
+    let orchestrator = Arc::new(AgentOrchestrator::new(bus, Arc::new(TokioProcessManager::new())));
     let state_manager = Arc::new(AgentStateManager::new());
 
     // 注册 Agent
@@ -352,7 +352,7 @@ async fn test_orchestrator_concurrent_state_transitions() {
 #[ignore]
 async fn test_orchestrator_memory_usage() {
     let bus = Arc::new(EventBus::new());
-    let orchestrator = Arc::new(AgentOrchestrator::new(bus));
+    let orchestrator = Arc::new(AgentOrchestrator::new(bus, Arc::new(TokioProcessManager::new())));
 
     // 记录初始内存（通过 Agent 数量间接监控）
     let batch_size = 1000;
@@ -418,7 +418,7 @@ async fn test_orchestrator_memory_usage() {
 #[ignore]
 async fn test_orchestrator_extreme_load_consistency() {
     let bus = Arc::new(EventBus::new());
-    let orchestrator = Arc::new(AgentOrchestrator::new(bus));
+    let orchestrator = Arc::new(AgentOrchestrator::new(bus, Arc::new(TokioProcessManager::new())));
     let state_manager = Arc::new(AgentStateManager::new());
 
     let concurrency = 200;
@@ -541,7 +541,7 @@ async fn test_orchestrator_extreme_load_consistency() {
 #[ignore]
 async fn test_orchestrator_all_states_lifecycle() {
     let bus = Arc::new(EventBus::new());
-    let orchestrator = Arc::new(AgentOrchestrator::new(bus));
+    let orchestrator = Arc::new(AgentOrchestrator::new(bus, Arc::new(TokioProcessManager::new())));
     let state_manager = Arc::new(AgentStateManager::new());
 
     // 创建一个 Agent，经历所有 7 个状态
@@ -610,7 +610,7 @@ async fn test_orchestrator_all_states_lifecycle() {
 #[ignore]
 async fn test_orchestrator_register_unregister_race() {
     let bus = Arc::new(EventBus::new());
-    let orchestrator = Arc::new(AgentOrchestrator::new(bus));
+    let orchestrator = Arc::new(AgentOrchestrator::new(bus, Arc::new(TokioProcessManager::new())));
 
     let iterations = 100;
     let concurrency = 50;
@@ -666,7 +666,7 @@ async fn test_orchestrator_register_unregister_race() {
 #[ignore]
 async fn test_orchestrator_event_consistency() {
     let bus = Arc::new(EventBus::new());
-    let orchestrator = Arc::new(AgentOrchestrator::new(Arc::clone(&bus)));
+    let orchestrator = Arc::new(AgentOrchestrator::new(Arc::clone(&bus), Arc::new(TokioProcessManager::new())));
 
     // 订阅事件
     let mut rx = bus.subscribe();
@@ -729,7 +729,7 @@ async fn test_orchestrator_event_consistency() {
 #[ignore]
 async fn test_orchestrator_comprehensive_stress() {
     let bus = Arc::new(EventBus::new());
-    let orchestrator = Arc::new(AgentOrchestrator::new(bus));
+    let orchestrator = Arc::new(AgentOrchestrator::new(bus, Arc::new(TokioProcessManager::new())));
     let state_manager = Arc::new(AgentStateManager::new());
 
     let duration = Duration::from_secs(3);

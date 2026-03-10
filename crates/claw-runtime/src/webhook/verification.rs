@@ -34,6 +34,10 @@ pub fn verify_hmac_sha256(
     body: &[u8],
     signature: &str,
 ) -> Result<(), WebhookError> {
+    if body.is_empty() {
+        return Err(WebhookError::EmptyBody);
+    }
+
     // Remove prefix if present
     let sig_hex = signature
         .strip_prefix("sha256=")
@@ -94,7 +98,7 @@ pub fn compute_hmac_sha256(secret: &str, body: &[u8]) -> Vec<u8> {
     // Outer hash: H((K' ⊕ opad) || inner_hash)
     let mut outer_hasher = Sha256::new();
     outer_hasher.update(&opad);
-    outer_hasher.update(&inner_hash);
+    outer_hasher.update(inner_hash);
     
     outer_hasher.finalize().to_vec()
 }
@@ -173,7 +177,11 @@ mod hex {
 
     #[allow(dead_code)]
     pub fn encode(bytes: &[u8]) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+        bytes.iter().fold(String::new(), |mut acc, b| {
+            use std::fmt::Write;
+            write!(acc, "{:02x}", b).unwrap();
+            acc
+        })
     }
 }
 

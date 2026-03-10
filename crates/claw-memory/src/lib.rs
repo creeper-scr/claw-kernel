@@ -49,4 +49,4 @@ pub use secure::SecureMemoryStore;
 pub use sqlite::{HistoryRow, SqliteHistoryStore, SqliteMemoryStore};
 pub use traits::MemoryStore;
 pub use types::{EpisodeId, EpisodicEntry, EpisodicFilter, MemoryId, MemoryItem};
-pub use worker::{ArchiveRequest, MemoryWorker, MemoryWorkerHandle};
+pub use worker::{ArchiveRequest, EventPublisher, MemoryWorker, MemoryWorkerHandle, NoopEventPublisher};

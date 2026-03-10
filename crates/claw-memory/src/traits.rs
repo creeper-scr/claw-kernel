@@ -6,7 +6,7 @@ use async_trait::async_trait;
 
 /// Persistent memory storage backend.
 ///
-/// The concrete implementation (Phase D) uses SQLite + sqlite-vec.
+/// The concrete implementation uses SQLite with in-process cosine similarity search.
 #[async_trait]
 pub trait MemoryStore: Send + Sync {
     /// Store a memory item. Returns the assigned ID.
@@ -34,6 +34,17 @@ pub trait MemoryStore: Send + Sync {
         filter: &EpisodicFilter,
     ) -> Result<Vec<EpisodicEntry>, MemoryError>;
 
+    /// Searches memory by semantic similarity using cosine distance.
+    ///
+    /// ⚠️ **Performance Warning**: O(n) full-table scan — all embeddings are loaded
+    /// into memory for comparison. Suitable for < 10,000 items.
+    /// For larger datasets, consider using sqlite-vec (tracked in GitHub issue).
+    ///
+    /// # Arguments
+    /// * `query` - The search query text
+    /// * `namespace` - Optional namespace filter
+    /// * `limit` - Maximum number of results to return
+    ///
     /// Semantic search: find items whose embeddings are closest to the query vector.
     /// Returns up to `top_k` results ordered by similarity.
     async fn semantic_search(
@@ -51,16 +62,50 @@ pub trait MemoryStore: Send + Sync {
     /// Total storage used by a namespace, in bytes (approximate).
     async fn namespace_usage(&self, namespace: &str) -> Result<u64, MemoryError>;
 
-    /// Atomically check quota and store if within limit.
+    /// BM25 关键词全文检索（基于 SQLite FTS5 内置 BM25 排名）。
     ///
-    /// This method performs an atomic check-and-store operation:
-    /// 1. Calculates the total size after adding `estimated_size`
-    /// 2. If within `quota_bytes`, stores the item and returns Ok
-    /// 3. If would exceed quota, returns Err(QuotaExceeded) without storing
+    /// 返回内容与 `query` 关键词最相关的 `top_k` 条记忆，按 BM25 分数降序排列。
+    /// 默认实现返回空列表（未实现 FTS5 的后端可选择不覆盖）。
+    async fn keyword_search(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<MemoryItem>, MemoryError> {
+        let _ = (query, top_k);
+        Ok(Vec::new())
+    }
+
+    /// 混合检索：`alpha * 向量相似度 + (1-alpha) * BM25 分数`。
     ///
-    /// The default implementation falls back to non-atomic check_quota + store,
-    /// but concrete implementations (like SQLite) should override this for
-    /// true atomicity using database transactions.
+    /// `alpha` 范围 \[0, 1\]，建议默认 0.7（向量权重更高）。
+    /// 默认实现回退到纯语义搜索（忽略 `alpha` 和 BM25 部分）。
+    async fn hybrid_search(
+        &self,
+        query: &str,
+        query_embedding: &[f32],
+        top_k: usize,
+        alpha: f32,
+    ) -> Result<Vec<MemoryItem>, MemoryError> {
+        // Default: fall back to semantic search only
+        let _ = (query, alpha);
+        self.semantic_search(query_embedding, top_k).await
+    }
+
+    /// Store an item only if it would not exceed the namespace quota.
+    ///
+    /// ⚠️ Default implementation is NOT atomic. Override in production implementations.
+    /// See `SecureMemoryStore` for the recommended atomic pattern.
+    ///
+    /// # Atomicity Note
+    ///
+    /// **The default implementation is not atomic.** It performs a read-check-write
+    /// sequence (`namespace_usage()` → check → `store()`). Concurrent callers may
+    /// each observe available quota and collectively exceed the limit.
+    ///
+    /// `SecureMemoryStore` overrides this with an internal mutex to provide
+    /// practical exclusive access (though not transactional atomicity).
+    ///
+    /// For strict quota enforcement, wrap with `SecureMemoryStore` as the outermost layer.
     ///
     /// # Arguments
     /// * `item` - The memory item to store

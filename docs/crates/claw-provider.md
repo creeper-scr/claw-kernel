@@ -3,7 +3,7 @@ title: claw-provider
 description: LLM provider trait + Anthropic/OpenAI/Ollama implementations
 status: implemented
 version: "0.1.0"
-last_updated: "2026-03-01"
+last_updated: "2026-03-09"
 language: en
 ---
 
@@ -67,7 +67,7 @@ let response = provider.complete(&[
     }
 ], &Default::default()).await?;
 
-println!("{}", response.content);
+println!("{}", response.message.content);
 ```
 
 ---
@@ -149,6 +149,10 @@ pub trait MessageFormat: Send + Sync {
 
 ### Tier 2: HttpTransport (Reusable)
 
+The transport layer is split into two traits for flexibility:
+
+#### `HttpTransport` - Object-safe base trait
+
 ```rust
 #[async_trait]
 pub trait HttpTransport: Send + Sync {
@@ -171,8 +175,13 @@ pub trait HttpTransport: Send + Sync {
         ProviderError,
     >;
 }
+```
 
-/// Extension trait for HttpTransport providing generic request methods.
+#### `HttpTransportExt` - Generic extension trait
+
+This trait provides generic methods that work with any `MessageFormat`. It uses RPITIT (Return Position Impl Trait In Trait) and cannot be made into a trait object.
+
+```rust
 pub trait HttpTransportExt: HttpTransport {
     fn base_url(&self) -> &str;
     fn auth_headers(&self) -> reqwest::header::HeaderMap;
@@ -194,6 +203,11 @@ pub trait HttpTransportExt: HttpTransport {
 }
 ```
 
+**Design Rationale:**
+- `HttpTransport` is object-safe and can be used with `dyn HttpTransport`
+- `HttpTransportExt` provides generic methods using `impl Future` return types
+- Providers implement both traits to get the generic request methods
+
 ### Tier 3: Provider (Configuration Only)
 
 ```rust
@@ -212,7 +226,7 @@ impl LLMProvider for DeepSeekProvider {
         messages: Vec<Message>,
         options: Options,
     ) -> Result<CompletionResponse, ProviderError> {
-        self.request::<OpenAIFormat>(&messages, &options).await
+        self.complete(messages, options).await
     }
     
     async fn complete_stream(
@@ -220,36 +234,12 @@ impl LLMProvider for DeepSeekProvider {
         messages: Vec<Message>,
         options: Options,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError> {
-        self.stream_request::<OpenAIFormat>(&messages, &options).await
-    }
-}
-
-impl HttpTransportExt for DeepSeekProvider {
-    fn base_url(&self) -> &str { self.transport.base_url() }
-    fn auth_headers(&self) -> HeaderMap { self.transport.auth_headers() }
-    fn http_client(&self) -> &Client { self.transport.http_client() }
-}
-
-impl HttpTransport for DeepSeekProvider {
-    async fn post_json(
-        &self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &serde_json::Value,
-    ) -> Result<serde_json::Value, ProviderError> {
-        self.transport.post_json(url, headers, body).await
-    }
-
-    async fn post_stream(
-        &self,
-        url: &str,
-        headers: &[(&str, &str)],
-        body: &serde_json::Value,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<bytes::Bytes, ProviderError>> + Send>>, ProviderError> {
-        self.transport.post_stream(url, headers, body).await
+        self.complete_stream(messages, options).await
     }
 }
 ```
+
+Providers reuse the shared HTTP transport from `DefaultHttpTransport`.
 
 ---
 
@@ -365,33 +355,29 @@ impl MessageFormat for CustomFormat {
 
 ```toml
 [features]
-default = ["openai", "anthropic"]
-
-# OpenAI-compatible providers (all use same OpenAIFormat)
-openai = []
-deepseek = ["openai"]  # Reuses OpenAIFormat
-moonshot = ["openai"]  # Reuses OpenAIFormat
-
-# Anthropic providers
-anthropic = []
-
-# Local models
-ollama = []
-
-# All implemented providers
-full = ["openai", "deepseek", "moonshot", "anthropic", "ollama"]
+default = []
+test-utils = []  # Testing utilities and mock implementations
 ```
+
+> **Note:** All providers (Anthropic, OpenAI, DeepSeek, Moonshot, Ollama) are enabled by default without feature flags. The `test-utils` feature provides mock implementations for testing.
 
 ---
 
 ## Streaming
 
 ```rust
-let mut stream = provider.stream_complete(&messages, &opts).await?;
+let mut stream = provider.complete_stream(messages, opts).await?;
 
 while let Some(delta) = stream.next().await {
-    print!("{}", delta.content);
-    io::stdout().flush()?;
+    match delta {
+        Ok(delta) => {
+            if let Some(content) = delta.content {
+                print!("{}", content);
+                io::stdout().flush()?;
+            }
+        }
+        Err(e) => eprintln!("Stream error: {}", e),
+    }
 }
 ```
 
@@ -402,7 +388,7 @@ while let Some(delta) = stream.next().await {
 ```rust
 use claw_provider::ProviderError;
 
-match provider.complete(&messages, &opts).await {
+match provider.complete(messages, opts).await {
     Ok(response) => response,
     Err(ProviderError::RateLimit { retry_after }) => {
         tokio::time::sleep(retry_after).await;
@@ -411,7 +397,7 @@ match provider.complete(&messages, &opts).await {
     Err(ProviderError::Auth) => {
         // Check API key
     }
-    Err(ProviderError::Format(e)) => {
+    Err(ProviderError::Serialization(e)) => {
         // MessageFormat parsing error
     }
     Err(e) => return Err(e.into()),
@@ -419,3 +405,8 @@ match provider.complete(&messages, &opts).await {
 ```
 
 ---
+
+## Permissions
+
+> **v1.0.0**: Permission matching uses exact string comparison only.
+> Glob pattern support (`tool.*`, `memory.*`) is planned for v1.1.0.

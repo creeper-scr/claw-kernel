@@ -5,11 +5,44 @@
 //! per-turn snapshots, [`AgentResult`] carries the completed-loop summary, and
 //! [`StreamChunk`] is the item type for streaming mode.
 
+use std::sync::Arc;
+
+use claw_provider::traits::LLMProvider;
 use claw_provider::types::{Message, TokenUsage, ToolCall};
 use serde::{Deserialize, Serialize};
 
+/// Policy for switching to fallback providers when the primary provider fails.
+///
+/// Used in [`AgentLoopConfig::failover_policy`] to control automatic failover.
+///
+/// # Examples
+///
+/// ```rust
+/// use claw_loop::types::FailoverPolicy;
+/// use std::time::Duration;
+///
+/// // Switch on any error
+/// let policy = FailoverPolicy::OnError;
+///
+/// // Switch after 3 consecutive errors
+/// let policy = FailoverPolicy::OnConsecutiveErrors(3);
+///
+/// // Switch when latency exceeds 5 seconds
+/// let policy = FailoverPolicy::OnLatencyExceeds(Duration::from_secs(5));
+/// ```
+#[derive(Debug, Clone, Default)]
+pub enum FailoverPolicy {
+    /// Switch to the next fallback provider on any provider error.
+    #[default]
+    OnError,
+    /// Switch after N consecutive errors from the current provider.
+    OnConsecutiveErrors(u32),
+    /// Switch when the provider's response latency exceeds the given threshold.
+    OnLatencyExceeds(std::time::Duration),
+}
+
 /// Configuration for an agent loop execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AgentLoopConfig {
     /// Maximum number of turns (LLM + tool calls each count as one turn).
     pub max_turns: u32,
@@ -25,6 +58,18 @@ pub struct AgentLoopConfig {
     pub max_tool_calls_per_turn: usize,
     /// Whether to enable streaming responses. Default: false.
     pub enable_streaming: bool,
+    /// Ordered list of fallback providers to try when the primary fails.
+    ///
+    /// Providers are tried in order. If all providers fail, the last error
+    /// is returned. When empty (the default), no failover occurs.
+    #[serde(skip)]
+    pub fallback_providers: Vec<Arc<dyn LLMProvider>>,
+    /// Policy controlling when to switch to the next fallback provider.
+    ///
+    /// Only used when [`fallback_providers`](Self::fallback_providers) is non-empty.
+    /// Defaults to [`FailoverPolicy::OnError`].
+    #[serde(skip)]
+    pub failover_policy: FailoverPolicy,
 }
 
 impl Default for AgentLoopConfig {
@@ -37,7 +82,28 @@ impl Default for AgentLoopConfig {
             tool_timeout_seconds: 30,
             max_tool_calls_per_turn: 10,
             enable_streaming: false,
+            fallback_providers: Vec::new(),
+            failover_policy: FailoverPolicy::default(),
         }
+    }
+}
+
+impl std::fmt::Debug for AgentLoopConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentLoopConfig")
+            .field("max_turns", &self.max_turns)
+            .field("token_budget", &self.token_budget)
+            .field("system_prompt", &self.system_prompt)
+            .field("tool_use_enabled", &self.tool_use_enabled)
+            .field("tool_timeout_seconds", &self.tool_timeout_seconds)
+            .field("max_tool_calls_per_turn", &self.max_tool_calls_per_turn)
+            .field("enable_streaming", &self.enable_streaming)
+            .field(
+                "fallback_providers",
+                &format!("[{} provider(s)]", self.fallback_providers.len()),
+            )
+            .field("failover_policy", &self.failover_policy)
+            .finish()
     }
 }
 
@@ -53,6 +119,8 @@ impl AgentLoopConfig {
     /// - `tool_timeout_seconds`: 30
     /// - `max_tool_calls_per_turn`: 10
     /// - `enable_streaming`: false
+    /// - `fallback_providers`: empty (no failover)
+    /// - `failover_policy`: [`FailoverPolicy::OnError`]
     ///
     /// # Example
     ///
@@ -171,6 +239,47 @@ impl AgentLoopConfig {
     /// ```
     pub fn with_enable_streaming(mut self, enabled: bool) -> Self {
         self.enable_streaming = enabled;
+        self
+    }
+
+    /// Set the ordered list of fallback providers for automatic failover.
+    ///
+    /// When the primary provider encounters an error (or meets the configured
+    /// [`FailoverPolicy`]), the agent loop tries each fallback in order.
+    /// If all providers fail, the last error is returned.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use claw_loop::types::AgentLoopConfig;
+    /// use claw_provider::OllamaProvider;
+    /// use std::sync::Arc;
+    ///
+    /// let fallback = Arc::new(OllamaProvider::new("llama3.2:latest").with_base_url("http://backup:11434"));
+    /// let config = AgentLoopConfig::new().with_fallback_providers(vec![fallback]);
+    /// ```
+    pub fn with_fallback_providers(
+        mut self,
+        providers: Vec<Arc<dyn LLMProvider>>,
+    ) -> Self {
+        self.fallback_providers = providers;
+        self
+    }
+
+    /// Set the failover policy (controls when to switch to the next provider).
+    ///
+    /// Only meaningful when [`fallback_providers`](Self::fallback_providers) is non-empty.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use claw_loop::types::{AgentLoopConfig, FailoverPolicy};
+    ///
+    /// let config = AgentLoopConfig::new()
+    ///     .with_failover_policy(FailoverPolicy::OnConsecutiveErrors(3));
+    /// ```
+    pub fn with_failover_policy(mut self, policy: FailoverPolicy) -> Self {
+        self.failover_policy = policy;
         self
     }
 }

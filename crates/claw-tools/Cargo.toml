@@ -8,6 +8,10 @@ license.workspace = true
 description = "Tool registry with hot-loading and JSON Schema generation"
 repository.workspace = true
 
+[features]
+default = []
+builtins = ["dep:reqwest"]
+
 [dependencies]
 async-trait = { workspace = true }
 thiserror = { workspace = true }
@@ -21,6 +25,7 @@ dashmap = { workspace = true }
 arc-swap = "1.7"
 dirs = { workspace = true }
 tracing = { workspace = true }
+reqwest = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

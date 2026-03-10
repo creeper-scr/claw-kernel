@@ -8,6 +8,8 @@ use claw_tools::{
 };
 use mlua::{Lua, Result as LuaResult, UserData, UserDataMethods};
 
+use crate::bridge::conversion::{json_to_lua, lua_to_json};
+
 /// Tools bridge exposing ToolRegistry to Lua scripts.
 ///
 /// This bridge allows Lua scripts to:
@@ -65,7 +67,7 @@ impl ToolsBridge {
     /// Call a tool by name with JSON arguments.
     ///
     /// Returns a table with `success`, `output`, and `error` fields.
-    async fn call(&self, name: &str, args: serde_json::Value) -> ToolCallResult {
+    pub async fn call(&self, name: &str, args: serde_json::Value) -> ToolCallResult {
         let ctx = ToolContext::new(
             &self.caller_context.agent_id,
             self.caller_context.permissions.clone(),
@@ -98,7 +100,7 @@ impl ToolsBridge {
     /// List all available tools.
     ///
     /// Returns a table of tool info with `name` and `description` fields.
-    fn list(&self) -> Vec<ToolInfo> {
+    pub fn list(&self) -> Vec<ToolInfo> {
         self.registry
             .tool_names()
             .into_iter()
@@ -112,7 +114,7 @@ impl ToolsBridge {
     }
 
     /// Check if a tool exists.
-    fn exists(&self, name: &str) -> bool {
+    pub fn exists(&self, name: &str) -> bool {
         self.registry.tool_meta(name).is_some()
     }
 }
@@ -151,17 +153,19 @@ impl UserData for ToolCallResult {
 
 impl UserData for ToolsBridge {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
+        // NOTE: `call` uses `add_method` with `block_on` because it runs inside
+        // `spawn_blocking` context (see LuaEngine::eval/exec).
         // call(name, args) -> ToolCallResult
-        methods.add_async_method(
+        methods.add_method(
             "call",
-            |_lua, this, (name, args): (String, Option<mlua::Value>)| async move {
-                // Convert Lua args to JSON
+            |_lua, this, (name, args): (String, Option<mlua::Value>)| {
+                // Note: Called from spawn_blocking context; use block_on for async operations.
                 let json_args = match args {
                     Some(v) => lua_to_json(v),
                     None => serde_json::Value::Object(serde_json::Map::new()),
                 };
-
-                let result = this.call(&name, json_args).await;
+                let result = tokio::runtime::Handle::current()
+                    .block_on(this.call(&name, json_args));
                 Ok(result)
             },
         );
@@ -204,82 +208,6 @@ impl UserData for ToolsBridge {
 /// ```
 pub fn register_tools(lua: &Lua, bridge: ToolsBridge) -> LuaResult<()> {
     lua.globals().set("tools", bridge)
-}
-
-/// Convert a serde_json::Value to a mlua::Value.
-fn json_to_lua<'lua>(
-    lua: &'lua Lua,
-    val: &serde_json::Value,
-    depth: u32,
-) -> LuaResult<mlua::Value<'lua>> {
-    if depth > 32 {
-        return Ok(mlua::Value::Nil);
-    }
-
-    let lval = match val {
-        serde_json::Value::Null => mlua::Value::Nil,
-        serde_json::Value::Bool(b) => mlua::Value::Boolean(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                mlua::Value::Integer(i)
-            } else {
-                mlua::Value::Number(n.as_f64().unwrap_or(0.0))
-            }
-        }
-        serde_json::Value::String(s) => mlua::Value::String(lua.create_string(s.as_bytes())?),
-        serde_json::Value::Array(arr) => {
-            let table = lua.create_table()?;
-            for (i, elem) in arr.iter().enumerate() {
-                table.raw_set(i + 1, json_to_lua(lua, elem, depth + 1)?)?;
-            }
-            mlua::Value::Table(table)
-        }
-        serde_json::Value::Object(map) => {
-            let table = lua.create_table()?;
-            for (k, v) in map {
-                table.raw_set(k.as_str(), json_to_lua(lua, v, depth + 1)?)?;
-            }
-            mlua::Value::Table(table)
-        }
-    };
-
-    Ok(lval)
-}
-
-/// Convert a mlua::Value to a serde_json::Value.
-fn lua_to_json(val: mlua::Value) -> serde_json::Value {
-    match val {
-        mlua::Value::Nil => serde_json::Value::Null,
-        mlua::Value::Boolean(b) => serde_json::Value::Bool(b),
-        mlua::Value::Integer(i) => serde_json::json!(i),
-        mlua::Value::Number(f) => serde_json::json!(f),
-        mlua::Value::String(s) => serde_json::Value::String(s.to_str().unwrap_or("").to_string()),
-        mlua::Value::Table(t) => {
-            // Try to detect if it's an array
-            let len = t.raw_len();
-            if len > 0 {
-                let arr: Vec<serde_json::Value> = (1..=(len as i64))
-                    .filter_map(|i| t.raw_get::<i64, mlua::Value>(i).ok())
-                    .map(lua_to_json)
-                    .collect();
-                if arr.len() == len {
-                    return serde_json::Value::Array(arr);
-                }
-            }
-            // Otherwise treat as object
-            let mut map = serde_json::Map::new();
-            for (k, v) in t.pairs::<mlua::Value, mlua::Value>().flatten() {
-                let key = match k {
-                    mlua::Value::String(s) => s.to_str().unwrap_or("").to_string(),
-                    mlua::Value::Integer(i) => i.to_string(),
-                    _ => continue,
-                };
-                map.insert(key, lua_to_json(v));
-            }
-            serde_json::Value::Object(map)
-        }
-        _ => serde_json::Value::Null,
-    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────

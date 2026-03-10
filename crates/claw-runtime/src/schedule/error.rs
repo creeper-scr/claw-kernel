@@ -14,8 +14,17 @@ pub enum ScheduleError {
     TaskNotFound(String),
 
     /// Invalid cron expression.
-    #[error("invalid cron expression: {0}")]
-    InvalidCronExpression(String),
+    #[error("invalid cron expression '{expr}': {reason}")]
+    InvalidCronExpression {
+        /// The offending expression.
+        expr: String,
+        /// Human-readable reason from the parser.
+        reason: String,
+    },
+
+    /// Cron expression is valid but will never fire (e.g. Feb 30).
+    #[error("cron expression will never fire: {0}")]
+    NeverFires(String),
 
     /// Invalid interval.
     #[error("invalid interval: {0}")]
@@ -42,8 +51,14 @@ mod tests {
         let err = ScheduleError::TaskNotFound("task-2".to_string());
         assert_eq!(err.to_string(), "task not found: task-2");
 
-        let err = ScheduleError::InvalidCronExpression("* * * *".to_string());
-        assert_eq!(err.to_string(), "invalid cron expression: * * * *");
+        let err = ScheduleError::InvalidCronExpression {
+            expr: "* * * *".to_string(),
+            reason: "too few fields".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid cron expression '* * * *': too few fields"
+        );
 
         let err = ScheduleError::InvalidInterval("zero".to_string());
         assert_eq!(err.to_string(), "invalid interval: zero");

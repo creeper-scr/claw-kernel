@@ -1,8 +1,8 @@
 ---
 title: Power Mode Guide
 description: Power mode activation and security guide
-status: design-phase
-version: "0.1.0"
+status: implemented
+version: "1.0.0"
 last_updated: "2026-03-08"
 language: en
 ---
@@ -13,7 +13,7 @@ language: en
 
 Power Mode grants agents full system access. Use it when you need agents to perform unrestricted automation tasks.
 
-> [Warning]  **Note**: This guide shows the **target API design**. The `claw-kernel` crate is not yet implemented.
+> [Info] **Note**: This guide documents the implemented API in v1.0.0. Windows sandbox is stub-only (see KNOWN-ISSUES.md).
 
 ---
 

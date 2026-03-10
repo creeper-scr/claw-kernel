@@ -9,8 +9,19 @@ description = "LLM provider implementations — Anthropic, OpenAI, Ollama, DeepS
 repository.workspace = true
 
 [features]
-default = []
+default = ["anthropic", "openai", "ollama", "deepseek", "moonshot"]
 test-utils = []
+anthropic = []
+openai = []
+ollama = []
+# deepseek and moonshot re-use openai::format internally, so they imply openai.
+deepseek = ["openai"]
+moonshot = ["openai"]
+# gemini/mistral/azure-openai use the OpenAI-compatible format, so they imply openai.
+# No additional dependencies required beyond the openai feature.
+gemini = ["openai"]
+mistral = ["openai"]
+azure-openai = ["openai"]
 
 [dependencies]
 async-trait = { workspace = true }
@@ -23,3 +34,4 @@ futures = { workspace = true }
 bytes = "1"
 rand = "0.8"
 async-stream = "0.3"
+secrecy = { version = "0.8", features = ["alloc"] }

@@ -1,0 +1,23 @@
+[package]
+name = "claw-skills"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Skill engine — discover, index, and lazy-load SKILL.md files for AI agents"
+repository.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+# YAML frontmatter parsing
+serde_yaml = "0.9"
+# semver for version field
+semver = { version = "1", features = ["serde"] }
+# platform dirs
+dirs = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

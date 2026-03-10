@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -148,6 +149,73 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool with the given JSON arguments.
     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> ToolResult;
+}
+
+/// Event publisher for tool-related events.
+///
+/// This trait allows Layer 1 (claw-runtime) to inject EventBus capabilities
+/// into Layer 2 (claw-tools) without creating a circular dependency.
+///
+/// Tool registry uses this trait to publish events when:
+/// - A tool is called
+/// - A tool execution completes (success or failure)
+/// - A tool is registered/unregistered
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use claw_tools::ToolEventPublisher;
+/// use claw_runtime::{EventBus, events::Event, agent_types::AgentId};
+/// use std::sync::Arc;
+///
+/// struct RuntimeToolEventPublisher {
+///     event_bus: Arc<EventBus>,
+/// }
+///
+/// impl ToolEventPublisher for RuntimeToolEventPublisher {
+///     fn publish_tool_called(&self, agent_id: &str, tool_name: &str, call_id: &str) {
+///         let _ = self.event_bus.publish(Event::ToolCalled {
+///             agent_id: AgentId::new(agent_id),
+///             tool_name: tool_name.to_string(),
+///             call_id: call_id.to_string(),
+///         });
+///     }
+///     // ... other methods
+/// }
+/// ```
+pub trait ToolEventPublisher: Send + Sync {
+    /// Publish event when a tool is called.
+    fn publish_tool_called(&self, agent_id: &str, tool_name: &str, call_id: &str);
+
+    /// Publish event when a tool execution completes.
+    fn publish_tool_result(&self, agent_id: &str, tool_name: &str, call_id: &str, success: bool);
+
+    /// Publish event when a tool is registered.
+    fn publish_tool_registered(&self, tool_name: &str, tool_type: &str);
+
+    /// Publish event when a tool is unregistered.
+    fn publish_tool_unregistered(&self, tool_name: &str);
+}
+
+/// No-op event publisher for testing or when event publishing is not needed.
+pub struct NoopToolEventPublisher;
+
+impl ToolEventPublisher for NoopToolEventPublisher {
+    fn publish_tool_called(&self, _agent_id: &str, _tool_name: &str, _call_id: &str) {}
+
+    fn publish_tool_result(&self, _agent_id: &str, _tool_name: &str, _call_id: &str, _success: bool) {}
+
+    fn publish_tool_registered(&self, _tool_name: &str, _tool_type: &str) {}
+
+    fn publish_tool_unregistered(&self, _tool_name: &str) {}
+}
+
+impl NoopToolEventPublisher {
+    /// Create a new no-op event publisher wrapped in Arc.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new() -> Arc<dyn ToolEventPublisher> {
+        Arc::new(NoopToolEventPublisher)
+    }
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    stream_utils::parse_sse_line,
     traits::MessageFormat,
     types::{
         CompletionResponse, Delta, FinishReason, Message, Options, Role, TokenUsage, ToolCall,
@@ -224,9 +225,9 @@ impl MessageFormat for OpenAIFormat {
         let line = String::from_utf8_lossy(chunk);
         let line = line.trim();
 
-        // Strip "data: " prefix if present
-        let line = if let Some(stripped) = line.strip_prefix("data: ") {
-            stripped.trim()
+        // Strip "data: " prefix using shared SSE parser
+        let line = if let Some(data) = parse_sse_line(line) {
+            data.trim()
         } else {
             line
         };

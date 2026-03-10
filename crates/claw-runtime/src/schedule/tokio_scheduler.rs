@@ -1,7 +1,10 @@
 //! Tokio-based implementation of the Scheduler trait.
 
 use super::{ScheduleError, Scheduler, TaskConfig, TaskId, TaskStats, TaskTrigger};
+use chrono::Utc;
+use cron::Schedule;
 use dashmap::DashMap;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -175,51 +178,60 @@ impl TokioScheduler {
         })
     }
 
-    /// Spawn a cron-based task (simplified implementation).
-    /// For production use, consider using the `cron` crate.
-    fn spawn_cron_task(&self, state: Arc<TaskState>, expr: String) -> JoinHandle<()> {
-        // This is a simplified implementation
-        // In production, parse the cron expression and calculate next execution time
+    /// Spawn a cron-based task using the `cron` crate for standard expression parsing.
+    ///
+    /// Supports both 5-field (`min hour day month dow`) and 6-field
+    /// (`sec min hour day month dow`) cron expressions.
+    fn spawn_cron_task(
+        &self,
+        state: Arc<TaskState>,
+        expr: String,
+    ) -> Result<JoinHandle<()>, ScheduleError> {
+        // Validate the expression eagerly so callers get an error immediately.
+        let schedule = Schedule::from_str(&expr).map_err(|e| ScheduleError::InvalidCronExpression {
+            expr: expr.clone(),
+            reason: e.to_string(),
+        })?;
+
+        // Verify at least one future occurrence exists.
+        if schedule.upcoming(Utc).next().is_none() {
+            return Err(ScheduleError::NeverFires(expr.clone()));
+        }
+
         let tasks = Arc::clone(&self.tasks);
         let task_id = state.config.id.clone();
 
-        tokio::spawn(async move {
-            // Parse simple patterns
-            // "*/n * * * *" = every n minutes
-            // "0 * * * *" = every hour
-            let interval = Self::parse_simple_cron(&expr).unwrap_or(Duration::from_secs(3600));
-
-            let mut ticker = tokio::time::interval(interval);
-
+        Ok(tokio::spawn(async move {
             loop {
-                ticker.tick().await;
+                // Recompute next occurrence each iteration to follow DST / leap-second
+                // corrections rather than drifting with a fixed interval.
+                let next = match schedule.upcoming(Utc).next() {
+                    Some(t) => t,
+                    None => break, // expression exhausted
+                };
 
+                let now = Utc::now();
+                let delay = (next - now).to_std().unwrap_or(Duration::ZERO);
+
+                tokio::time::sleep(delay).await;
+
+                // Check if task still exists (may have been cancelled during sleep).
                 if !tasks.contains_key(&task_id) {
                     break;
                 }
 
+                // Check max executions.
+                if let Some(max) = state.config.max_executions {
+                    let current = state.stats.read().await.execution_count;
+                    if current >= max {
+                        tasks.remove(&task_id);
+                        break;
+                    }
+                }
+
                 Self::execute_task(Arc::clone(&state)).await;
             }
-        })
-    }
-
-    /// Parse simple cron patterns into duration.
-    fn parse_simple_cron(expr: &str) -> Option<Duration> {
-        let parts: Vec<&str> = expr.split_whitespace().collect();
-
-        // Simple patterns: "*/n" for minutes
-        if parts.len() >= 2 && parts[1].starts_with("*/") {
-            let mins: u64 = parts[1][2..].parse().ok()?;
-            return Some(Duration::from_secs(mins * 60));
-        }
-
-        // "0 * * * *" = hourly
-        if parts.len() >= 2 && parts[0] == "0" && parts[1] == "*" {
-            return Some(Duration::from_secs(3600));
-        }
-
-        // Default: hourly
-        Some(Duration::from_secs(3600))
+        }))
     }
 
     /// Get task statistics.
@@ -266,7 +278,7 @@ impl Scheduler for TokioScheduler {
                 }
                 TaskTrigger::Once(unix_secs) => self.spawn_once_task(state_clone, unix_secs),
                 TaskTrigger::Immediate => self.spawn_immediate_task(state_clone),
-                TaskTrigger::Cron(expr) => self.spawn_cron_task(state_clone, expr),
+                TaskTrigger::Cron(expr) => self.spawn_cron_task(state_clone, expr)?,
             }
         };
 
@@ -580,5 +592,42 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         assert_eq!(executed.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn test_schedule_cron_invalid_expression() {
+        let scheduler = TokioScheduler::new();
+
+        let result = scheduler
+            .schedule(TaskConfig::new(
+                "bad-cron",
+                TaskTrigger::cron("not a cron expression @@@@"),
+                || Box::pin(async {}),
+            ))
+            .await;
+
+        assert!(
+            matches!(result, Err(ScheduleError::InvalidCronExpression { .. })),
+            "expected InvalidCronExpression, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_schedule_cron_valid_expression_is_accepted() {
+        let scheduler = TokioScheduler::new();
+
+        // "0 * * * * *" = at second 0 of every minute (6-field with seconds)
+        let result = scheduler
+            .schedule(TaskConfig::new(
+                "valid-cron",
+                TaskTrigger::cron("0 * * * * *"),
+                || Box::pin(async {}),
+            ))
+            .await;
+
+        assert!(result.is_ok(), "valid cron expression should be accepted");
+
+        scheduler.cancel(&TaskId::new("valid-cron")).await.unwrap();
     }
 }

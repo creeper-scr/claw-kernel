@@ -12,7 +12,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EngineType {
     Lua,
-    // JavaScript and Python reserved for future phases
+    /// JavaScript via V8 (deno_core).
+    #[cfg(feature = "engine-v8")]
+    JavaScript,
+    /// TypeScript via V8 (deno_core) with transpilation.
+    #[cfg(feature = "engine-v8")]
+    TypeScript,
 }
 
 /// A compiled/loaded script.
@@ -24,11 +29,32 @@ pub struct Script {
 }
 
 impl Script {
+    /// Create a new Lua script.
     pub fn lua(name: impl Into<String>, source: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             source: source.into(),
             engine: EngineType::Lua,
+        }
+    }
+
+    /// Create a new JavaScript script.
+    #[cfg(feature = "engine-v8")]
+    pub fn javascript(name: impl Into<String>, source: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            source: source.into(),
+            engine: EngineType::JavaScript,
+        }
+    }
+
+    /// Create a new TypeScript script.
+    #[cfg(feature = "engine-v8")]
+    pub fn typescript(name: impl Into<String>, source: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            source: source.into(),
+            engine: EngineType::TypeScript,
         }
     }
 }
@@ -353,13 +379,15 @@ impl ScriptContext {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```no_run
     /// use claw_script::types::ScriptContext;
     /// use claw_runtime::{AgentOrchestrator, EventBus};
+    /// use claw_pal::TokioProcessManager;
     /// use std::sync::Arc;
     ///
     /// let bus = Arc::new(EventBus::new());
-    /// let orch = Arc::new(AgentOrchestrator::new(bus));
+    /// let pm = Arc::new(TokioProcessManager::new());
+    /// let orch = Arc::new(AgentOrchestrator::new(bus, pm));
     /// let ctx = ScriptContext::new("agent-1")
     ///     .with_orchestrator(orch);
     /// ```

@@ -1,8 +1,8 @@
 ---
 title: Getting Started with claw-kernel
 description: Build your first agent using claw-kernel
-status: design-phase
-version: "0.1.0"
+status: implemented
+version: "1.0.0"
 last_updated: "2026-03-01"
 language: en
 ---
@@ -15,7 +15,7 @@ This guide will help you build your first agent using claw-kernel.
 
 claw-kernel is a lightweight framework for building LLM-powered agents. It provides core components like provider interfaces, tool systems, and agent loops at Layer 1-3.
 
-> [Warning]  **Note**: This guide shows the **target API design**. The `claw-kernel` crate is now implemented. See [ROADMAP.md](../../ROADMAP.md) for future plans.
+> [Info] **Note**: This guide documents the implemented API in v1.0.0.
 
 ---
 
@@ -41,7 +41,7 @@ Edit `Cargo.toml`:
 
 ```toml
 [dependencies]
-claw-kernel = { version = "0.1", features = ["engine-lua"] }
+claw-kernel = { version = "1.0", features = ["engine-lua"] }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 ```

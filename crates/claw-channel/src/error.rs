@@ -19,6 +19,8 @@ pub enum ChannelError {
     NotFound(String),
     #[error("rate limited")]
     RateLimited,
+    #[error("invalid configuration: {0}")]
+    InvalidConfig(String),
 }
 
 #[cfg(test)]

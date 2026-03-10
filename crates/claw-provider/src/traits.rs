@@ -1,4 +1,5 @@
 use std::pin::Pin;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
@@ -136,7 +137,7 @@ pub trait MessageFormat: Send + Sync {
 /// let transport = DefaultHttpTransport::new("https://api.example.com");
 ///
 /// // Add authentication if needed
-/// let transport = transport.with_auth("your-api-key");
+/// let transport = transport.with_auth("your-api-key").expect("valid token");
 ///
 /// // The transport can now be used with any provider
 /// // let provider = OpenAIProvider::new(transport, "gpt-4o");
@@ -209,8 +210,9 @@ pub trait HttpTransport: Send + Sync {
 /// The `HttpTransportExt` trait provides generic request methods that work
 /// with any `MessageFormat` implementation:
 ///
-/// ```rust,ignore
-/// use claw_provider::{HttpTransportExt, MessageFormat, Message, Options, CompletionResponse};
+/// ```rust,no_run
+/// use claw_provider::traits::{HttpTransportExt, MessageFormat};
+/// use claw_provider::types::{Message, Options, CompletionResponse};
 ///
 /// // These methods are available on any type implementing HttpTransportExt
 /// async fn example<T, F>(transport: T) -> Result<CompletionResponse, claw_provider::ProviderError>
@@ -227,7 +229,8 @@ pub trait HttpTransport: Send + Sync {
 ///     let response = transport.request::<F>(&messages, &opts).await?;
 ///     
 ///     // Streaming request
-///     let _stream = transport.stream_request::<F>(&messages, &opts).await?;///     Ok(response)
+///     let _stream = transport.stream_request::<F>(&messages, &opts).await?;
+    ///     Ok(response)
 /// }
 /// ```
 pub trait HttpTransportExt: HttpTransport {
@@ -338,6 +341,46 @@ pub trait HttpTransportExt: HttpTransport {
     }
 }
 
+/// Result of a provider health check.
+///
+/// Returned by [`LLMProvider::health_check`] to indicate whether the
+/// provider is currently reachable and performing normally.
+///
+/// # Examples
+///
+/// ```rust
+/// use claw_provider::traits::ProviderHealth;
+///
+/// let healthy = ProviderHealth::Healthy { latency_ms: 42 };
+/// let degraded = ProviderHealth::Degraded {
+///     latency_ms: 1500,
+///     reason: "rate limited".to_string(),
+/// };
+/// let unavailable = ProviderHealth::Unavailable {
+///     reason: "connection refused".to_string(),
+/// };
+/// ```
+#[derive(Debug, Clone)]
+pub enum ProviderHealth {
+    /// Provider is healthy and responsive.
+    Healthy {
+        /// Round-trip latency in milliseconds.
+        latency_ms: u64,
+    },
+    /// Provider is responding but with degraded performance.
+    Degraded {
+        /// Round-trip latency in milliseconds.
+        latency_ms: u64,
+        /// Human-readable reason for degraded state.
+        reason: String,
+    },
+    /// Provider is not available.
+    Unavailable {
+        /// Human-readable reason for unavailability.
+        reason: String,
+    },
+}
+
 /// High-level LLM provider interface (Level 3: User-facing).
 ///
 /// This is the main trait for interacting with LLM providers. Implementations
@@ -347,13 +390,13 @@ pub trait HttpTransportExt: HttpTransport {
 ///
 /// Using a built-in provider:
 ///
-/// ```rust,ignore
-/// use claw_provider::{LLMProvider, OllamaProvider, DefaultHttpTransport, Message, Options};
+/// ```rust,no_run
+/// use claw_provider::{LLMProvider, OllamaProvider, Message, Options};
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// // Create a provider instance
-/// let transport = DefaultHttpTransport::new("http://localhost:11434", "")?;
-/// let provider = OllamaProvider::new(transport, "llama3.2:latest");
+/// let provider = OllamaProvider::new("llama3.2:latest")
+///     .with_base_url("http://localhost:11434");
 ///
 /// // Prepare messages and options
 /// let messages = vec![
@@ -373,7 +416,7 @@ pub trait HttpTransportExt: HttpTransport {
 ///
 /// Using Anthropic provider with environment-based setup:
 ///
-/// ```rust,ignore
+/// ```rust,no_run
 /// use claw_provider::{AnthropicProvider, traits::LLMProvider};
 /// use claw_provider::types::{Message, Options};
 ///
@@ -463,9 +506,39 @@ pub trait LLMProvider: Send + Sync {
         options: Options,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError>;
 
-    /// Rough token count estimate (default: chars / 4).
+    /// Rough token count estimate, CJK-aware.
+    /// ASCII text: ~4 chars per token; CJK/emoji: ~1 char per token.
     fn token_count(&self, text: &str) -> usize {
-        text.len() / 4
+        let ascii_chars = text.chars().filter(|c| c.is_ascii()).count();
+        let non_ascii = text.chars().count() - ascii_chars;
+        // ASCII text: ~4 chars per token; CJK/emoji: ~1 char per token
+        (ascii_chars / 4) + non_ascii
+    }
+
+    /// Check the health of this provider.
+    ///
+    /// The default implementation always returns [`ProviderHealth::Healthy`] with
+    /// zero latency, preserving backward compatibility for existing implementations.
+    /// Override this method to perform an actual liveness probe (e.g., a lightweight
+    /// models-list or ping request).
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use claw_provider::traits::{LLMProvider, ProviderHealth};
+    ///
+    /// # async fn example(provider: impl LLMProvider) {
+    /// match provider.health_check().await {
+    ///     ProviderHealth::Healthy { latency_ms } => println!("OK ({latency_ms}ms)"),
+    ///     ProviderHealth::Degraded { latency_ms, reason } => {
+    ///         println!("Degraded ({latency_ms}ms): {reason}")
+    ///     }
+    ///     ProviderHealth::Unavailable { reason } => println!("Unavailable: {reason}"),
+    /// }
+    /// # }
+    /// ```
+    async fn health_check(&self) -> ProviderHealth {
+        ProviderHealth::Healthy { latency_ms: 0 }
     }
 }
 
@@ -543,6 +616,86 @@ pub trait EmbeddingProvider: Send + Sync {
 
     /// Embedding vector dimensions.
     fn dimensions(&self) -> usize;
+}
+
+/// Event publisher for LLM provider events.
+///
+/// This trait allows Layer 1 (claw-runtime) to inject EventBus capabilities
+/// into Layer 2 (claw-provider) without creating a circular dependency.
+///
+/// Provider implementations use this trait to publish events when:
+/// - An LLM request is sent
+/// - An LLM response is received
+/// - A streaming chunk is received
+/// - An error occurs
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use claw_provider::ProviderEventPublisher;
+/// use claw_runtime::{EventBus, events::Event, agent_types::AgentId};
+/// use std::sync::Arc;
+///
+/// struct RuntimeProviderEventPublisher {
+///     event_bus: Arc<EventBus>,
+/// }
+///
+/// impl ProviderEventPublisher for RuntimeProviderEventPublisher {
+///     fn publish_request_started(&self, agent_id: &str, provider: &str, model: &str) {
+///         let _ = self.event_bus.publish(Event::LlmRequestStarted {
+///             agent_id: AgentId::new(agent_id),
+///             provider: provider.to_string(),
+///         });
+///     }
+///     // ... other methods
+/// }
+/// ```
+pub trait ProviderEventPublisher: Send + Sync {
+    /// Publish event when an LLM request is started.
+    fn publish_request_started(&self, agent_id: &str, provider: &str, model: &str);
+
+    /// Publish event when an LLM response is received.
+    fn publish_response_completed(
+        &self,
+        agent_id: &str,
+        provider: &str,
+        model: &str,
+        tokens_used: u64,
+    );
+
+    /// Publish event when a streaming chunk is received.
+    fn publish_stream_chunk(&self, agent_id: &str, provider: &str, chunk_index: usize);
+
+    /// Publish event when an error occurs.
+    fn publish_error(&self, agent_id: &str, provider: &str, error_code: &str);
+}
+
+/// No-op event publisher for testing or when event publishing is not needed.
+pub struct NoopProviderEventPublisher;
+
+impl ProviderEventPublisher for NoopProviderEventPublisher {
+    fn publish_request_started(&self, _agent_id: &str, _provider: &str, _model: &str) {}
+
+    fn publish_response_completed(
+        &self,
+        _agent_id: &str,
+        _provider: &str,
+        _model: &str,
+        _tokens_used: u64,
+    ) {
+    }
+
+    fn publish_stream_chunk(&self, _agent_id: &str, _provider: &str, _chunk_index: usize) {}
+
+    fn publish_error(&self, _agent_id: &str, _provider: &str, _error_code: &str) {}
+}
+
+impl NoopProviderEventPublisher {
+    /// Create a new no-op event publisher wrapped in Arc.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new() -> Arc<dyn ProviderEventPublisher> {
+        Arc::new(NoopProviderEventPublisher)
+    }
 }
 
 #[cfg(test)]

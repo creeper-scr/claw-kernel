@@ -1,8 +1,8 @@
 ---
 title: Changelog
 description: Version history for claw-kernel
-status: v0.2.0
-version: "0.2.0"
+status: v1.0.0
+version: "1.0.0"
 last_updated: "2026-03-08"
 language: english
 ---
@@ -25,6 +25,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 ## [Unreleased]
+
+## [1.3.0] - 2026-03-10
+
+### Changed
+- **F2 架构边界重划**：`claw-memory`（MemoryStore/hybrid_search/NgramEmbedder）降级为可选应用层依赖；`memory.search`/`memory.store` IPC 端点直接删除（无降级 stub）
+- **IPC 认证**：连接级 token 认证（`kernel.auth` 握手），token 以 0o600 权限写入 `kernel.token`
+
+### Added
+- B1: `channel.register`/`unregister`/`list` — 真实写入 ChannelRegistry
+- B3: `agent.spawn`/`kill`/`steer`/`list` — 真实对接 AgentOrchestrator
+- B2: `trigger.add_cron` cron 回调真实调用 `orchestrator.steer()`
+- Python SDK 参考实现（`examples/sdk/python/`）
+
+### Architecture
+- 内核 F2 职责收窄为 `HistoryManager`（短期上下文窗口）
+- `claw-memory` crate 保留，作为独立可选应用层组件
+
+---
+
+### Changed (Breaking)
+- **`Runtime::new()` is now `async` and returns `Result<Self, RuntimeError>`** — background tasks
+  (IPC router, event bus) start automatically. Callers must `Runtime::new(endpoint).await?`.
+  The old `start()` method is deprecated and is now a no-op with a warning.
+
+### Added
+- **V8/TypeScript Engine** (`engine-v8` feature) — Full JavaScript/TypeScript support via deno_core
+  - `V8Engine` with per-execution isolate creation for strong sandboxing
+  - `V8EngineOptions` for configuring timeout, heap limits, TypeScript support
+  - `Script::javascript()` and `Script::typescript()` constructors
+  - All 7 bridges exposed to JS/TS: `claw.fs`, `claw.net`, `claw.tools`, `claw.memory`, `claw.events`, `claw.agent`, `claw.dirs`, `claw.json`
+  - See [ADR-012](docs/adr/012-v8-engine-implementation.md) for architecture details
+- **Examples**: `examples/v8-scripts/` with JavaScript and TypeScript examples
 
 ---
 
@@ -165,13 +197,13 @@ Initial release. **9 crates, 670+ tests passing, zero clippy errors.**
 
 - Re-exports all sub-crates under a unified namespace
 - `prelude` module: one-line import for the most commonly used types and traits
-- Feature flags: `engine-lua` (default), `engine-v8` (planned), `engine-py` (planned)
+- Feature flags: `engine-lua` (default), `engine-v8` (optional)
 
 ### Infrastructure
 
 - Workspace `Cargo.toml` with pinned dependency versions (verified compatibility)
 - All profiles (`dev`, `release`, `test`) set `panic = "unwind"` (mlua hard requirement)
-- MSRV: Rust 1.83+ (PyO3 0.28+ requirement)
+- MSRV: Rust 1.83+ (mlua 0.9.4 / deno_core requirement)
 - Complete bilingual documentation (English + Chinese): README, CHANGELOG, ROADMAP, CONTRIBUTING, SECURITY
 
 ---

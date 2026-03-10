@@ -1,0 +1,33 @@
+[package]
+name = "claw-channels"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Official channel implementations for claw-kernel: Discord, WebSocket"
+repository.workspace = true
+
+[features]
+default = []
+discord = ["dep:twilight-gateway", "dep:twilight-model", "dep:twilight-http"]
+websocket = ["dep:tokio-tungstenite", "dep:futures-util"]
+
+[dependencies]
+claw-channel = { path = "../claw-channel" }
+tokio = { workspace = true, features = ["full"] }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dashmap = { workspace = true }
+thiserror = { workspace = true }
+
+# Discord
+twilight-gateway = { workspace = true, optional = true }
+twilight-model = { workspace = true, optional = true }
+twilight-http = { version = "0.15.4", optional = true }
+
+# WebSocket
+tokio-tungstenite = { version = "0.23", optional = true }
+futures-util = { version = "0.3", optional = true }

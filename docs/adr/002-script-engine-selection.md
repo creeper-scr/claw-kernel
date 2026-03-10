@@ -4,7 +4,7 @@ description: "Multi-engine script support design with Lua as default engine"
 status: accepted
 date: 2026-02-28
 type: adr
-last_updated: "2026-03-01"
+last_updated: "2026-03-09"
 language: en
 ---
 
@@ -35,18 +35,16 @@ Support **multiple script engines** with **Lua as default**:
 
 | Engine | Status | Use Case |
 |--------|--------|----------|
-| **Lua (mlua)** | Default, always available | Simple tools, fast builds |
-| **Deno/V8** | Optional feature | Complex agents, full JS/TS |
-| **Python (PyO3)** | Optional feature | ML ecosystem integration |
+| **Lua (mlua)** | ✅ Default, always available | Simple tools, fast builds |
+| **Deno/V8** | ✅ Optional feature | Complex agents, full JS/TS |
 
 ### Lua as Default Rationale
 
 ```toml
 [features]
 default = ["engine-lua"]
-engine-lua = ["mlua"]
-engine-v8 = ["deno_core"]
-engine-py = ["pyo3"]
+engine-lua = ["mlua"]          # ✅ Implemented
+engine-v8 = ["deno_core"]      # ✅ Implemented
 ```
 
 **Why Lua:**
@@ -56,7 +54,15 @@ engine-py = ["pyo3"]
 - Excellent C FFI if needed
 - Provides a solid foundation for **application extensibility** — users can customize and extend functionality without recompiling
 
-**Trade-off:** Less familiar than JS/Python, but simple enough to learn quickly.
+**Why V8:**
+- Full ES2022+ and TypeScript support
+- Strong sandboxing via V8 isolates
+- Familiar language for web developers
+- Same Bridge API as Lua (portable scripts)
+
+**Trade-offs:**
+- Lua: Less familiar than JS, but simple
+- V8: ~100MB binary size, slower startup
 
 ### Unified Bridge API
 
@@ -81,15 +87,15 @@ interface RustBridge {
 
 - **Fast default builds:** Lua only, no heavy deps
 - **Flexibility:** Users choose engine by feature flag
-- **Ecosystem access:** Python for ML, JS for web
+- **Ecosystem access:** JS for web
 - **Migration path:** Start with Lua, upgrade to V8 if needed
 - **Extensibility:** Users can customize behavior via scripts without modifying core code
 
 ### Negative
 
-- **Maintenance burden:** Three engine implementations to maintain
+- **Maintenance burden:** Multiple engine implementations to maintain
 - **Behavior differences:** Edge cases may differ between engines
-- **Documentation complexity:** Must document all three
+- **Documentation complexity:** Must document all engines
 
 ### Mitigations
 
@@ -103,7 +109,9 @@ interface RustBridge {
 
 ### Alternative 1: Deno/V8 Only
 
-**Rejected:** 100MB+ binary, complex Windows build, slow compilation
+**Rejected as default:** 100MB+ binary, complex Windows build, slow compilation
+
+**Accepted as optional:** Available via `engine-v8` feature flag
 
 ### Alternative 2: Python Only
 
@@ -120,41 +128,33 @@ interface RustBridge {
 
 ---
 
+## Implementation Status
+
+| Engine | Status | Version |
+|--------|--------|---------|
+| Lua | ✅ Implemented | v0.1.0 |
+| V8/TypeScript | ✅ Implemented | v0.1.0 |
+
 ## Implementation Notes
 
 ### Engine Selection at Runtime
 
 ```rust
-/// Engine type selector for runtime engine selection
-pub enum EngineType {
-    Lua,
-    #[cfg(feature = "engine-v8")]
-    V8,
-    #[cfg(feature = "engine-py")]
-    Python,
-}
+use claw_script::{LuaEngine, V8Engine, ScriptEngine};
 
-/// Script engine wrapper (actual engine instance)
-pub enum ScriptEngine {
-    Lua(LuaEngine),
-    #[cfg(feature = "engine-v8")]
-    V8(V8Engine),
-    #[cfg(feature = "engine-py")]
-    Python(PythonEngine),
-}
+// Lua engine (always available)
+let lua = LuaEngine::new();
 
-impl ScriptEngine {
-    pub fn new(engine_type: EngineType) -> Result<Self> {
-        match engine_type {
-            EngineType::Lua => Ok(Self::Lua(LuaEngine::new()?)),
-            #[cfg(feature = "engine-v8")]
-            EngineType::V8 => Ok(Self::V8(V8Engine::new()?)),
-            #[cfg(feature = "engine-py")]
-            EngineType::Python => Ok(Self::Python(PythonEngine::new()?)),
-            _ => Err(Error::EngineNotAvailable),
-        }
-    }
-}
+// V8 engine (requires "engine-v8" feature)
+let v8 = V8Engine::new();
+
+// Or with custom options
+let v8 = V8Engine::with_options(V8EngineOptions {
+    timeout: Duration::from_secs(60),
+    heap_limit_mb: 256,
+    typescript: true,
+    max_recursion_depth: 64,
+});
 ```
 
 ### Per-Engine Permissions
@@ -165,7 +165,6 @@ Different engines have different sandboxing capabilities:
 |--------|-----------|------------------|
 | Lua | Limited (code can crash host) | Runtime checks |
 | Deno | Strong (V8 isolate) | Deno permissions |
-| Python | Weak (GIL doesn't isolate) | OS-level only |
 
 Recommendation: Use Safe Mode OS sandbox for all engines; Deno's built-in sandbox is additional defense.
 
@@ -176,6 +175,5 @@ Recommendation: Use Safe Mode OS sandbox for all engines; Deno's built-in sandbo
 - [claw-script crate docs](../crates/claw-script.md)
 - [mlua documentation](https://github.com/khvzak/mlua)
 - [deno_core documentation](https://docs.rs/deno_core)
-- [PyO3 documentation](https://pyo3.rs)
 
 ---

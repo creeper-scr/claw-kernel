@@ -51,14 +51,46 @@ impl SecureMemoryStore {
     }
 
     /// Calculate the estimated byte size of a memory item.
+    ///
+    /// This function is the single source of truth for quota accounting.
+    /// It is used by both `estimate_size()` (pre-store check) and should
+    /// be kept in sync with any future `namespace_usage()` overrides.
+    ///
+    /// The **50 MB quota** (`quota_bytes = 52_428_800`) represents the maximum
+    /// total in-memory footprint (content + embeddings + metadata) that a single
+    /// agent namespace is allowed to occupy. This guards against runaway agents
+    /// exhausting host storage.
+    ///
+    /// Formula: `content + tags_serialized + embedding_bytes + METADATA_OVERHEAD`
+    ///
+    /// # Constants
+    /// - `METADATA_OVERHEAD` = 128 bytes per entry, covering: row ID string,
+    ///   namespace string, timestamps (2×8 B), importance (4 B), SQLite B-tree
+    ///   page overhead, and JSON framing characters.
+    fn calculate_entry_size(content: &str, tags: &[String], embedding: Option<&[f32]>) -> u64 {
+        /// Fixed overhead per row: timestamps (2×8 B), importance (8 B),
+        /// SQLite row header, B-tree overhead, JSON brackets, and field separators. Total: 128 B.
+        const METADATA_OVERHEAD: usize = 128;
+        // +2 per tag accounts for JSON surrounding quotes in serialized representation.
+        let tags_size: usize = tags.iter().map(|t| t.len() + 2).sum();
+        let embedding_size = embedding.map(|e| e.len() * 4).unwrap_or(0);
+        (content.len() + tags_size + embedding_size + METADATA_OVERHEAD) as u64
+    }
+
+    /// Calculate the estimated byte size of a memory item.
+    ///
+    /// FIX-11: includes id, tags, and a fixed overhead for SQLite row metadata
+    /// so that quota checks more accurately reflect real on-disk usage.
+    ///
+    /// Delegates to `calculate_entry_size()` to ensure quota accounting is
+    /// consistent across all callers.
     fn estimate_size(&self, item: &MemoryItem) -> u64 {
-        item.content.len() as u64
-            + item.namespace.len() as u64
-            + item
-                .embedding
-                .as_ref()
-                .map(|e| e.len() as u64 * 4)
-                .unwrap_or(0)
+        let id_and_ns = item.id.0.len() as u64 + item.namespace.len() as u64;
+        Self::calculate_entry_size(
+            &item.content,
+            &item.tags,
+            item.embedding.as_deref(),
+        ) + id_and_ns
     }
 }
 
@@ -83,12 +115,16 @@ impl MemoryStore for SecureMemoryStore {
         // This prevents race conditions when multiple concurrent stores
         // would each see available quota and exceed the limit collectively.
         let _guard = self.quota_lock.lock().await;
-
-        // Use atomic quota check if available (SQLite backend)
-        // This performs the check and store in a single database transaction
-        self.inner
-            .store_with_quota_check(item, estimated_size, self.config.quota_bytes)
-            .await
+        let current = self.inner.namespace_usage(&item.namespace).await?;
+        let after = current.saturating_add(estimated_size);
+        if after > self.config.quota_bytes {
+            return Err(MemoryError::QuotaExceeded {
+                namespace: item.namespace.clone(),
+                used: current,
+                limit: self.config.quota_bytes,
+            });
+        }
+        self.inner.store(item).await
     }
 
     // ------------------------------------------------------------------
@@ -164,6 +200,49 @@ impl MemoryStore for SecureMemoryStore {
     // ------------------------------------------------------------------
     async fn namespace_usage(&self, namespace: &str) -> Result<u64, MemoryError> {
         self.inner.namespace_usage(namespace).await
+    }
+
+    // ------------------------------------------------------------------
+    // keyword_search — namespace filter in Safe Mode
+    // ------------------------------------------------------------------
+    async fn keyword_search(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<MemoryItem>, MemoryError> {
+        let results = self.inner.keyword_search(query, top_k).await?;
+        if self.config.namespace_isolation {
+            Ok(results
+                .into_iter()
+                .filter(|item| item.namespace == self.namespace)
+                .collect())
+        } else {
+            Ok(results)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // hybrid_search — namespace filter in Safe Mode
+    // ------------------------------------------------------------------
+    async fn hybrid_search(
+        &self,
+        query: &str,
+        query_embedding: &[f32],
+        top_k: usize,
+        alpha: f32,
+    ) -> Result<Vec<MemoryItem>, MemoryError> {
+        let results = self
+            .inner
+            .hybrid_search(query, query_embedding, top_k, alpha)
+            .await?;
+        if self.config.namespace_isolation {
+            Ok(results
+                .into_iter()
+                .filter(|item| item.namespace == self.namespace)
+                .collect())
+        } else {
+            Ok(results)
+        }
     }
 }
 

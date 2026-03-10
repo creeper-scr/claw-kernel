@@ -2,6 +2,9 @@
 
 use std::sync::{Arc, Mutex};
 
+/// 单个脚本可 spawn 的子代理上限。
+const MAX_CHILDREN_PER_BRIDGE: usize = 256;
+
 use claw_runtime::{
     agent_types::{AgentConfig, AgentId, AgentStatus},
     orchestrator::AgentOrchestrator,
@@ -35,11 +38,12 @@ use mlua::{Lua, Result as LuaResult, UserData, UserDataMethods};
 /// end
 /// ```
 pub struct AgentBridge {
-    orchestrator: Arc<AgentOrchestrator>,
-    #[allow(dead_code)]
-    parent_agent_id: String,
+    /// The orchestrator for agent management.
+    pub orchestrator: Arc<AgentOrchestrator>,
+    /// Parent agent ID.
+    pub parent_agent_id: String,
     /// Tracks child agents spawned by this bridge for auto-cleanup.
-    children: Mutex<Vec<AgentId>>,
+    pub children: Mutex<Vec<AgentId>>,
 }
 
 impl AgentBridge {
@@ -68,6 +72,17 @@ impl UserData for AgentBridge {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
         // spawn(name) -> agent_id string
         methods.add_method("spawn", |_lua, this, name: String| {
+            // Guard: prevent agent bomb attacks
+            {
+                let children = this.children.lock().unwrap();
+                if children.len() >= MAX_CHILDREN_PER_BRIDGE {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "agent spawn limit reached: a single script may spawn at most {} agents",
+                        MAX_CHILDREN_PER_BRIDGE
+                    )));
+                }
+            } // lock released before potentially blocking register()
+
             let config = AgentConfig::new(&name);
             let agent_id = config.agent_id.clone();
 
@@ -159,12 +174,15 @@ mod tests {
     use std::sync::Arc;
 
     fn make_orchestrator() -> Arc<AgentOrchestrator> {
+        use claw_pal::TokioProcessManager;
+        
         let bus = Arc::new(EventBus::new());
-        Arc::new(AgentOrchestrator::new(bus))
+        let process_manager = Arc::new(TokioProcessManager::new());
+        Arc::new(AgentOrchestrator::new(bus, process_manager))
     }
 
-    #[test]
-    fn test_agent_bridge_spawn() {
+    #[tokio::test]
+    async fn test_agent_bridge_spawn() {
         let orc = make_orchestrator();
         let bridge = AgentBridge::new(Arc::clone(&orc), "parent");
 
@@ -177,8 +195,8 @@ mod tests {
         assert_eq!(orc.agent_count(), 1);
     }
 
-    #[test]
-    fn test_agent_bridge_status() {
+    #[tokio::test]
+    async fn test_agent_bridge_status() {
         let orc = make_orchestrator();
         let bridge = AgentBridge::new(Arc::clone(&orc), "parent");
 
@@ -193,8 +211,8 @@ mod tests {
         assert_eq!(status, "running");
     }
 
-    #[test]
-    fn test_agent_bridge_status_unknown() {
+    #[tokio::test]
+    async fn test_agent_bridge_status_unknown() {
         let orc = make_orchestrator();
         let bridge = AgentBridge::new(Arc::clone(&orc), "parent");
 
@@ -208,8 +226,8 @@ mod tests {
         assert_eq!(status, "unknown");
     }
 
-    #[test]
-    fn test_agent_bridge_kill() {
+    #[tokio::test]
+    async fn test_agent_bridge_kill() {
         let orc = make_orchestrator();
         let bridge = AgentBridge::new(Arc::clone(&orc), "parent");
 
@@ -228,8 +246,8 @@ mod tests {
         assert_eq!(orc.agent_count(), 0);
     }
 
-    #[test]
-    fn test_agent_bridge_list() {
+    #[tokio::test]
+    async fn test_agent_bridge_list() {
         let orc = make_orchestrator();
         let bridge = AgentBridge::new(Arc::clone(&orc), "parent");
 
@@ -257,8 +275,8 @@ mod tests {
         assert_eq!(count, 2);
     }
 
-    #[test]
-    fn test_agent_bridge_auto_cleanup_on_drop() {
+    #[tokio::test]
+    async fn test_agent_bridge_auto_cleanup_on_drop() {
         let orc = make_orchestrator();
 
         {
@@ -287,8 +305,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_agent_bridge_info() {
+    #[tokio::test]
+    async fn test_agent_bridge_info() {
         let orc = make_orchestrator();
         let bridge = AgentBridge::new(Arc::clone(&orc), "parent");
 
@@ -307,5 +325,38 @@ mod tests {
             .eval()
             .unwrap();
         assert!(has_info);
+    }
+
+    #[tokio::test]
+    async fn test_spawn_limit_enforced() {
+        // Test that spawning more than MAX_CHILDREN_PER_BRIDGE agents fails.
+        // We register (MAX_CHILDREN_PER_BRIDGE + 1) agents from Lua;
+        // the last spawn must return an error containing "spawn limit reached".
+        let orc = make_orchestrator();
+        let bridge = AgentBridge::new(Arc::clone(&orc), "parent");
+
+        let lua = Lua::new();
+        register_agent(&lua, bridge).unwrap();
+
+        // Spawn exactly MAX_CHILDREN_PER_BRIDGE agents — these should all succeed.
+        for i in 0..MAX_CHILDREN_PER_BRIDGE {
+            let script = format!(r#"agent:spawn("worker-{}")"#, i);
+            lua.load(&script)
+                .exec()
+                .expect("spawn should succeed under the limit");
+        }
+
+        // The next spawn must fail with the limit error.
+        let result: mlua::Result<String> = lua
+            .load(r#"return agent:spawn("one-too-many")"#)
+            .eval();
+
+        assert!(result.is_err(), "expected spawn to fail after limit");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("spawn limit reached"),
+            "expected 'spawn limit reached' in error, got: {}",
+            err_msg
+        );
     }
 }

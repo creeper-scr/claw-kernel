@@ -4,7 +4,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::{Stream, StreamExt};
+use futures::Stream;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::{
     error::ProviderError,
@@ -15,9 +16,10 @@ use crate::{
 };
 
 use self::format::AnthropicFormat;
+use crate::stream_utils::parse_sse_stream;
 
 pub struct AnthropicProvider {
-    api_key: String,
+    api_key: SecretString,
     model: String,
     transport: Arc<dyn HttpTransport>,
     retry_config: Option<RetryConfig>,
@@ -26,7 +28,7 @@ pub struct AnthropicProvider {
 impl AnthropicProvider {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SecretString::new(api_key.into()),
             model: model.into(),
             transport: Arc::new(DefaultHttpTransport::new("https://api.anthropic.com")),
             retry_config: None,
@@ -41,7 +43,7 @@ impl AnthropicProvider {
         transport: Arc<dyn HttpTransport>,
     ) -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: SecretString::new(api_key.into()),
             model: model.into(),
             transport,
             retry_config: None,
@@ -76,7 +78,7 @@ impl AnthropicProvider {
 
     fn build_headers(&self) -> Vec<(String, String)> {
         vec![
-            ("x-api-key".to_string(), self.api_key.clone()),
+            ("x-api-key".to_string(), self.api_key.expose_secret().clone()),
             ("anthropic-version".to_string(), "2023-06-01".to_string()),
             ("Content-Type".to_string(), "application/json".to_string()),
         ]
@@ -134,28 +136,7 @@ impl LLMProvider for AnthropicProvider {
             .collect();
         let byte_stream = self.transport.post_stream(&url, &headers, &body).await?;
 
-        let delta_stream = byte_stream.flat_map(move |chunk_result| {
-            let deltas: Vec<Result<Delta, ProviderError>> = match chunk_result {
-                Err(e) => vec![Err(e)],
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    text.lines()
-                        .filter_map(|line| {
-                            let trimmed = line.trim();
-                            if trimmed.is_empty() {
-                                return None;
-                            }
-                            match AnthropicFormat::parse_stream_chunk(trimmed.as_bytes()) {
-                                Ok(Some(delta)) => Some(Ok(delta)),
-                                Ok(None) => None,
-                                Err(e) => Some(Err(ProviderError::Other(e.to_string()))),
-                            }
-                        })
-                        .collect()
-                }
-            };
-            futures::stream::iter(deltas)
-        });
+        let delta_stream = parse_sse_stream::<AnthropicFormat>(byte_stream);
 
         Ok(Box::pin(delta_stream))
     }
@@ -168,22 +149,22 @@ mod tests {
 
     #[test]
     fn test_anthropic_provider_new() {
-        let p = AnthropicProvider::new("sk-ant-test", "claude-opus-4-6");
-        assert_eq!(p.api_key, "sk-ant-test");
+        let p = AnthropicProvider::new("test-key-placeholder", "claude-opus-4-6");
+        assert_eq!(p.api_key.expose_secret(), "test-key-placeholder");
         assert_eq!(p.model, "claude-opus-4-6");
         assert!(p.retry_config().is_none());
     }
 
     #[test]
     fn test_anthropic_provider_id() {
-        let p = AnthropicProvider::new("key", "claude-opus-4-6");
+        let p = AnthropicProvider::new("test-key-placeholder", "claude-opus-4-6");
         assert_eq!(p.provider_id(), "anthropic");
     }
 
     #[test]
     fn test_anthropic_provider_with_retry() {
         let config = RetryConfig::new().with_max_retries(5);
-        let p = AnthropicProvider::new("sk-ant-test", "claude-opus-4-6").with_retry(config);
+        let p = AnthropicProvider::new("test-key-placeholder", "claude-opus-4-6").with_retry(config);
         assert_eq!(p.retry_config().unwrap().max_retries, 5);
     }
 }

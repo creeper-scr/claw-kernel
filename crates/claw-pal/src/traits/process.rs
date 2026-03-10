@@ -11,7 +11,7 @@ use std::time::Duration;
 ///
 /// Implementations must handle platform-specific process management while providing
 /// a consistent async interface. All methods are async and support cancellation.
-#[allow(async_fn_in_trait)]
+#[async_trait::async_trait]
 pub trait ProcessManager: Send + Sync {
     /// Spawn a new process with the given configuration.
     ///
@@ -88,6 +88,7 @@ mod tests {
     /// Mock implementation of ProcessManager for testing.
     struct MockProcessManager;
 
+    #[async_trait::async_trait]
     impl ProcessManager for MockProcessManager {
         async fn spawn(&self, _config: ProcessConfig) -> Result<ProcessHandle, ProcessError> {
             Ok(ProcessHandle {

@@ -3,10 +3,19 @@
 //! 启动一个 axum HTTP 服务器，在 `POST /webhook` 接收入站消息；
 //! 通过 reqwest 将出站消息 POST 到配置的目标 URL。
 
-use std::net::SocketAddr;
+use std::{
+    net::SocketAddr,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use async_trait::async_trait;
-use axum::{routing::post, Json, Router};
+use axum::{
+    body::Bytes,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::post,
+    Router,
+};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::{
@@ -14,6 +23,37 @@ use crate::{
     traits::Channel,
     types::{ChannelId, ChannelMessage},
 };
+
+// ── HMAC-SHA256 signature verification ───────────────────────────────────────
+
+/// Verify a HMAC-SHA256 request signature.
+///
+/// `secret`    — the shared webhook secret (bytes)
+/// `body`      — raw request body
+/// `signature` — value from the `X-Hub-Signature-256` header; may optionally
+///               be prefixed with `"sha256="`, which is stripped automatically.
+///
+/// Uses the `hmac` crate's constant-time comparison so that timing attacks
+/// cannot leak information about the expected HMAC value.
+fn verify_hmac_sha256(secret: &[u8], body: &[u8], signature: &str) -> bool {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    type HmacSha256 = Hmac<Sha256>;
+
+    let Ok(mut mac) = HmacSha256::new_from_slice(secret) else {
+        return false;
+    };
+    mac.update(body);
+
+    // Strip optional "sha256=" prefix.
+    let sig_hex = signature.strip_prefix("sha256=").unwrap_or(signature);
+    let Ok(sig_bytes) = hex::decode(sig_hex) else {
+        return false;
+    };
+
+    // mac.verify_slice uses constant-time comparison internally.
+    mac.verify_slice(&sig_bytes).is_ok()
+}
 
 /// Webhook 双向通道。
 ///
@@ -25,10 +65,15 @@ pub struct WebhookChannel {
     inbound_tx: mpsc::Sender<ChannelMessage>,
     inbound_rx: Mutex<mpsc::Receiver<ChannelMessage>>,
     outbound_url: Option<String>,
+    /// Shared HMAC secret used to verify `X-Hub-Signature-256` on incoming
+    /// requests.  `None` disables signature checking (development only).
+    secret: Option<String>,
     client: reqwest::Client,
     server_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// 实际监听地址（connect() 之后设置，用于端口 0 场景）。
     local_addr: Mutex<Option<SocketAddr>>,
+    /// Guards against double-start: true after the first successful connect().
+    started: AtomicBool,
 }
 
 impl WebhookChannel {
@@ -45,15 +90,35 @@ impl WebhookChannel {
             inbound_tx: tx,
             inbound_rx: Mutex::new(rx),
             outbound_url,
+            secret: None,
             client: reqwest::Client::new(),
             server_handle: Mutex::new(None),
             local_addr: Mutex::new(None),
+            started: AtomicBool::new(false),
         }
     }
 
     /// 返回服务器实际监听地址（仅在 `connect()` 之后有效）。
     pub async fn local_addr(&self) -> Option<SocketAddr> {
         *self.local_addr.lock().await
+    }
+
+    /// 设置用于验证入站 webhook 签名的 HMAC 密钥。
+    ///
+    /// 启用后，每个 `POST /webhook` 请求都必须携带有效的 `X-Hub-Signature-256` 头，
+    /// 否则服务器将返回 `401 Unauthorized`。
+    /// 密钥为 `None`（默认值）时跳过签名校验（仅限开发环境）。
+    ///
+    /// Returns `Err(ChannelError::InvalidConfig)` if `secret` is empty.
+    pub fn with_secret(mut self, secret: impl Into<String>) -> Result<Self, ChannelError> {
+        let secret = secret.into();
+        if secret.is_empty() {
+            return Err(ChannelError::InvalidConfig(
+                "HMAC secret cannot be empty".to_string(),
+            ));
+        }
+        self.secret = Some(secret);
+        Ok(self)
     }
 }
 
@@ -69,6 +134,22 @@ impl Channel for WebhookChannel {
 
     /// 启动 axum 服务器，开始接收入站 webhook 消息。
     async fn connect(&self) -> Result<(), ChannelError> {
+        // Idempotent: if already started, return immediately.
+        if self
+            .started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if self.secret.is_none() {
+            tracing::error!(
+                "⚠️  SECURITY: WebhookChannel is running WITHOUT HMAC signature verification. \
+                 Any incoming request will be accepted. Call .with_secret() for production use."
+            );
+        }
+
         let tx = self.inbound_tx.clone();
         // 在同步上下文中绑定端口，可立即获得实际监听地址（端口 0 时尤其有用）。
         let std_listener = std::net::TcpListener::bind(self.bind_addr)
@@ -85,13 +166,33 @@ impl Channel for WebhookChannel {
             .map_err(|e| ChannelError::ConnectionFailed(format!("local_addr: {e}")))?;
         *self.local_addr.lock().await = Some(addr);
 
+        let secret = self.secret.clone();
         let router = Router::new().route(
             "/webhook",
-            post(move |Json(msg): Json<ChannelMessage>| {
+            post(move |headers: HeaderMap, body: Bytes| {
                 let tx = tx.clone();
+                let secret = secret.clone();
                 async move {
-                    // 忽略满队列错误（接收方关闭时服务器也将随之关闭）
-                    let _ = tx.send(msg).await;
+                    // FIX-01: verify HMAC-SHA256 when a shared secret is configured.
+                    if let Some(ref s) = secret {
+                        let sig = headers
+                            .get("x-hub-signature-256")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("");
+                        if !verify_hmac_sha256(s.as_bytes(), &body, sig) {
+                            return (StatusCode::UNAUTHORIZED, "Invalid signature")
+                                .into_response();
+                        }
+                    }
+                    // Parse JSON and enqueue message.
+                    match serde_json::from_slice::<ChannelMessage>(&body) {
+                        Ok(msg) => {
+                            // 忽略满队列错误（接收方关闭时服务器也将随之关闭）
+                            let _ = tx.send(msg).await;
+                            StatusCode::OK.into_response()
+                        }
+                        Err(_) => (StatusCode::BAD_REQUEST, "Invalid JSON").into_response(),
+                    }
                 }
             }),
         );

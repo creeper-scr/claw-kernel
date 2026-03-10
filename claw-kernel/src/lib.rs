@@ -32,6 +32,10 @@ pub use claw_channel as channel;
 // ── Layer 3: Script engines ──────────────────────────────────────────────────
 pub use claw_script as script;
 
+// ── Layer 3: Skill engine ────────────────────────────────────────────────────
+pub use claw_skills as skills;
+pub use claw_skills::{SkillIndex, SkillLoader, SkillManifest};
+
 // ── Prelude ──────────────────────────────────────────────────────────────────
 
 /// Convenient glob import of the most commonly used types.
@@ -42,12 +46,14 @@ pub use claw_script as script;
 pub mod prelude {
     // ── Runtime ──────────────────────────────────────────────────────────────
     pub use claw_runtime::{
-        agent_types::{AgentConfig, AgentHandle, AgentId, ExecutionMode},
+        agent_types::{AgentConfig, AgentHandle, AgentId},
         event_bus::EventBus,
         events::Event,
         orchestrator::AgentOrchestrator,
         runtime::Runtime,
     };
+    // ExecutionMode is re-exported from claw_pal
+    pub use claw_pal::ExecutionMode;
 
     // ── Provider ─────────────────────────────────────────────────────────────
     pub use claw_provider::{
@@ -78,16 +84,13 @@ pub mod prelude {
     };
 
     // ── Memory ───────────────────────────────────────────────────────────────
+    // Note: SqliteMemoryStore, SecureMemoryStore, and NgramEmbedder are no longer
+    // re-exported here. Use the `claw-memory` crate directly for LTM/semantic-search.
     pub use claw_memory::{
         error::MemoryError,
-        secure::SecureMemoryStore,
-        sqlite::SqliteMemoryStore,
         traits::MemoryStore,
         types::{MemoryId, MemoryItem},
     };
-
-    // ── Embedding (lives in claw-provider) ────────────────────────────────
-    pub use claw_provider::embedding::{Embedder, NgramEmbedder};
 
     // ── Channel ──────────────────────────────────────────────────────────────
     pub use claw_channel::{
@@ -105,6 +108,9 @@ pub mod prelude {
 
     #[cfg(feature = "engine-lua")]
     pub use claw_script::LuaEngine;
+
+    #[cfg(feature = "engine-v8")]
+    pub use claw_script::{V8Engine, V8EngineOptions};
 
     // ── PAL ──────────────────────────────────────────────────────────────────
     pub use claw_pal::{
@@ -140,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_memory_reexport_accessible() {
-        let _ = std::any::type_name::<crate::memory::sqlite::SqliteMemoryStore>();
+        let _ = std::any::type_name::<crate::memory::traits::MemoryStore>();
     }
 
     #[test]

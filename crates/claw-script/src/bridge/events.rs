@@ -6,6 +6,8 @@ use claw_runtime::{event_bus::EventBus, events::Event, EventReceiver};
 use mlua::{Lua, Result as LuaResult, UserData, UserDataMethods};
 use serde_json::{json, Value as JsonValue};
 
+use crate::bridge::conversion::{json_to_lua, lua_to_json};
+
 /// Events bridge exposing EventBus to Lua scripts.
 ///
 /// Registered as the global `events` table.
@@ -177,32 +179,7 @@ fn event_to_parts(event: &Event) -> (String, JsonValue) {
 
 /// Convert a `serde_json::Value` to a `mlua::Value`.
 fn json_to_lua_val<'lua>(lua: &'lua Lua, val: &JsonValue) -> LuaResult<mlua::Value<'lua>> {
-    match val {
-        JsonValue::Null => Ok(mlua::Value::Nil),
-        JsonValue::Bool(b) => Ok(mlua::Value::Boolean(*b)),
-        JsonValue::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(mlua::Value::Integer(i))
-            } else {
-                Ok(mlua::Value::Number(n.as_f64().unwrap_or(0.0)))
-            }
-        }
-        JsonValue::String(s) => Ok(mlua::Value::String(lua.create_string(s.as_bytes())?)),
-        JsonValue::Array(arr) => {
-            let table = lua.create_table()?;
-            for (i, elem) in arr.iter().enumerate() {
-                table.raw_set(i + 1, json_to_lua_val(lua, elem)?)?;
-            }
-            Ok(mlua::Value::Table(table))
-        }
-        JsonValue::Object(map) => {
-            let table = lua.create_table()?;
-            for (k, v) in map {
-                table.raw_set(k.as_str(), json_to_lua_val(lua, v)?)?;
-            }
-            Ok(mlua::Value::Table(table))
-        }
-    }
+    json_to_lua(lua, val, 0)
 }
 
 impl UserData for EventsBridge {
@@ -336,40 +313,6 @@ impl UserData for EventsBridge {
     }
 }
 
-/// Convert a `mlua::Value` to a `serde_json::Value`.
-fn lua_to_json(val: mlua::Value) -> JsonValue {
-    match val {
-        mlua::Value::Nil => JsonValue::Null,
-        mlua::Value::Boolean(b) => json!(b),
-        mlua::Value::Integer(i) => json!(i),
-        mlua::Value::Number(f) => json!(f),
-        mlua::Value::String(s) => JsonValue::String(s.to_str().unwrap_or("").to_string()),
-        mlua::Value::Table(t) => {
-            let len = t.raw_len();
-            if len > 0 {
-                let arr: Vec<JsonValue> = (1..=(len as i64))
-                    .filter_map(|i| t.raw_get::<i64, mlua::Value>(i).ok())
-                    .map(lua_to_json)
-                    .collect();
-                if arr.len() == len {
-                    return JsonValue::Array(arr);
-                }
-            }
-            let mut map = serde_json::Map::new();
-            for (k, v) in t.pairs::<mlua::Value, mlua::Value>().flatten() {
-                let key = match k {
-                    mlua::Value::String(s) => s.to_str().unwrap_or("").to_string(),
-                    mlua::Value::Integer(i) => i.to_string(),
-                    _ => continue,
-                };
-                map.insert(key, lua_to_json(v));
-            }
-            JsonValue::Object(map)
-        }
-        _ => JsonValue::Null,
-    }
-}
-
 /// Register the EventsBridge as a global `events` table in the Lua instance.
 pub fn register_events(lua: &Lua, bridge: EventsBridge) -> LuaResult<()> {
     lua.globals().set("events", bridge)
@@ -420,8 +363,7 @@ mod tests {
         bus.publish(Event::Custom {
             event_type: "custom_event".to_string(),
             data: json!({"msg": "hello"}),
-        })
-        .unwrap();
+        });
 
         // Poll to process.
         lua.load("events:poll()").exec().unwrap();
@@ -452,13 +394,11 @@ mod tests {
         bus.publish(Event::Custom {
             event_type: "my_event".to_string(),
             data: json!({}),
-        })
-        .unwrap();
+        });
         bus.publish(Event::Custom {
             event_type: "my_event".to_string(),
             data: json!({}),
-        })
-        .unwrap();
+        });
 
         // Poll once to process both events.
         lua.load("events:poll()").exec().unwrap();
@@ -514,13 +454,11 @@ mod tests {
         bus.publish(Event::Custom {
             event_type: "event_a".to_string(),
             data: json!({}),
-        })
-        .unwrap();
+        });
         bus.publish(Event::Custom {
             event_type: "event_b".to_string(),
             data: json!({}),
-        })
-        .unwrap();
+        });
 
         lua.load("events:poll()").exec().unwrap();
 
@@ -557,7 +495,7 @@ mod tests {
         .exec()
         .unwrap();
 
-        bus.publish(Event::Shutdown).unwrap();
+        bus.publish(Event::Shutdown);
         lua.load("events:poll()").exec().unwrap();
 
         let fired: bool = lua.load("return _shutdown_fired").eval().unwrap();
@@ -585,8 +523,7 @@ mod tests {
         bus.publish(Event::Custom {
             event_type: "data_event".to_string(),
             data: json!({"value": 42}),
-        })
-        .unwrap();
+        });
 
         lua.load("events:poll()").exec().unwrap();
 

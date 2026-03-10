@@ -10,9 +10,8 @@ repository.workspace = true
 
 [features]
 default = []
-engine-lua = []
-engine-v8 = []
-engine-py = []
+engine-lua = ["claw-script/engine-lua"]
+engine-v8 = ["claw-script/engine-v8"]
 
 [[bin]]
 name = "claw-kernel"
@@ -28,6 +27,7 @@ claw-loop = { workspace = true }
 claw-memory = { workspace = true }
 claw-channel = { workspace = true }
 claw-script = { workspace = true }
+claw-skills = { workspace = true }
 
 # CLI 解析
 clap = { version = "4.5", features = ["derive", "env"] }

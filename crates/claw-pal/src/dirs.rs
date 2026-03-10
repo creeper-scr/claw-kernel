@@ -261,6 +261,53 @@ impl KernelDirs {
         std::fs::create_dir_all(&self.tools_dir)?;
         Ok(())
     }
+
+    /// Platform-standard IPC socket path for the kernel daemon.
+    ///
+    /// - Linux: uses `XDG_RUNTIME_DIR/claw/kernel.sock` if set, otherwise falls
+    ///   back to `data_dir()/kernel.sock`, then `/tmp/claw-kernel.sock`
+    /// - macOS: uses `data_dir()/kernel.sock`, falls back to `/tmp/claw-kernel.sock`
+    /// - Windows: `\\.\pipe\claw-kernel-<USERNAME>` (named pipe, username suffix
+    ///   for per-user uniqueness)
+    pub fn socket_path() -> PathBuf {
+        #[cfg(target_os = "windows")]
+        {
+            let user = std::env::var("USERNAME").unwrap_or_else(|_| "default".to_string());
+            PathBuf::from(format!(r"\\.\pipe\claw-kernel-{}", user))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // On Linux, prefer XDG_RUNTIME_DIR if set
+            #[cfg(target_os = "linux")]
+            if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
+                let p = PathBuf::from(runtime).join("claw").join("kernel.sock");
+                return p;
+            }
+            // macOS and Linux fallback: use data_dir
+            Self::data_dir()
+                .map(|d| d.join("kernel.sock"))
+                .unwrap_or_else(|_| PathBuf::from("/tmp/claw-kernel.sock"))
+        }
+    }
+
+    /// PID file path for the kernel daemon (same directory as socket, `.pid` extension).
+    ///
+    /// - Linux/macOS: `<data_dir>/kernel.pid`, falls back to `/tmp/claw-kernel.pid`
+    /// - Windows: `%LOCALAPPDATA%\claw-kernel\kernel.pid`, falls back to `kernel.pid`
+    pub fn pid_path() -> PathBuf {
+        #[cfg(target_os = "windows")]
+        {
+            dirs::data_local_dir()
+                .map(|d| d.join("claw-kernel").join("kernel.pid"))
+                .unwrap_or_else(|| PathBuf::from("kernel.pid"))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Self::data_dir()
+                .map(|d| d.join("kernel.pid"))
+                .unwrap_or_else(|_| PathBuf::from("/tmp/claw-kernel.pid"))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -305,5 +352,23 @@ mod tests {
         assert!(dirs.log_dir.exists());
         assert!(dirs.agents_dir.exists());
         assert!(dirs.tools_dir.exists());
+    }
+
+    #[test]
+    fn test_socket_path_is_absolute_or_pipe() {
+        let path = KernelDirs::socket_path();
+        // Either an absolute path or a Windows named pipe
+        let s = path.to_string_lossy();
+        assert!(
+            path.is_absolute() || s.starts_with(r"\\.\pipe\"),
+            "socket_path should be absolute or a named pipe, got: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn test_pid_path_has_pid_extension() {
+        let path = KernelDirs::pid_path();
+        assert_eq!(path.extension().and_then(|e| e.to_str()), Some("pid"));
     }
 }

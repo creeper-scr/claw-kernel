@@ -10,12 +10,12 @@ use claw_tools::{
     types::{PermissionSet, ToolContext, ToolResult},
 };
 use futures::Stream;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 
 use crate::{
     error::AgentError,
     state_machine::{AgentState, StateEvent, StateMachine, TransitionResult},
-    traits::{HistoryManager, StopCondition},
+    traits::{EventPublisher, HistoryManager, StopCondition},
     types::{AgentLoopConfig, AgentResult, FinishReason, LoopState},
 };
 
@@ -42,6 +42,10 @@ pub struct AgentLoop {
     pub(crate) state: Arc<RwLock<AgentState>>,
     /// Broadcast channel for state change notifications.
     pub(crate) state_tx: broadcast::Sender<AgentState>,
+    /// Event publisher for agent lifecycle events.
+    pub(crate) event_publisher: Arc<dyn EventPublisher>,
+    /// Agent ID for event publishing.
+    pub(crate) agent_id: String,
 }
 
 impl AgentLoop {
@@ -74,13 +78,16 @@ impl AgentLoop {
         let mut loop_state = LoopState::new();
 
         loop {
+            // Publish turn started event
+            self.event_publisher.publish_turn_started(&self.agent_id, loop_state.turn);
+
             // ── Step 2: custom stop conditions ────────────────────────────────
             for cond in &self.stop_conditions {
                 if cond.should_stop(&loop_state) {
                     // Transition: Running -> Completed
                     self.transition(&mut state_machine, StateEvent::StopConditionMet)
                         .await?;
-                    return Ok(AgentResult {
+                    let result = AgentResult {
                         finish_reason: FinishReason::StopCondition,
                         last_message: self.history.messages().last().cloned(),
                         usage: loop_state.usage,
@@ -93,7 +100,9 @@ impl AgentLoop {
                             .unwrap_or_default(),
                         tool_calls: tool_calls_accumulated.clone(),
                         execution_time_ms: start_time.elapsed().as_millis() as u64,
-                    });
+                    };
+                    self.event_publisher.publish_loop_completed(&self.agent_id, "stop_condition", result.turns);
+                    return Ok(result);
                 }
             }
 
@@ -102,7 +111,7 @@ impl AgentLoop {
                 // Transition: Running -> Completed
                 self.transition(&mut state_machine, StateEvent::StopConditionMet)
                     .await?;
-                return Ok(AgentResult {
+                let result = AgentResult {
                     finish_reason: FinishReason::MaxTurns,
                     last_message: self.history.messages().last().cloned(),
                     usage: loop_state.usage,
@@ -115,7 +124,9 @@ impl AgentLoop {
                         .unwrap_or_default(),
                     tool_calls: tool_calls_accumulated.clone(),
                     execution_time_ms: start_time.elapsed().as_millis() as u64,
-                });
+                };
+                self.event_publisher.publish_loop_completed(&self.agent_id, "max_turns", result.turns);
+                return Ok(result);
             }
 
             // ── Step 3b: token_budget guard ───────────────────────────────────
@@ -125,7 +136,7 @@ impl AgentLoop {
                 // Transition: Running -> Completed
                 self.transition(&mut state_machine, StateEvent::StopConditionMet)
                     .await?;
-                return Ok(AgentResult {
+                let result = AgentResult {
                     finish_reason: FinishReason::TokenBudget,
                     last_message: self.history.messages().last().cloned(),
                     usage: loop_state.usage,
@@ -138,7 +149,9 @@ impl AgentLoop {
                         .unwrap_or_default(),
                     tool_calls: tool_calls_accumulated.clone(),
                     execution_time_ms: start_time.elapsed().as_millis() as u64,
-                });
+                };
+                self.event_publisher.publish_loop_completed(&self.agent_id, "token_budget", result.turns);
+                return Ok(result);
             }
 
             // ── Step 4: build options and call the LLM ────────────────────────
@@ -149,6 +162,14 @@ impl AgentLoop {
             }
 
             let messages: Vec<Message> = self.history.messages().to_vec();
+
+            // Publish LLM request event
+            self.event_publisher.publish_llm_request(
+                &self.agent_id,
+                self.provider.provider_id(),
+                self.provider.model_id(),
+                messages.len(),
+            );
 
             // Transition: Running -> AwaitingLLM
             self.transition(&mut state_machine, StateEvent::LLMRequestSent)
@@ -191,7 +212,7 @@ impl AgentLoop {
                     .await?;
                 self.transition(&mut state_machine, StateEvent::StopConditionMet)
                     .await?;
-                return Ok(AgentResult {
+                let result = AgentResult {
                     finish_reason: FinishReason::TokenBudget,
                     last_message: Some(response.message),
                     usage: loop_state.usage,
@@ -199,10 +220,21 @@ impl AgentLoop {
                     content,
                     tool_calls: tool_calls_accumulated.clone(),
                     execution_time_ms: start_time.elapsed().as_millis() as u64,
-                });
+                };
+                self.event_publisher.publish_loop_completed(&self.agent_id, "token_budget", result.turns);
+                return Ok(result);
             }
 
             let assistant_msg = response.message.clone();
+            
+            // Publish LLM response event
+            self.event_publisher.publish_llm_response(
+                &self.agent_id,
+                self.provider.provider_id(),
+                response.usage.clone(),
+                &format!("{:?}", response.finish_reason),
+            );
+            
             self.history.append(response.message.clone());
             loop_state.history_len = self.history.len();
 
@@ -217,6 +249,11 @@ impl AgentLoop {
                 if let Some(ref registry) = self.tools {
                     let tool_calls = assistant_msg.tool_calls.as_ref().unwrap().clone();
                     tool_calls_accumulated.extend(tool_calls.clone());
+
+                    // Publish tool called events
+                    for call in &tool_calls {
+                        self.event_publisher.publish_tool_called(&self.agent_id, &call.name, &call.id);
+                    }
 
                     // Transition: AwaitingLLM -> ToolExecuting
                     self.transition(&mut state_machine, StateEvent::ToolsRequired)
@@ -234,10 +271,15 @@ impl AgentLoop {
                             }
                         };
 
-                    // Append tool results to history
-                    for (call_id, result_content) in tool_results {
+                    // Publish tool result events and append to history
+                    for (call_id, result_content) in &tool_results {
+                        // Find the tool name for this call_id
+                        if let Some(call) = tool_calls.iter().find(|c| c.id == *call_id) {
+                            let success = !result_content.contains("\"error\"");
+                            self.event_publisher.publish_tool_result(&self.agent_id, &call.name, call_id, success);
+                        }
                         self.history
-                            .append(Message::tool_result(call_id, result_content));
+                            .append(Message::tool_result(call_id.clone(), result_content.clone()));
                     }
                     loop_state.history_len = self.history.len();
 
@@ -246,6 +288,35 @@ impl AgentLoop {
                         .await?;
 
                     continue; // Back to top of loop with tool results in history.
+                } else {
+                    // FIX-21: no tool registry configured — return a structured error result
+                    // for every requested tool call so the LLM knows tools are unavailable
+                    // (rather than silently treating the response as a natural stop).
+                    let tool_calls = assistant_msg.tool_calls.as_ref().unwrap().clone();
+                    tracing::warn!(
+                        agent_id = %self.agent_id,
+                        "LLM requested {} tool call(s) but no ToolRegistry is configured",
+                        tool_calls.len()
+                    );
+
+                    self.transition(&mut state_machine, StateEvent::ToolsRequired)
+                        .await?;
+
+                    for call in &tool_calls {
+                        let error_json = serde_json::json!({
+                            "error": "no_tool_registry",
+                            "message": "This agent has no tool registry configured; tool calls are not available"
+                        })
+                        .to_string();
+                        self.history
+                            .append(Message::tool_result(call.id.clone(), error_json));
+                    }
+                    loop_state.history_len = self.history.len();
+
+                    self.transition(&mut state_machine, StateEvent::ToolsCompleted)
+                        .await?;
+
+                    continue;
                 }
             }
 
@@ -257,7 +328,7 @@ impl AgentLoop {
             self.transition(&mut state_machine, StateEvent::StopConditionMet)
                 .await?;
 
-            return Ok(AgentResult {
+            let result = AgentResult {
                 finish_reason: FinishReason::Stop,
                 last_message: Some(assistant_msg.clone()),
                 usage: loop_state.usage,
@@ -265,7 +336,9 @@ impl AgentLoop {
                 content: assistant_msg.content.clone(),
                 tool_calls: tool_calls_accumulated,
                 execution_time_ms: start_time.elapsed().as_millis() as u64,
-            });
+            };
+            self.event_publisher.publish_loop_completed(&self.agent_id, "stop", result.turns);
+            return Ok(result);
         }
     }
 
@@ -409,6 +482,392 @@ impl AgentLoop {
         ];
 
         Ok(stream::iter(chunks))
+    }
+
+    /// 真流式运行：每个 token 实时推送到 tx channel。
+    ///
+    /// 使用 `complete_stream()` 获取流式响应，每个 delta 立即通过 channel 发送。
+    /// 工具调用完成后继续流式处理后续 LLM 响应。
+    ///
+    /// # 停止条件
+    ///
+    /// 与 `run()` 相同：MaxTurns、TokenBudget、custom stop conditions，以及无工具调用时自然停止。
+    ///
+    /// # 示例
+    ///
+    /// ```rust,no_run
+    /// use claw_loop::{AgentLoopBuilder, StreamChunk};
+    /// use tokio::sync::mpsc;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let provider = std::sync::Arc::new(claw_provider::providers::provider_from_env()?);
+    /// let mut agent = AgentLoopBuilder::new()
+    ///     .with_provider(provider)
+    ///     .build()?;
+    ///
+    /// let (tx, mut rx) = mpsc::channel(64);
+    ///
+    /// tokio::spawn(async move {
+    ///     let _ = agent.run_streaming("Hello!", tx).await;
+    /// });
+    ///
+    /// while let Some(chunk) = rx.recv().await {
+    ///     match chunk {
+    ///         StreamChunk::Text { content, .. } => print!("{}", content),
+    ///         StreamChunk::Finish(_) => break,
+    ///         _ => {}
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn run_streaming(
+        &mut self,
+        initial_message: impl Into<String>,
+        tx: mpsc::Sender<crate::types::StreamChunk>,
+    ) -> Result<AgentResult, AgentError> {
+        use crate::types::StreamChunk;
+        use futures::StreamExt;
+
+        let start_time = std::time::Instant::now();
+        let mut tool_calls_accumulated: Vec<claw_provider::types::ToolCall> = Vec::new();
+        let mut state_machine = StateMachine::new();
+
+        // Transition: Idle -> Running
+        self.transition(&mut state_machine, StateEvent::Start).await?;
+
+        self.history.append(Message::user(initial_message));
+
+        let mut loop_state = LoopState::new();
+
+        loop {
+            // Publish turn started event
+            self.event_publisher.publish_turn_started(&self.agent_id, loop_state.turn);
+
+            // ── Custom stop conditions ─────────────────────────────────────────
+            for cond in &self.stop_conditions {
+                if cond.should_stop(&loop_state) {
+                    self.transition(&mut state_machine, StateEvent::StopConditionMet).await?;
+                    let result = AgentResult {
+                        finish_reason: FinishReason::StopCondition,
+                        last_message: self.history.messages().last().cloned(),
+                        usage: loop_state.usage,
+                        turns: loop_state.turn,
+                        content: self.history.messages().last().map(|m| m.content.clone()).unwrap_or_default(),
+                        tool_calls: tool_calls_accumulated.clone(),
+                        execution_time_ms: start_time.elapsed().as_millis() as u64,
+                    };
+                    self.event_publisher.publish_loop_completed(&self.agent_id, "stop_condition", result.turns);
+                    let _ = tx.send(StreamChunk::Finish(FinishReason::StopCondition)).await;
+                    return Ok(result);
+                }
+            }
+
+            // ── max_turns guard ────────────────────────────────────────────────
+            if loop_state.turn >= self.config.max_turns {
+                self.transition(&mut state_machine, StateEvent::StopConditionMet).await?;
+                let result = AgentResult {
+                    finish_reason: FinishReason::MaxTurns,
+                    last_message: self.history.messages().last().cloned(),
+                    usage: loop_state.usage,
+                    turns: loop_state.turn,
+                    content: self.history.messages().last().map(|m| m.content.clone()).unwrap_or_default(),
+                    tool_calls: tool_calls_accumulated.clone(),
+                    execution_time_ms: start_time.elapsed().as_millis() as u64,
+                };
+                self.event_publisher.publish_loop_completed(&self.agent_id, "max_turns", result.turns);
+                let _ = tx.send(StreamChunk::Finish(FinishReason::MaxTurns)).await;
+                return Ok(result);
+            }
+
+            // ── token_budget guard ─────────────────────────────────────────────
+            if self.config.token_budget > 0
+                && loop_state.usage.total_tokens >= self.config.token_budget
+            {
+                self.transition(&mut state_machine, StateEvent::StopConditionMet).await?;
+                let result = AgentResult {
+                    finish_reason: FinishReason::TokenBudget,
+                    last_message: self.history.messages().last().cloned(),
+                    usage: loop_state.usage,
+                    turns: loop_state.turn,
+                    content: self.history.messages().last().map(|m| m.content.clone()).unwrap_or_default(),
+                    tool_calls: tool_calls_accumulated.clone(),
+                    execution_time_ms: start_time.elapsed().as_millis() as u64,
+                };
+                self.event_publisher.publish_loop_completed(&self.agent_id, "token_budget", result.turns);
+                let _ = tx.send(StreamChunk::Finish(FinishReason::TokenBudget)).await;
+                return Ok(result);
+            }
+
+            // ── Build options and call LLM streaming ──────────────────────────
+            let mut options =
+                Options::new(self.provider.model_id().to_string()).with_max_tokens(4096);
+            if let Some(sys) = &self.config.system_prompt {
+                options = options.with_system(sys.clone());
+            }
+
+            let messages: Vec<Message> = self.history.messages().to_vec();
+
+            self.event_publisher.publish_llm_request(
+                &self.agent_id,
+                self.provider.provider_id(),
+                self.provider.model_id(),
+                messages.len(),
+            );
+
+            // Transition: Running -> AwaitingLLM
+            self.transition(&mut state_machine, StateEvent::LLMRequestSent).await?;
+
+            // Call complete_stream() for true token-by-token streaming
+            let stream_result = self.provider.complete_stream(messages.clone(), options.clone()).await;
+
+            let mut delta_stream = match stream_result {
+                Ok(s) => s,
+                Err(e) => {
+                    self.transition(&mut state_machine, StateEvent::Error).await?;
+                    let _ = tx.send(StreamChunk::Error(e.to_string())).await;
+                    return Err(AgentError::Provider(e.to_string()));
+                }
+            };
+
+            // Accumulate full response while streaming deltas to channel
+            let mut full_content = String::new();
+            let mut accumulated_tool_calls: Vec<claw_provider::types::ToolCall> = Vec::new();
+            let mut final_usage: Option<claw_provider::types::TokenUsage> = None;
+            let mut final_finish_reason: Option<claw_provider::types::FinishReason> = None;
+
+            // Track partial tool call being assembled (streaming may split args across deltas)
+            let mut partial_tool_id: Option<String> = None;
+            let mut partial_tool_name: Option<String> = None;
+            let mut partial_tool_args = String::new();
+
+            while let Some(delta_result) = delta_stream.next().await {
+                match delta_result {
+                    Err(e) => {
+                        self.transition(&mut state_machine, StateEvent::Error).await?;
+                        let _ = tx.send(StreamChunk::Error(e.to_string())).await;
+                        return Err(AgentError::Provider(e.to_string()));
+                    }
+                    Ok(delta) => {
+                        // Capture usage and finish_reason from final chunk
+                        if let Some(usage) = delta.usage.clone() {
+                            final_usage = Some(usage);
+                        }
+                        if let Some(fr) = delta.finish_reason.clone() {
+                            final_finish_reason = Some(fr);
+                        }
+
+                        // Handle text content delta
+                        if let Some(ref text) = delta.content {
+                            if !text.is_empty() {
+                                full_content.push_str(text);
+                                // Send text chunk to caller — ignore send errors (caller may have dropped rx)
+                                let _ = tx.send(StreamChunk::Text {
+                                    content: text.clone(),
+                                    is_final: false,
+                                }).await;
+                            }
+                        }
+
+                        // Handle tool call delta
+                        if let Some(ref tc) = delta.tool_call {
+                            // If this is a new tool call (new id/name), flush any partial one first
+                            let is_new_call = tc.id != partial_tool_id.as_deref().unwrap_or("");
+                            if is_new_call && partial_tool_id.is_some() {
+                                // Flush the previous partial tool call
+                                let flushed = claw_provider::types::ToolCall {
+                                    id: partial_tool_id.take().unwrap(),
+                                    name: partial_tool_name.take().unwrap_or_default(),
+                                    arguments: std::mem::take(&mut partial_tool_args),
+                                };
+                                let _ = tx.send(StreamChunk::ToolStart {
+                                    id: flushed.id.clone(),
+                                    name: flushed.name.clone(),
+                                }).await;
+                                accumulated_tool_calls.push(flushed);
+                            }
+
+                            if is_new_call && !tc.id.is_empty() {
+                                // Start a new partial tool call
+                                partial_tool_id = Some(tc.id.clone());
+                                partial_tool_name = Some(tc.name.clone());
+                                partial_tool_args = tc.arguments.clone();
+                            } else {
+                                // Accumulate arguments for ongoing tool call
+                                partial_tool_args.push_str(&tc.arguments);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Flush any remaining partial tool call after stream ends
+            if let Some(id) = partial_tool_id.take() {
+                let flushed = claw_provider::types::ToolCall {
+                    id,
+                    name: partial_tool_name.take().unwrap_or_default(),
+                    arguments: std::mem::take(&mut partial_tool_args),
+                };
+                let _ = tx.send(StreamChunk::ToolStart {
+                    id: flushed.id.clone(),
+                    name: flushed.name.clone(),
+                }).await;
+                accumulated_tool_calls.push(flushed);
+            }
+
+            // Update token usage from stream
+            if let Some(usage) = final_usage {
+                loop_state.usage.prompt_tokens += usage.prompt_tokens;
+                loop_state.usage.completion_tokens += usage.completion_tokens;
+                loop_state.usage.total_tokens += usage.total_tokens;
+            } else {
+                // Fallback: estimate from content length if provider didn't report usage
+                let estimated: u64 = (full_content.len() as u64) / 4 + 10;
+                loop_state.usage.completion_tokens += estimated;
+                loop_state.usage.total_tokens += estimated;
+            }
+            loop_state.turn += 1;
+
+            // Post-stream token-budget check
+            if self.config.token_budget > 0
+                && loop_state.usage.total_tokens >= self.config.token_budget
+            {
+                // Build assistant message from streamed content
+                let mut assistant_msg = Message::assistant(full_content.clone());
+                if !accumulated_tool_calls.is_empty() {
+                    assistant_msg.tool_calls = Some(accumulated_tool_calls.clone());
+                }
+                self.history.append(assistant_msg.clone());
+                self.transition(&mut state_machine, StateEvent::LLMResponseReceived).await?;
+                self.transition(&mut state_machine, StateEvent::StopConditionMet).await?;
+                let result = AgentResult {
+                    finish_reason: FinishReason::TokenBudget,
+                    last_message: Some(assistant_msg),
+                    usage: loop_state.usage,
+                    turns: loop_state.turn,
+                    content: full_content,
+                    tool_calls: tool_calls_accumulated,
+                    execution_time_ms: start_time.elapsed().as_millis() as u64,
+                };
+                self.event_publisher.publish_loop_completed(&self.agent_id, "token_budget", result.turns);
+                let _ = tx.send(StreamChunk::Finish(FinishReason::TokenBudget)).await;
+                return Ok(result);
+            }
+
+            // Build the complete assistant message from streamed content
+            let mut assistant_msg = Message::assistant(full_content.clone());
+            if !accumulated_tool_calls.is_empty() {
+                assistant_msg.tool_calls = Some(accumulated_tool_calls.clone());
+            }
+
+            // Publish LLM response event
+            self.event_publisher.publish_llm_response(
+                &self.agent_id,
+                self.provider.provider_id(),
+                loop_state.usage.clone(),
+                &format!("{:?}", final_finish_reason),
+            );
+
+            self.history.append(assistant_msg.clone());
+            loop_state.history_len = self.history.len();
+
+            // ── Tool call handling ─────────────────────────────────────────────
+            let has_tool_calls = !accumulated_tool_calls.is_empty();
+
+            if has_tool_calls && self.config.tool_use_enabled {
+                if let Some(ref registry) = self.tools {
+                    let tool_calls = accumulated_tool_calls.clone();
+                    tool_calls_accumulated.extend(tool_calls.clone());
+
+                    for call in &tool_calls {
+                        self.event_publisher.publish_tool_called(&self.agent_id, &call.name, &call.id);
+                    }
+
+                    self.transition(&mut state_machine, StateEvent::ToolsRequired).await?;
+
+                    let tool_results = match self.execute_tools_parallel(&tool_calls, registry).await {
+                        Ok(results) => results,
+                        Err(e) => {
+                            let _ = self.transition(&mut state_machine, StateEvent::Error).await;
+                            return Err(e);
+                        }
+                    };
+
+                    for (call_id, result_content) in &tool_results {
+                        // Send tool result chunk to stream
+                        let result_json: serde_json::Value = serde_json::from_str(result_content)
+                            .unwrap_or_else(|_| serde_json::Value::String(result_content.clone()));
+                        let _ = tx.send(StreamChunk::ToolComplete {
+                            id: call_id.clone(),
+                            result: result_json,
+                        }).await;
+
+                        if let Some(call) = tool_calls.iter().find(|c| c.id == *call_id) {
+                            let success = !result_content.contains("\"error\"");
+                            self.event_publisher.publish_tool_result(&self.agent_id, &call.name, call_id, success);
+                        }
+                        self.history.append(Message::tool_result(call_id.clone(), result_content.clone()));
+                    }
+                    loop_state.history_len = self.history.len();
+
+                    self.transition(&mut state_machine, StateEvent::ToolsCompleted).await?;
+                    continue;
+                } else {
+                    // No tool registry — return error results for all tool calls
+                    let tool_calls = accumulated_tool_calls.clone();
+                    tracing::warn!(
+                        agent_id = %self.agent_id,
+                        "LLM requested {} tool call(s) but no ToolRegistry is configured",
+                        tool_calls.len()
+                    );
+
+                    self.transition(&mut state_machine, StateEvent::ToolsRequired).await?;
+
+                    for call in &tool_calls {
+                        let error_json = serde_json::json!({
+                            "error": "no_tool_registry",
+                            "message": "This agent has no tool registry configured; tool calls are not available"
+                        });
+                        let _ = tx.send(StreamChunk::ToolError {
+                            id: call.id.clone(),
+                            error: "no_tool_registry".to_string(),
+                        }).await;
+                        self.history.append(Message::tool_result(
+                            call.id.clone(),
+                            error_json.to_string(),
+                        ));
+                    }
+                    loop_state.history_len = self.history.len();
+
+                    self.transition(&mut state_machine, StateEvent::ToolsCompleted).await?;
+                    continue;
+                }
+            }
+
+            // ── No tool calls → natural stop ───────────────────────────────────
+            self.transition(&mut state_machine, StateEvent::LLMResponseReceived).await?;
+            self.transition(&mut state_machine, StateEvent::StopConditionMet).await?;
+
+            // Send final text marker and finish
+            let _ = tx.send(StreamChunk::Text {
+                content: String::new(),
+                is_final: true,
+            }).await;
+            let _ = tx.send(StreamChunk::UsageUpdate(loop_state.usage.clone())).await;
+            let _ = tx.send(StreamChunk::Finish(FinishReason::Stop)).await;
+
+            let result = AgentResult {
+                finish_reason: FinishReason::Stop,
+                last_message: Some(assistant_msg.clone()),
+                usage: loop_state.usage,
+                turns: loop_state.turn,
+                content: full_content,
+                tool_calls: tool_calls_accumulated,
+                execution_time_ms: start_time.elapsed().as_millis() as u64,
+            };
+            self.event_publisher.publish_loop_completed(&self.agent_id, "stop", result.turns);
+            return Ok(result);
+        }
     }
 }
 
@@ -577,26 +1036,42 @@ mod tests {
 
     // ── test_agent_loop_max_turns_stop ────────────────────────────────────────
 
-    /// Set max_turns to 0 so the loop immediately hits the turn cap on the
-    /// first iteration, before any LLM call is made.
-    ///
-    /// The inline `max_turns` guard in `AgentLoop::run` fires and returns
-    /// `FinishReason::MaxTurns`.
+    /// Verify that build() rejects max_turns == 0 (TASK-22 config validation).
+    #[test]
+    fn test_agent_loop_max_turns_zero_rejected() {
+        let result = AgentLoopBuilder::new()
+            .with_provider(mock_provider())
+            .with_max_turns(0)
+            .build();
+        assert!(result.is_err(), "build with max_turns=0 should fail");
+        match result.err().unwrap() {
+            AgentError::Context(msg) => {
+                assert!(
+                    msg.contains("max_turns"),
+                    "error should mention max_turns, got: {msg}"
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
+    /// Set max_turns to 1 so the loop stops after exactly one LLM turn.
     #[tokio::test]
     async fn test_agent_loop_max_turns_stop() {
         let mut agent = AgentLoopBuilder::new()
             .with_provider(mock_provider())
-            .with_max_turns(0)
+            .with_max_turns(1)
             .build()
-            .expect("build should succeed");
+            .expect("build with max_turns=1 should succeed");
 
         let result = agent
             .run("trigger max turns")
             .await
             .expect("run should succeed");
 
-        assert_eq!(result.finish_reason, FinishReason::MaxTurns);
-        assert_eq!(result.turns, 0);
+        // MockProvider returns a plain text response (no tool calls), so the
+        // loop completes with FinishReason::Stop after 1 turn.
+        assert_eq!(result.turns, 1);
 
         let final_state = agent.current_state().await;
         assert_eq!(final_state, AgentState::Completed);

@@ -152,6 +152,44 @@ pub mod error_codes {
     pub const PROVIDER_ERROR: i32 = -32002;
     /// Agent error (-32003): Agent loop error.
     pub const AGENT_ERROR: i32 = -32003;
+    /// Daemon already running (-32004): Another daemon instance is already running.
+    pub const DAEMON_ALREADY_RUNNING: i64 = -32004;
+    /// Provider not found (-32005): The requested provider is not registered.
+    pub const PROVIDER_NOT_FOUND: i32 = -32005;
+}
+
+/// Configuration provided at session creation time.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionConfig {
+    /// System prompt to use for this session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Maximum number of conversation turns (default: 20).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+    /// Override the default provider ("anthropic", "openai", "ollama", etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_override: Option<String>,
+    /// Override the default model name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<String>,
+    /// External tools the client will provide implementations for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ExternalToolDef>>,
+    /// Whether to persist conversation history to SQLite.
+    #[serde(default)]
+    pub persist_history: bool,
+}
+
+/// Definition of a client-side external tool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalToolDef {
+    /// Tool name (snake_case).
+    pub name: String,
+    /// Human-readable description.
+    pub description: String,
+    /// JSON Schema for the tool's input parameters.
+    pub input_schema: serde_json::Value,
 }
 
 /// Parameters for `createSession` method.
@@ -159,7 +197,7 @@ pub mod error_codes {
 pub struct CreateSessionParams {
     /// Optional session configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub config: Option<serde_json::Value>,
+    pub config: Option<SessionConfig>,
 }
 
 /// Parameters for `sendMessage` method.
@@ -241,6 +279,271 @@ pub struct UsageInfo {
     pub total_tokens: u32,
 }
 
+/// Result of `kernel.info` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KernelInfoResult {
+    /// Kernel version (from CARGO_PKG_VERSION).
+    pub version: String,
+    /// Protocol version (current: 2).
+    pub protocol_version: u32,
+    /// List of compiled provider names.
+    pub providers: Vec<String>,
+    /// Name of the active (default) provider.
+    pub active_provider: String,
+    /// Current default model name.
+    pub active_model: String,
+    /// List of enabled features.
+    pub features: Vec<String>,
+    /// Maximum allowed sessions.
+    pub max_sessions: usize,
+    /// Current active session count.
+    pub current_sessions: usize,
+}
+
+/// JSON-RPC 2.0 Notification (server-push, no id).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcNotification {
+    pub jsonrpc: String,
+    pub method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+}
+
+/// Parameters for events.subscribe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventsSubscribeParams {
+    pub session_id: String,
+    /// Filter: "all", "agent_lifecycle", "tool_calls", "llm_requests", "a2a", "shutdown"
+    #[serde(default = "default_event_filter")]
+    pub filter: String,
+}
+
+fn default_event_filter() -> String {
+    "all".to_string()
+}
+
+/// Parameters for events.unsubscribe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventsUnsubscribeParams {
+    pub session_id: String,
+}
+
+/// Parameters for schedule.create.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleCreateParams {
+    pub session_id: String,
+    /// Cron expression or "once" for one-shot.
+    pub cron: String,
+    /// The agent message / prompt to run.
+    pub prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// Parameters for schedule.cancel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleCancelParams {
+    pub task_id: String,
+}
+
+/// Parameters for schedule.list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleListParams {
+    pub session_id: String,
+}
+
+/// Information about a scheduled task.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledTaskInfo {
+    pub task_id: String,
+    pub cron: String,
+    pub label: Option<String>,
+    pub status: String,
+}
+
+/// Parameters for channel.create.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelCreateParams {
+    pub session_id: String,
+    /// Channel type: "websocket"
+    pub channel_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<u16>,
+}
+
+/// Parameters for channel.send.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelSendParams {
+    pub channel_id: String,
+    pub message: String,
+}
+
+/// Parameters for channel.close.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelCloseParams {
+    pub channel_id: String,
+}
+
+// ─── B1: Channel API (register/unregister/list) ───────────────────────────────
+
+/// Parameters for `channel.register` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelRegisterParams {
+    /// Channel type: "webhook" | "stdin" | "discord"
+    pub r#type: String,
+    /// Unique channel identifier.
+    pub channel_id: String,
+    /// Type-specific configuration (JSON object).
+    pub config: serde_json::Value,
+}
+
+/// Parameters for `channel.unregister` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelUnregisterParams {
+    /// Channel identifier to unregister.
+    pub channel_id: String,
+}
+
+// ─── B2: Trigger API ──────────────────────────────────────────────────────────
+
+/// Parameters for `trigger.add_cron` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerAddCronParams {
+    /// Unique trigger identifier.
+    pub trigger_id: String,
+    /// Cron expression (e.g. "0 * * * *").
+    pub cron_expr: String,
+    /// Target agent ID to fire the trigger against.
+    pub target_agent: String,
+    /// Optional message/prompt injected when the trigger fires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Parameters for `trigger.add_webhook` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerAddWebhookParams {
+    /// Unique trigger identifier.
+    pub trigger_id: String,
+    /// Target agent ID.
+    pub target_agent: String,
+    /// Optional HMAC secret for webhook verification.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hmac_secret: Option<String>,
+}
+
+/// Parameters for `trigger.remove` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerRemoveParams {
+    /// Trigger identifier to remove.
+    pub trigger_id: String,
+}
+
+// ─── B3: Agent API ────────────────────────────────────────────────────────────
+
+/// Parameters for `agent.spawn` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSpawnParams {
+    /// Optional pre-assigned agent ID (UUID generated if omitted).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// Agent configuration.
+    pub config: AgentSpawnConfig,
+}
+
+/// Agent configuration for `agent.spawn`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSpawnConfig {
+    /// System prompt override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Provider override (e.g. "anthropic", "openai").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Model override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Maximum turns override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
+}
+
+/// Parameters for `agent.kill` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentKillParams {
+    /// Agent ID to stop.
+    pub agent_id: String,
+}
+
+/// Parameters for `agent.steer` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSteerParams {
+    /// Agent ID to inject a message into.
+    pub agent_id: String,
+    /// Message to inject.
+    pub message: String,
+}
+
+// REMOVED in v1.3.0: memory.search / memory.store are application-layer concerns.
+// See docs/kernel-gap-analysis.md § D1 for rationale.
+
+// ─── B5: Tool API ─────────────────────────────────────────────────────────────
+
+/// Parameters for `tool.register` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolRegisterParams {
+    /// Tool name (snake_case).
+    pub name: String,
+    /// Human-readable description.
+    pub description: String,
+    /// JSON Schema for the tool's input parameters.
+    pub schema: serde_json::Value,
+    /// Executor type: "external" | "inline".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executor: Option<String>,
+}
+
+/// Parameters for `tool.unregister` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolUnregisterParams {
+    /// Tool name to unregister.
+    pub name: String,
+}
+
+// ─── B6: Skill API ────────────────────────────────────────────────────────────
+
+/// Parameters for `skill.load_dir` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillLoadDirParams {
+    /// Filesystem path to the skills directory.
+    pub path: String,
+}
+
+/// Parameters for `skill.get_full` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillGetFullParams {
+    /// Skill name.
+    pub name: String,
+}
+
+/// Parameters for `provider.register` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderRegisterParams {
+    /// Provider name to register under.
+    pub name: String,
+    /// Provider type (e.g. "openai", "anthropic", "ollama").
+    pub provider_type: String,
+    /// API key (if required).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// Base URL override (optional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// Model name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,10 +619,32 @@ mod tests {
     #[test]
     fn test_create_session_params() {
         let params = CreateSessionParams {
-            config: Some(serde_json::json!({ "model": "gpt-4" })),
+            config: Some(SessionConfig {
+                system_prompt: Some("You are helpful".to_string()),
+                ..Default::default()
+            }),
         };
         let json = serde_json::to_string(&params).unwrap();
-        assert!(json.contains("model"));
+        assert!(json.contains("system_prompt"));
+    }
+
+    #[test]
+    fn test_create_session_params_deserialization() {
+        let json = r#"{"config": {"system_prompt": "You are helpful"}}"#;
+        let params: CreateSessionParams = serde_json::from_str(json).unwrap();
+        assert!(params.config.is_some());
+        assert_eq!(params.config.unwrap().system_prompt.as_deref(), Some("You are helpful"));
+    }
+
+    #[test]
+    fn test_external_tool_def_deserialization() {
+        let json = r#"{
+            "name": "get_weather",
+            "description": "Get weather for a city",
+            "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}
+        }"#;
+        let tool: ExternalToolDef = serde_json::from_str(json).unwrap();
+        assert_eq!(tool.name, "get_weather");
     }
 
     #[test]

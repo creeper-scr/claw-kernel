@@ -39,6 +39,7 @@
 pub mod config;
 pub mod dirs;
 pub mod error;
+pub mod lockfile;
 pub mod manager;
 pub mod security;
 pub mod traits;
@@ -83,3 +84,6 @@ pub use manager::TokioProcessManager;
 
 // Security types
 pub use security::{ModeTransitionGuard, PowerKey, PowerKeyHash, PowerKeyManager, PowerKeyValidator, SecurityError};
+
+// Daemon lock file
+pub use lockfile::{DaemonLock, LockError};

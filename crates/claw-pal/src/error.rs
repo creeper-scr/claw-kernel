@@ -17,8 +17,13 @@ pub enum SandboxError {
     #[error("sandbox restrictions already applied")]
     AlreadyApplied,
     /// Sandbox feature not supported on this platform.
-    #[error("sandbox not supported on this platform")]
-    NotSupported,
+    #[error("sandbox mode '{mode}' not supported on {platform}: {reason}. Workaround: {workaround}")]
+    NotSupported {
+        platform: &'static str,
+        mode: &'static str,
+        reason: &'static str,
+        workaround: &'static str,
+    },
 }
 
 /// IPC-related errors.
@@ -97,8 +102,14 @@ mod tests {
         let err = SandboxError::AlreadyApplied;
         assert_eq!(err.to_string(), "sandbox restrictions already applied");
 
-        let err = SandboxError::NotSupported;
-        assert_eq!(err.to_string(), "sandbox not supported on this platform");
+        let err = SandboxError::NotSupported {
+            platform: "windows",
+            mode: "Safe",
+            reason: "AppContainer not implemented until v1.5.0",
+            workaround: "Use ExecutionMode::Power explicitly, or wait for v1.5.0",
+        };
+        assert!(err.to_string().contains("Safe"));
+        assert!(err.to_string().contains("windows"));
     }
 
     #[test]

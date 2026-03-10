@@ -91,6 +91,43 @@ impl InterprocessTransport {
     pub async fn new_server(endpoint: &str) -> Result<Self, IpcError> {
         let listener =
             LocalSocketListener::bind(endpoint).map_err(|_| IpcError::ConnectionRefused)?;
+
+        // Explicitly restrict the socket file to owner-only access (0o700).
+        // `interprocess` does not set socket permissions on its own, so without
+        // this call the socket inherits the process umask, which may allow
+        // group/world read or write.  Abstract-namespace sockets (starting with
+        // '\0' or '@') are not filesystem paths and cannot have permissions set.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if !endpoint.starts_with('\0') && !endpoint.starts_with('@') {
+                if let Err(e) = std::fs::set_permissions(
+                    endpoint,
+                    std::fs::Permissions::from_mode(0o700),
+                ) {
+                    tracing::warn!(
+                        endpoint = %endpoint,
+                        error = %e,
+                        "Failed to restrict Unix socket permissions to 0o700. \
+                         Socket will inherit process umask. \
+                         This is usually harmless on tmpfs, overlayfs, or container environments. \
+                         In multi-tenant environments, verify the socket path is not accessible to other users via directory permissions."
+                    );
+                    // Check actual permissions; warn loudly if world/group-readable.
+                    if let Ok(metadata) = std::fs::metadata(endpoint) {
+                        let mode = metadata.permissions().mode();
+                        if (mode & 0o077) != 0 {
+                            tracing::error!(
+                                endpoint = %endpoint,
+                                mode = format!("{:o}", mode),
+                                "Unix socket has overly permissive permissions; in multi-tenant environments this may be a security risk"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         let stream = listener
             .accept()
             .await
@@ -288,19 +325,22 @@ impl InterprocessTransport {
     /// Connect as a client to the given endpoint path.
     pub async fn new_client(endpoint: &str) -> Result<Self, IpcError> {
         let pipe_name = to_pipe_name(endpoint);
-        let client = ClientOptions::new()
+        let client_read = ClientOptions::new()
             .open(&pipe_name)
             .map_err(|_| IpcError::ConnectionRefused)?;
 
-        // For client, we need to create another client handle for reading
-        // Since NamedPipeClient is not cloneable, we open another connection
-        let client_for_write = ClientOptions::new()
+        // For client, we need to create another client handle for writing.
+        // Since NamedPipeClient is not cloneable, we open a second connection.
+        let client_write = ClientOptions::new()
             .open(&pipe_name)
-            .map_err(|_| IpcError::ConnectionRefused)?;
+            .map_err(|e| {
+                tracing::debug!("IPC: second named pipe connection failed (read handle will be closed automatically): {}", e);
+                IpcError::ConnectionRefused
+            })?;
 
         Ok(Self::from_reader_writer(
-            PipeReader::Client(client),
-            PipeWriter::Client(client_for_write),
+            PipeReader::Client(client_read),
+            PipeWriter::Client(client_write),
         ))
     }
 
@@ -313,20 +353,15 @@ impl InterprocessTransport {
             .create(&pipe_name)
             .map_err(|_| IpcError::ConnectionRefused)?;
 
-        // Wait for a client to connect
-        server
-            .connect()
-            .await
-            .map_err(|_| IpcError::ConnectionRefused)?;
-
         // Re-create the server for another connection (for read/write split simulation)
         let server_for_write = ServerOptions::new()
             .create(&pipe_name)
             .map_err(|_| IpcError::ConnectionRefused)?;
-        server_for_write
-            .connect()
-            .await
-            .map_err(|_| IpcError::ConnectionRefused)?;
+
+        // Wait for both pipes to connect concurrently to avoid race conditions.
+        let (r1, r2) = tokio::join!(server.connect(), server_for_write.connect());
+        r1.map_err(|_| IpcError::ConnectionRefused)?;
+        r2.map_err(|_| IpcError::ConnectionRefused)?;
 
         Ok(Self::from_reader_writer(
             PipeReader::Server(server),

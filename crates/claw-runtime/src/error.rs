@@ -21,6 +21,8 @@ pub enum RuntimeError {
     Timeout,
     #[error("process error: {0}")]
     ProcessError(String),
+    #[error("unsupported command: {0}")]
+    UnsupportedCommand(String),
 }
 
 #[cfg(test)]

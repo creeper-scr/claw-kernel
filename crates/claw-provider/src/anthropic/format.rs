@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    stream_utils::parse_sse_line,
     traits::MessageFormat,
     types::{CompletionResponse, Delta, FinishReason, Message, Options, Role, TokenUsage},
 };
@@ -185,9 +186,9 @@ impl MessageFormat for AnthropicFormat {
             return Ok(None);
         }
 
-        // Strip "data: " prefix if present
-        let line = if let Some(stripped) = line.strip_prefix("data: ") {
-            stripped.trim()
+        // Strip "data: " prefix using shared SSE parser
+        let line = if let Some(data) = parse_sse_line(&line) {
+            data.trim()
         } else {
             &line
         };

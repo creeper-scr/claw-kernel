@@ -1,6 +1,7 @@
 use crate::{error::AgentError, types::LoopState};
 use async_trait::async_trait;
-use claw_provider::types::Message;
+use claw_provider::types::{Message, TokenUsage};
+use std::sync::Arc;
 
 /// Determines whether the agent loop should stop.
 ///
@@ -76,6 +77,17 @@ pub trait StopCondition: Send + Sync {
 
     /// Human-readable name for this condition (used in logs).
     fn name(&self) -> &str;
+
+    /// Return true if the loop should stop given both the current state and
+    /// the full conversation history.
+    ///
+    /// The default implementation ignores `history` and delegates to
+    /// [`should_stop`](StopCondition::should_stop).  Override this method to
+    /// implement history-aware stop conditions (e.g., stop when a specific
+    /// keyword appears in the last assistant message).
+    fn should_stop_with_history(&self, state: &LoopState, _history: &[Message]) -> bool {
+        self.should_stop(state)
+    }
 }
 
 /// Manages the conversation history for an agent loop.
@@ -222,10 +234,11 @@ pub trait HistoryManager: Send + Sync {
 ///
 /// ```rust,ignore
 /// use claw_loop::{Summarizer, SimpleSummarizer, Message};
+/// use claw_provider::OllamaProvider;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// // Create a summarizer with a provider
-/// let provider = /* your LLM provider */;
+/// let provider = OllamaProvider::new("llama3");
 /// let summarizer = SimpleSummarizer::new(provider);
 ///
 /// // Summarize a batch of messages
@@ -289,6 +302,78 @@ pub trait HistoryManager: Send + Sync {
 pub trait Summarizer: Send + Sync {
     /// Summarize the given messages. Returns a concise summary string.
     async fn summarize(&self, messages: &[Message]) -> Result<String, AgentError>;
+}
+
+/// Event publisher for agent loop lifecycle events.
+///
+/// This trait allows Layer 1 (claw-runtime) to inject EventBus capabilities
+/// into Layer 2 (claw-loop) without creating a circular dependency.
+/// The runtime implements this trait and passes it to the AgentLoopBuilder.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use claw_loop::EventPublisher;
+/// use claw_runtime::{EventBus, events::Event, agent_types::AgentId};
+///
+/// struct RuntimeEventPublisher {
+///     event_bus: Arc<EventBus>,
+/// }
+///
+/// impl EventPublisher for RuntimeEventPublisher {
+///     fn publish_turn_started(&self, agent_id: &str, turn: u32) {
+///         let _ = self.event_bus.publish(Event::Custom {
+///             event_type: "agent.turn.started".to_string(),
+///             data: serde_json::json!({ "agent_id": agent_id, "turn": turn }),
+///         });
+///     }
+///     // ... other methods
+/// }
+/// ```
+pub trait EventPublisher: Send + Sync {
+    /// Publish event when agent loop starts a new turn.
+    fn publish_turn_started(&self, agent_id: &str, turn: u32);
+
+    /// Publish event when LLM request is sent.
+    fn publish_llm_request(&self, agent_id: &str, provider: &str, model: &str, message_count: usize);
+
+    /// Publish event when LLM response is received.
+    fn publish_llm_response(
+        &self,
+        agent_id: &str,
+        provider: &str,
+        usage: TokenUsage,
+        finish_reason: &str,
+    );
+
+    /// Publish event when a tool is called.
+    fn publish_tool_called(&self, agent_id: &str, tool_name: &str, call_id: &str);
+
+    /// Publish event when a tool result is received.
+    fn publish_tool_result(&self, agent_id: &str, tool_name: &str, call_id: &str, success: bool);
+
+    /// Publish event when agent loop completes.
+    fn publish_loop_completed(&self, agent_id: &str, reason: &str, total_turns: u32);
+}
+
+/// No-op event publisher for testing or when event publishing is not needed.
+pub struct NoopEventPublisher;
+
+impl EventPublisher for NoopEventPublisher {
+    fn publish_turn_started(&self, _agent_id: &str, _turn: u32) {}
+    fn publish_llm_request(&self, _agent_id: &str, _provider: &str, _model: &str, _message_count: usize) {}
+    fn publish_llm_response(&self, _agent_id: &str, _provider: &str, _usage: TokenUsage, _finish_reason: &str) {}
+    fn publish_tool_called(&self, _agent_id: &str, _tool_name: &str, _call_id: &str) {}
+    fn publish_tool_result(&self, _agent_id: &str, _tool_name: &str, _call_id: &str, _success: bool) {}
+    fn publish_loop_completed(&self, _agent_id: &str, _reason: &str, _total_turns: u32) {}
+}
+
+impl NoopEventPublisher {
+    /// Create a new no-op event publisher wrapped in Arc.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new() -> Arc<dyn EventPublisher> {
+        Arc::new(NoopEventPublisher)
+    }
 }
 
 #[cfg(test)]

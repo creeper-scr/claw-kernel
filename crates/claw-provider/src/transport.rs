@@ -1,4 +1,5 @@
 use std::pin::Pin;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -26,34 +27,44 @@ impl DefaultHttpTransport {
             std::time::Duration::from_secs(120),
             HeaderMap::new(),
         )
+        .expect(
+            "reqwest::Client 构建失败 — 这是 TLS 配置或系统证书存储的 bug。请确认 openssl/native-tls 已正确链接。",
+        )
     }
 
     pub fn with_timeout(base_url: impl Into<String>, timeout: std::time::Duration) -> Self {
         Self::with_config(base_url, timeout, HeaderMap::new())
+            .expect("reqwest::Client 构建失败 — 这是 TLS 配置或系统证书存储的 bug。")
     }
 
     pub fn with_config(
         base_url: impl Into<String>,
         timeout: std::time::Duration,
         headers: HeaderMap,
-    ) -> Self {
-        Self {
-            client: Client::builder()
-                .timeout(timeout)
-                .build()
-                .unwrap_or_default(),
+    ) -> Result<Self, crate::error::ProviderError> {
+        let client = Client::builder()
+            .timeout(timeout)
+            .build()
+            .map_err(|e| crate::error::ProviderError::BuildFailed(e.to_string()))?;
+        Ok(Self {
+            client,
             base_url: base_url.into(),
             headers,
             retry_config: None,
-        }
+        })
     }
 
-    pub fn with_auth(mut self, token: impl AsRef<str>) -> Self {
+    /// 配置 Bearer Token 授权头。
+    /// # Errors
+    /// 若 token 含非 ASCII 字符或控制字符，返回 `ProviderError::Auth`。
+    pub fn with_auth(mut self, token: impl AsRef<str>) -> Result<Self, ProviderError> {
         use reqwest::header::{HeaderValue, AUTHORIZATION};
-        let value = HeaderValue::from_str(&format!("Bearer {}", token.as_ref()))
-            .unwrap_or_else(|_| HeaderValue::from_static(""));
-        self.headers.insert(AUTHORIZATION, value);
-        self
+        let header_value = HeaderValue::from_str(&format!("Bearer {}", token.as_ref()))
+            .map_err(|e| ProviderError::Auth(
+                format!("授权 token 含非法字符（非 ASCII 或控制字符）: {}", e)
+            ))?;
+        self.headers.insert(AUTHORIZATION, header_value);
+        Ok(self)
     }
 
     /// Enable retry with the given configuration.
@@ -194,6 +205,41 @@ impl HttpTransportExt for DefaultHttpTransport {
     }
 }
 
+/// Parse a `Retry-After` header value into a `Duration`.
+///
+/// Supports integer seconds (e.g., `"30"`).
+/// TODO: support HTTP-date format in Retry-After header (e.g., with httpdate crate)
+/// Currently only integer seconds are supported; date-format values fall back to 1s.
+pub fn parse_retry_after(value: &str) -> Duration {
+    // Try seconds first
+    if let Ok(secs) = value.trim().parse::<u64>() {
+        return Duration::from_secs(secs);
+    }
+    // Default fallback: 1 second
+    // HTTP-date format (e.g., "Tue, 15 Nov 1994 08:12:31 GMT") is not yet supported.
+    Duration::from_secs(1)
+}
+
+/// Build a redacted list of headers for safe logging.
+///
+/// Authorization and API key headers are replaced with `[REDACTED]` to prevent
+/// credential leakage in logs.
+pub fn redact_headers_for_log(headers: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
+    let sensitive = ["authorization", "x-api-key", "api-key", "x-goog-api-key"];
+    headers
+        .iter()
+        .map(|(k, v)| {
+            let key = k.as_str().to_lowercase();
+            let val = if sensitive.iter().any(|s| key.contains(s)) {
+                "[REDACTED]".to_string()
+            } else {
+                v.to_str().unwrap_or("<invalid>").to_string()
+            };
+            (k.as_str().to_string(), val)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,7 +255,7 @@ mod tests {
     #[test]
     fn test_default_http_transport_with_auth() {
         let transport =
-            DefaultHttpTransport::new("https://api.example.com").with_auth("test-token");
+            DefaultHttpTransport::new("https://api.example.com").with_auth("test-token").expect("valid token");
         let headers = transport.auth_headers();
         assert!(headers.contains_key("authorization"));
     }
@@ -225,7 +271,7 @@ mod tests {
     #[test]
     fn test_retry_config_builder_chaining() {
         let transport = DefaultHttpTransport::new("https://api.example.com")
-            .with_auth("test-token")
+            .with_auth("test-token").expect("valid token")
             .with_retry(RetryConfig::new().with_max_retries(5));
 
         assert_eq!(transport.base_url(), "https://api.example.com");

@@ -15,8 +15,10 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 dashmap = { workspace = true }
 tracing = { workspace = true }
+rand = { workspace = true }
 dirs = "5.0"
 toml = "0.8"
 serde_yaml = "0.9"
@@ -25,6 +27,8 @@ serde_yaml = "0.9"
 axum = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 sha2 = { workspace = true }
+cron = "0.12"
+chrono = "0.4"
 
 [features]
 default = ["webhook"]

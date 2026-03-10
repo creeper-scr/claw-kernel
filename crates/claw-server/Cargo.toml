@@ -8,12 +8,26 @@ license.workspace = true
 description = "KernelServer — exposes agent loop via JSON-RPC 2.0 over local IPC"
 repository.workspace = true
 
+[features]
+default = ["anthropic", "openai", "ollama", "deepseek", "moonshot"]
+anthropic    = ["claw-provider/anthropic"]
+openai       = ["claw-provider/openai"]
+ollama       = ["claw-provider/ollama"]
+deepseek     = ["claw-provider/deepseek"]
+moonshot     = ["claw-provider/moonshot"]
+gemini       = ["claw-provider/gemini"]
+mistral      = ["claw-provider/mistral"]
+azure-openai = ["claw-provider/azure-openai"]
+websocket    = ["dep:claw-channels", "claw-channels/websocket"]
+
 [dependencies]
 claw-pal   = { workspace = true }
 claw-loop  = { workspace = true }
 claw-provider = { workspace = true }
 claw-tools    = { workspace = true }
 claw-runtime  = { workspace = true }
+claw-channel  = { path = "../claw-channel" }
+claw-channels = { workspace = true, optional = true }
 
 tokio       = { workspace = true }
 serde       = { workspace = true }
@@ -27,3 +41,4 @@ dashmap     = { workspace = true }
 [dev-dependencies]
 tempfile    = { workspace = true }
 tokio       = { workspace = true, features = ["rt", "macros", "net"] }
+futures     = { workspace = true }

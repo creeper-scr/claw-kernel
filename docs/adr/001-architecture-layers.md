@@ -75,7 +75,7 @@ Layer 0: Rust Hard Core                          ← Foundation
 
 **2. Extension Foundation as Kernel Boundary (Layer 3)**
 - Hot-swappable without restart
-- Multiple language options (Lua/TS/Python)
+- Multiple language options (Lua/TS)
 - Provides extension interface for applications
 - Applications implement self-evolution via scripts, not kernel features
 
@@ -112,13 +112,13 @@ The kernel's responsibility ends at providing a robust extension mechanism (Laye
 
 ### Negative
 
-- **Build complexity:** Multiple engines (Lua/V8/Python) complicate builds
+- **Build complexity:** Multiple engines (Lua/V8) complicate builds
 - **Learning curve:** Contributors need Rust knowledge for core changes
 - **Binary size:** V8 engine adds ~100MB (mitigated by feature flags)
 
 ### Neutral
 
-- **Script debugging:** Requires tooling for Lua/TS/Python debugging
+- **Script debugging:** Requires tooling for Lua/TS debugging
 
 ---
 

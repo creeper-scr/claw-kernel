@@ -14,7 +14,7 @@
 //!
 //! # Example
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! use claw_loop::AgentLoopBuilder;
 //! use claw_provider::OllamaProvider;
 //! use std::sync::Arc;
@@ -49,5 +49,5 @@ pub use sqlite_history::SqliteHistory;
 pub use state_machine::{AgentState, StateEvent, StateMachine, TransitionResult};
 pub use stop_conditions::{MaxTurns, NoToolCall, TokenBudget};
 pub use summarizer::SimpleSummarizer;
-pub use traits::{HistoryManager, StopCondition, Summarizer};
-pub use types::{AgentLoopConfig, AgentResult, FinishReason, LoopState, StreamChunk};
+pub use traits::{EventPublisher, HistoryManager, NoopEventPublisher, StopCondition, Summarizer};
+pub use types::{AgentLoopConfig, AgentResult, FailoverPolicy, FinishReason, LoopState, StreamChunk};

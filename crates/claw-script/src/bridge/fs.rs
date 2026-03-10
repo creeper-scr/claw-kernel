@@ -5,6 +5,11 @@ use std::path::{Path, PathBuf};
 
 use mlua::{Lua, Result as LuaResult, UserData, UserDataMethods};
 
+/// 脚本可读取的最大文件大小（8 MiB）。
+const MAX_READ_FILE_SIZE: u64 = 8 * 1024 * 1024;
+/// list_dir 返回的最大目录条目数。
+const MAX_LIST_DIR_ENTRIES: usize = 10_000;
+
 /// Filesystem bridge exposing sandboxed file operations to Lua.
 ///
 /// All paths are validated against `allowed_paths` — any access outside
@@ -120,10 +125,23 @@ impl FsBridge {
     }
 
     /// Read file contents as string.
-    fn read_file(&self, path: &str) -> Result<String, String> {
+    pub fn read_file(&self, path: &str) -> Result<String, String> {
         let valid_path = self.validate_path(path)?;
+
+        let metadata = std::fs::metadata(&valid_path)
+            .map_err(|e| format!("无法获取 '{}' 的文件信息: {}", valid_path.display(), e))?;
+
+        if metadata.len() > MAX_READ_FILE_SIZE {
+            return Err(format!(
+                "文件 '{}' 过大无法读取（{} 字节；上限为 {} 字节）",
+                valid_path.display(),
+                metadata.len(),
+                MAX_READ_FILE_SIZE
+            ));
+        }
+
         std::fs::read_to_string(&valid_path)
-            .map_err(|e| format!("Failed to read file '{}': {}", valid_path.display(), e))
+            .map_err(|e| format!("读取文件 '{}' 失败: {}", valid_path.display(), e))
     }
 
     /// Validate that a parent directory is within allowed paths.
@@ -172,7 +190,7 @@ impl FsBridge {
     }
 
     /// Write string contents to file.
-    fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
+    pub fn write_file(&self, path: &str, content: &str) -> Result<(), String> {
         // For write operations, we validate the parent directory exists and is allowed
         let target_path = self.validate_parent_dir(path)?;
         std::fs::write(&target_path, content)
@@ -180,7 +198,7 @@ impl FsBridge {
     }
 
     /// Check if path exists.
-    fn exists(&self, path: &str) -> Result<bool, String> {
+    pub fn exists(&self, path: &str) -> Result<bool, String> {
         // First check if allowed_paths is empty
         if self.allowed_paths.is_empty() {
             return Err(format!(
@@ -226,7 +244,7 @@ impl FsBridge {
 
     /// List directory contents.
     /// Returns a table of entries with `name` and `is_dir` fields.
-    fn list_dir(&self, path: &str) -> Result<Vec<DirEntry>, String> {
+    pub fn list_dir(&self, path: &str) -> Result<Vec<DirEntry>, String> {
         let valid_path = self.validate_path(path)?;
 
         if !valid_path.is_dir() {
@@ -235,6 +253,7 @@ impl FsBridge {
 
         let entries: Result<Vec<DirEntry>, String> = std::fs::read_dir(&valid_path)
             .map_err(|e| format!("Failed to read directory '{}': {}", valid_path.display(), e))?
+            .take(MAX_LIST_DIR_ENTRIES)
             .map(|entry| {
                 entry
                     .map_err(|e| format!("Failed to read directory entry: {}", e))
@@ -252,8 +271,31 @@ impl FsBridge {
         entries
     }
 
+    /// Glob files matching the pattern that are within allowed directories.
+    pub fn glob_files(&self, pattern: &str) -> Result<Vec<String>, String> {
+        if self.allowed_paths.is_empty() {
+            return Err("Permission denied: no filesystem access allowed".to_string());
+        }
+
+        let matches: Vec<String> = glob::glob(pattern)
+            .map_err(|e| format!("Invalid glob pattern '{}': {}", pattern, e))?
+            .filter_map(|entry| entry.ok())
+            .filter(|path| {
+                // Only include paths within allowed directories
+                let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+                self.allowed_paths.iter().any(|base| {
+                    let base_canon = base.canonicalize().unwrap_or_else(|_| base.clone());
+                    canonical.starts_with(&base_canon)
+                })
+            })
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+
+        Ok(matches)
+    }
+
     /// Create a directory.
-    fn mkdir(&self, path: &str) -> Result<(), String> {
+    pub fn mkdir(&self, path: &str) -> Result<(), String> {
         // For mkdir operations, we validate the parent directory exists and is allowed
         let path_obj = Path::new(path);
         let resolved = if path_obj.is_absolute() {
@@ -360,6 +402,15 @@ impl UserData for FsBridge {
 
         methods.add_method("mkdir", |_, this, path: String| {
             this.mkdir(&path).map_err(mlua::Error::runtime)
+        });
+
+        methods.add_method("glob", |lua, this, pattern: String| {
+            let matches = this.glob_files(&pattern).map_err(mlua::Error::runtime)?;
+            let table = lua.create_table()?;
+            for (i, path) in matches.into_iter().enumerate() {
+                table.raw_set(i + 1, path)?;
+            }
+            Ok(table)
         });
     }
 }

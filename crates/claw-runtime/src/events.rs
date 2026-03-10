@@ -76,6 +76,24 @@ pub enum Event {
     /// provider registration).
     Extension(ExtensionEvent),
 
+    // ── Agent restart ────────────────────────────────────────────────────────
+    /// Emitted when an agent is restarted by the auto-restart mechanism.
+    AgentRestarted {
+        agent_id: AgentId,
+        /// Which retry attempt this is (1-indexed).
+        attempt: u32,
+        /// Delay that was waited before this restart.
+        delay_ms: u64,
+    },
+    /// Emitted when an agent has exhausted all restart attempts.
+    AgentFailed {
+        agent_id: AgentId,
+        /// Total number of restart attempts that were made.
+        attempts: u32,
+        /// Human-readable reason for the final failure.
+        reason: String,
+    },
+
     // ── System ───────────────────────────────────────────────────────────────
     Shutdown,
 

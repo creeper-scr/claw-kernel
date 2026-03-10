@@ -24,8 +24,8 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // Create the runtime
-//! let runtime = Runtime::new();
+//! // Create the runtime (background tasks start automatically)
+//! let runtime = Runtime::new("/tmp/claw.sock").await?;
 //!
 //! // Get the event bus for subscribing to events
 //! let event_bus = runtime.event_bus();
@@ -45,6 +45,7 @@
 //! ```
 
 pub mod a2a;
+pub mod agent_handle;
 pub mod agent_types;
 pub mod discovery;
 pub mod error;
@@ -54,8 +55,10 @@ pub mod extension;
 pub mod ipc_router;
 pub mod orchestrator;
 pub mod process;
+pub mod restart_policy;
 pub mod runtime;
 pub mod schedule;
+pub mod traits;
 
 #[cfg(feature = "webhook")]
 pub mod webhook;
@@ -64,9 +67,16 @@ pub use a2a::{
     A2AMessage, A2AMessagePayload, A2AMessageType, AgentCapability, MessagePriority,
     ResponseStatus, SimpleRouter, TaskSpec,
 };
+pub use agent_handle::{AgentResponse, FinishReason, IpcAgentHandle, TokenUsage};
 pub use agent_types::{AgentConfig, AgentHandle, AgentId, AgentInfo, AgentStatus};
-// Re-export PAL types needed by callers of AgentOrchestrator::spawn.
-pub use claw_pal::{ExecutionMode, ExitStatus, ProcessConfig, ProcessHandle, TokioProcessManager};
+
+// Re-export PAL types for process management and execution modes.
+pub use claw_pal::{
+    ExecutionMode, ExitStatus, ProcessConfig, ProcessHandle, TokioProcessManager,
+};
+// Re-export the ProcessManager trait for dependency injection.
+pub use claw_pal::traits::ProcessManager;
+
 // Re-export PAL dirs module for script engines and other consumers.
 pub use claw_pal::dirs;
 pub use discovery::{AgentCapability as DiscoveryAgentCapability, AgentDiscovery, AgentMeta};
@@ -74,8 +84,14 @@ pub use error::RuntimeError;
 pub use event_bus::{EventBus, EventFilter, EventReceiver, FilteredReceiver, LagStrategy};
 pub use events::Event;
 pub use extension::{ExtensionEvent, LoadError, ReloadError};
-pub use ipc_router::IpcRouter;
-pub use orchestrator::AgentOrchestrator;
+pub use ipc_router::{IpcRouter, IpcConnection, IpcTransportFactory, InterprocessTransportFactory};
+#[allow(deprecated)]
+pub use orchestrator::{
+    AgentOrchestrator, ExtendedAgentInfo, HealthStatus,
+    ResourceQuota, RestartPolicy, SteerCommand,
+};
+pub use restart_policy::AgentRestartPolicy;
+pub use traits::Orchestrator;
 pub use process::ManagedProcess;
 pub use runtime::Runtime;
 

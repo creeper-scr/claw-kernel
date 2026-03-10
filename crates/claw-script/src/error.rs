@@ -1,7 +1,7 @@
 //! Error types for claw-script.
 //!
 //! Provides unified error handling for script compilation and execution across
-//! supported script engines (Lua, V8, Python).
+//! supported script engines (Lua, V8).
 
 use thiserror::Error;
 
@@ -31,6 +31,8 @@ pub enum ScriptError {
     EngineUnavailable(String),
     #[error("recursion limit exceeded (max {0} levels)")]
     RecursionLimitExceeded(u32),
+    #[error("setup error: {0}")]
+    Setup(String),
 }
 
 #[cfg(test)]

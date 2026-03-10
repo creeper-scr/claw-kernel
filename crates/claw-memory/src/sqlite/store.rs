@@ -94,6 +94,26 @@ impl SqliteMemoryStore {
                 ON episodic_entries(namespace);
             CREATE INDEX IF NOT EXISTS idx_episodic_episode
                 ON episodic_entries(episode_id);
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
+                content,
+                content='memory_items',
+                content_rowid='rowid',
+                tokenize='unicode61'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS memory_items_ai AFTER INSERT ON memory_items BEGIN
+                INSERT INTO memory_items_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS memory_items_ad AFTER DELETE ON memory_items BEGIN
+                INSERT INTO memory_items_fts(memory_items_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS memory_items_au AFTER UPDATE ON memory_items BEGIN
+                INSERT INTO memory_items_fts(memory_items_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+                INSERT INTO memory_items_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
             ",
         )
         .map_err(|e| MemoryError::Storage(e.to_string()))
@@ -106,15 +126,22 @@ impl SqliteMemoryStore {
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() {
+        tracing::warn!(len_a = a.len(), len_b = b.len(), "cosine_similarity: dimension mismatch, returning 0.0");
+        return 0.0;
+    }
+    if a.is_empty() {
         return 0.0;
     }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
+    // FIX-10: use epsilon comparison instead of == 0.0 to handle floating-point
+    // precision edge cases, and clamp result to [-1, 1] to guard against numerical drift.
+    const EPSILON: f32 = 1e-10;
+    if norm_a < EPSILON || norm_b < EPSILON {
         0.0
     } else {
-        dot / (norm_a * norm_b)
+        (dot / (norm_a * norm_b)).clamp(-1.0, 1.0)
     }
 }
 
@@ -131,11 +158,17 @@ impl MemoryStore for SqliteMemoryStore {
         let id = item.id.clone();
         let conn = self.conn.lock().unwrap();
 
+        // FIX-29: propagate serialization errors instead of silently replacing with empty string.
         let embedding_json = item
             .embedding
             .as_ref()
-            .map(|e| serde_json::to_string(e).unwrap_or_default());
-        let tags_json = serde_json::to_string(&item.tags).unwrap_or_else(|_| "[]".to_string());
+            .map(|e| {
+                serde_json::to_string(e)
+                    .map_err(|err| MemoryError::Storage(format!("Failed to serialize embedding: {err}")))
+            })
+            .transpose()?;
+        let tags_json = serde_json::to_string(&item.tags)
+            .map_err(|e| MemoryError::Storage(format!("failed to serialize tags: {}", e)))?;
 
         conn.execute(
             "INSERT OR REPLACE INTO memory_items
@@ -219,8 +252,9 @@ impl MemoryStore for SqliteMemoryStore {
             sql.push_str(cond);
         }
         sql.push_str(" ORDER BY timestamp_ms ASC");
-        if let Some(lim) = filter.limit {
-            sql.push_str(&format!(" LIMIT {}", lim));
+        // FIX-02: use parameterized binding for LIMIT to prevent any SQL injection risk.
+        if filter.limit.is_some() {
+            sql.push_str(" LIMIT ?");
         }
 
         let mut stmt = conn
@@ -240,6 +274,10 @@ impl MemoryStore for SqliteMemoryStore {
         }
         if let Some(before) = filter.before_ms {
             param_values.push(Box::new(before as i64));
+        }
+        // FIX-02: LIMIT is now parameterized — append the value last.
+        if let Some(lim) = filter.limit {
+            param_values.push(Box::new(lim as i64));
         }
 
         // rusqlite does not support dynamic heterogeneous params directly;
@@ -275,6 +313,15 @@ impl MemoryStore for SqliteMemoryStore {
     // ------------------------------------------------------------------
     // semantic_search
     // ------------------------------------------------------------------
+    /// Searches memory by semantic similarity using cosine distance.
+    ///
+    /// ⚠️ **Performance Warning**: O(n) full-table scan — all embeddings are loaded
+    /// into memory for comparison. Suitable for < 10,000 items.
+    /// For larger datasets, consider using sqlite-vec (tracked in GitHub issue).
+    ///
+    /// # Arguments
+    /// * `query_embedding` - The query vector to compare against stored embeddings
+    /// * `top_k` - Maximum number of results to return
     async fn semantic_search(
         &self,
         query_embedding: &[f32],
@@ -308,8 +355,12 @@ impl MemoryStore for SqliteMemoryStore {
             })
             .collect();
 
-        // Sort descending by similarity.
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        // Filter out NaN scores before sorting to ensure stable ordering.
+        scored.retain(|(score, _)| !score.is_nan());
+
+        // Sort descending by similarity; NaN-safe via unwrap_or(Less) so any residual
+        // NaN values sink to the bottom rather than producing undefined order.
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Less));
         scored.truncate(top_k);
 
         Ok(scored.into_iter().map(|(_, item)| item).collect())
@@ -393,11 +444,17 @@ impl MemoryStore for SqliteMemoryStore {
         }
 
         // Within quota - proceed with insert
+        // FIX-29: propagate serialization errors instead of silently replacing with empty string.
         let embedding_json = item
             .embedding
             .as_ref()
-            .map(|e| serde_json::to_string(e).unwrap_or_default());
-        let tags_json = serde_json::to_string(&item.tags).unwrap_or_else(|_| "[]".to_string());
+            .map(|e| {
+                serde_json::to_string(e)
+                    .map_err(|err| MemoryError::Storage(format!("Failed to serialize embedding: {err}")))
+            })
+            .transpose()?;
+        let tags_json = serde_json::to_string(&item.tags)
+            .map_err(|e| MemoryError::Storage(format!("failed to serialize tags: {}", e)))?;
 
         tx.execute(
             "INSERT OR REPLACE INTO memory_items
@@ -422,6 +479,105 @@ impl MemoryStore for SqliteMemoryStore {
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
         Ok(id)
+    }
+
+    // ------------------------------------------------------------------
+    // keyword_search — SQLite FTS5 BM25 全文检索
+    // ------------------------------------------------------------------
+    async fn keyword_search(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<MemoryItem>, MemoryError> {
+        // 对 FTS5 MATCH 查询中的特殊字符进行转义：
+        // FTS5 把 '"' 用于短语查询，把 '*' 用于前缀查询等；
+        // 直接包装成短语查询可以安全地处理任意输入。
+        let safe_query = format!("\"{}\"", query.replace('"', "\"\""));
+
+        let conn = self.conn.lock().unwrap();
+        let top_k_i64 = top_k as i64;
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT mi.id, mi.namespace, mi.content, mi.embedding, mi.tags,
+                        mi.created_at_ms, mi.accessed_at_ms, mi.importance
+                 FROM memory_items mi
+                 JOIN memory_items_fts fts ON mi.rowid = fts.rowid
+                 WHERE memory_items_fts MATCH ?1
+                 ORDER BY rank
+                 LIMIT ?2",
+            )
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let items: Result<Vec<MemoryItem>, rusqlite::Error> = stmt
+            .query_map(params![safe_query, top_k_i64], row_to_memory_item)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?
+            .collect();
+
+        items.map_err(|e| MemoryError::Storage(e.to_string()))
+    }
+
+    // ------------------------------------------------------------------
+    // hybrid_search — 语义搜索 + BM25 分数融合
+    // ------------------------------------------------------------------
+    async fn hybrid_search(
+        &self,
+        query: &str,
+        query_embedding: &[f32],
+        top_k: usize,
+        alpha: f32,
+    ) -> Result<Vec<MemoryItem>, MemoryError> {
+        // 1. 并行获取两路候选（各取 top_k * 2 保证融合后有足够候选）
+        let fetch_k = top_k.saturating_mul(2).max(1);
+        let semantic_results = self.semantic_search(query_embedding, fetch_k).await?;
+        let keyword_results = self.keyword_search(query, fetch_k).await?;
+
+        // 2. 用排名归一化（Reciprocal Rank Fusion 风格的简化版）
+        //    排名越靠前归一化分数越高（1.0 → 0.0）
+        use std::collections::HashMap;
+        let mut scores: HashMap<String, f32> = HashMap::new();
+
+        let sem_count = semantic_results.len() as f32;
+        for (rank, item) in semantic_results.iter().enumerate() {
+            let normalized = if sem_count > 1.0 {
+                1.0 - (rank as f32 / (sem_count - 1.0))
+            } else {
+                1.0
+            };
+            scores.insert(item.id.0.clone(), alpha * normalized);
+        }
+
+        let kw_count = keyword_results.len() as f32;
+        for (rank, item) in keyword_results.iter().enumerate() {
+            let normalized = if kw_count > 1.0 {
+                1.0 - (rank as f32 / (kw_count - 1.0))
+            } else {
+                1.0
+            };
+            let entry = scores.entry(item.id.0.clone()).or_insert(0.0);
+            *entry += (1.0 - alpha) * normalized;
+        }
+
+        // 3. 合并两路结果并去重
+        let mut seen = std::collections::HashSet::new();
+        let mut combined: Vec<(f32, MemoryItem)> = semantic_results
+            .into_iter()
+            .chain(keyword_results.into_iter())
+            .filter_map(|item| {
+                if seen.insert(item.id.0.clone()) {
+                    let score = scores.get(&item.id.0).copied().unwrap_or(0.0);
+                    Some((score, item))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // 4. 按混合分数降序排列，取 top_k
+        combined.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        combined.truncate(top_k);
+
+        Ok(combined.into_iter().map(|(_, item)| item).collect())
     }
 }
 

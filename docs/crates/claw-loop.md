@@ -31,18 +31,19 @@ claw-loop = "0.1"
 ```
 
 ```rust
-use claw_loop::AgentLoop;
+use claw_loop::AgentLoopBuilder;
 use claw_provider::AnthropicProvider;
 use claw_tools::ToolRegistry;
+use std::sync::Arc;
 
-let provider = AnthropicProvider::from_env()?;
-let tools = ToolRegistry::new();
+let provider = Arc::new(AnthropicProvider::from_env()?);
+let tools = Arc::new(ToolRegistry::new());
 
-let mut agent = AgentLoop::builder()
-    .provider(provider)
-    .tools(tools)
-    .max_turns(10)
-    .build();
+let agent = AgentLoopBuilder::new()
+    .with_provider(provider)
+    .with_tools(tools)
+    .with_max_turns(10)
+    .build()?;
 
 let response = agent.run("Hello!").await?;
 ```
@@ -52,17 +53,17 @@ let response = agent.run("Hello!").await?;
 ## Configuration
 
 ```rust
-let agent = AgentLoop::builder()
+let agent = AgentLoopBuilder::new()
     // Provider (required)
-    .provider(my_provider)
+    .with_provider(my_provider)
     // Tools (optional)
-    .tools(tool_registry)
+    .with_tools(tool_registry)
     // System prompt
-    .system_prompt("You are a helpful assistant.")
+    .with_system_prompt("You are a helpful assistant.")
     // Stop conditions
-    .max_turns(10)
-    .token_budget(8000)
-    .build();
+    .with_max_turns(10)
+    .with_token_budget(8000)
+    .build()?;
 ```
 
 ---
@@ -70,21 +71,20 @@ let agent = AgentLoop::builder()
 ## Stop Conditions
 
 ```rust
-use claw_loop::{MaxTurns, TokenBudget, NoToolCall};
+use claw_loop::AgentLoopBuilder;
 
-let agent = AgentLoop::builder()
-    .stop_condition(Box::new(MaxTurns(10)))
-    .stop_condition(Box::new(TokenBudget(8000)))
-    .stop_condition(Box::new(NoToolCall))
-    .build();
+let agent = AgentLoopBuilder::new()
+    .with_max_turns(10)        // Stop after 10 turns
+    .with_token_budget(8000)   // Stop when total tokens ≥ 8000 (0 = unlimited)
+    .build()?;
 ```
 
-Built-in conditions:
-- `MaxTurns(n)` — Stop after n turns
-- `TokenBudget(n)` — Stop when total tokens ≥ n (0 = unlimited)
-- `NoToolCall` — Registered for logging; loop handles this exit path directly
+Built-in stop conditions (configured via builder methods):
+- `.with_max_turns(n)` — Stop after n turns
+- `.with_token_budget(n)` — Stop when total tokens ≥ n (0 = unlimited)
+- `NoToolCall` — Loop handles this exit path directly when LLM returns no tool calls
 
-Custom condition:
+Custom stop conditions can be implemented using the `StopCondition` trait:
 
 ```rust
 use claw_loop::{StopCondition, LoopState};
@@ -93,7 +93,11 @@ pub struct MyCondition;
 
 impl StopCondition for MyCondition {
     fn should_stop(&self, state: &LoopState) -> bool {
-        state.turn_count > 5 && state.last_message.as_ref().map(|m| m.content.contains("DONE")).unwrap_or(false)
+        state.turn > 5 && state.history_len > 10
+    }
+    
+    fn name(&self) -> &str {
+        "my_condition"
     }
 }
 ```
@@ -103,14 +107,14 @@ impl StopCondition for MyCondition {
 ## History Management
 
 ```rust
-use claw_loop::history::{HistoryManager, SqliteHistory};
+use claw_loop::SqliteHistory;
 
 // Persistent history
-let history = SqliteHistory::new("./conversation.db").await?;
+let history = SqliteHistory::connect("./conversation.db").await?;
 
-let agent = AgentLoop::builder()
-    .history(history)
-    .build();
+let agent = AgentLoopBuilder::new()
+    .with_history(history)
+    .build()?;
 ```
 
 ---
@@ -122,9 +126,13 @@ let mut stream = agent.stream_run("Hello!").await?;
 
 while let Some(chunk) = stream.next().await {
     match chunk {
-        StreamChunk::Text(text) => print!("{}", text),
-        StreamChunk::ToolStart(name) => println!("\n[Using tool: {}]", name),
-        StreamChunk::ToolResult(result) => println!("[Tool done]"),
+        StreamChunk::Text { content, is_final } => print!("{}", content),
+        StreamChunk::ToolStart { id, name } => println!("\n[Using tool: {}]", name),
+        StreamChunk::ToolComplete { id, result } => println!("[Tool done]"),
+        StreamChunk::ToolError { id, error } => eprintln!("[Tool error: {}]", error),
+        StreamChunk::UsageUpdate(usage) => println!("[Tokens: {}]", usage.total_tokens),
+        StreamChunk::Finish(reason) => println!("[Finished: {:?}]", reason),
+        StreamChunk::Error(msg) => eprintln!("[Error: {}]", msg),
     }
 }
 ```
@@ -134,17 +142,46 @@ while let Some(chunk) = stream.next().await {
 ## Multi-Turn Conversation
 
 ```rust
+use claw_loop::{AgentLoopBuilder, InMemoryHistory};
+
+// Create agent with history
+let history = InMemoryHistory::new(4096); // 4K token limit
+let agent = AgentLoopBuilder::new()
+    .with_history(history)
+    .build()?;
+
 // Preserves context between calls
 let response1 = agent.run("My name is Alice.").await?;
 let response2 = agent.run("What's my name?").await?; // "Alice"
-
-// Access history
-for message in agent.history().messages() {
-    println!("{:?}: {}", message.role, message.content);
-}
-
-// Clear history
-agent.clear_history();
 ```
 
 ---
+
+## Agent Loop State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Running : run() called
+    Running --> AwaitingLLM : sending request to provider
+    AwaitingLLM --> ProcessingTools : response contains tool_calls
+    AwaitingLLM --> Completed : response is final (no tool_calls)
+    ProcessingTools --> Running : all tools executed, append results
+    Running --> Stopped : stop condition met
+    Running --> Failed : error (network/provider)
+    Stopped --> [*]
+    Completed --> [*]
+    Failed --> [*]
+```
+
+## Tool Execution Concurrency Model
+
+Tools are executed **concurrently** using `tokio::JoinSet`. All tool calls in a
+single LLM response run in parallel. Results are collected and appended to history
+in the order they were requested (not completion order) for deterministic output.
+
+## Retry and Error Recovery
+
+- Network errors: retried up to 3 times with exponential backoff (1s, 2s, 4s)
+- Tool errors: NOT retried; the error message is passed back to the LLM
+- Provider rate limits (429): retried with Retry-After header respect

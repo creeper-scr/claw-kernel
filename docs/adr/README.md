@@ -4,7 +4,7 @@ description: ADR index for claw-kernel
 status: active
 date: 2026-02-28
 version: "0.1.0"
-last_updated: "2026-03-01"
+last_updated: "2026-03-09"
 language: en
 ---
 
@@ -53,6 +53,8 @@ What becomes easier or more difficult to do because of this change?
 | [009](009-bridge-roadmap.md) | claw-script Bridge Roadmap | Accepted |
 | [010](010-memory-system-boundary.md) | Memory System Boundary | Accepted |
 | [011](011-multi-language-ipc-daemon.md) | Multi-Language Support via IPC Daemon | Accepted |
+| [012](012-v8-engine-implementation.md) | V8 Engine Implementation | Accepted |
+| [013](013-runtime-v1-evolution.md) | Runtime v1.0 — Evolution from ADR-005 IPC Design | Accepted |
 
 ## Contributing
 

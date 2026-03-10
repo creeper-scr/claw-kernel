@@ -1,11 +1,11 @@
 //! Session management for KernelServer.
 //!
-//! Manages agent sessions with notification channels and tool result handling.
+//! Manages agent sessions with notification channels and external tool bridges.
 
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::error::ServerError;
@@ -15,27 +15,58 @@ use crate::error::ServerError;
 /// Each session has:
 /// - A unique ID
 /// - A notification channel for streaming responses to the client
-/// - Channels for tool result communication
+/// - A pending tool calls map for external tool bridge communication
+/// - An agent loop (wrapped in Mutex for async exclusive access)
 pub struct Session {
     /// Unique session identifier.
     pub id: String,
     /// Channel for sending notifications to the client.
     pub notify_tx: mpsc::Sender<Vec<u8>>,
-    /// Channel for sending tool results from the client.
-    pub tool_result_tx: mpsc::Sender<(String, serde_json::Value, bool)>,
-    /// Channel for receiving tool results from the client.
-    pub tool_result_rx: Mutex<mpsc::Receiver<(String, serde_json::Value, bool)>>,
+    /// Pending external tool calls waiting for client response.
+    /// Key: tool_call_id, Value: oneshot sender to deliver the result.
+    pub pending_tool_calls: Arc<DashMap<String, oneshot::Sender<(serde_json::Value, bool)>>>,
+    /// The agent loop for this session (wrapped in Mutex for async exclusive access).
+    pub agent_loop: tokio::sync::Mutex<claw_loop::AgentLoop>,
+    /// Handle for the background event-forwarding task, if subscribed.
+    pub event_forwarder: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// IDs of scheduled tasks created in this session.
+    pub scheduled_task_ids: tokio::sync::Mutex<Vec<String>>,
 }
 
 impl Session {
-    /// Creates a new session with the given ID and notification channel.
-    pub fn new(id: String, notify_tx: mpsc::Sender<Vec<u8>>) -> Self {
-        let (tx, rx) = mpsc::channel(32);
+    /// Creates a new session with the given ID, notification channel, and agent loop.
+    pub fn new(
+        id: String,
+        notify_tx: mpsc::Sender<Vec<u8>>,
+        agent_loop: claw_loop::AgentLoop,
+    ) -> Self {
         Self {
             id,
             notify_tx,
-            tool_result_tx: tx,
-            tool_result_rx: Mutex::new(rx),
+            pending_tool_calls: Arc::new(DashMap::new()),
+            agent_loop: tokio::sync::Mutex::new(agent_loop),
+            event_forwarder: tokio::sync::Mutex::new(None),
+            scheduled_task_ids: tokio::sync::Mutex::new(vec![]),
+        }
+    }
+
+    /// Creates a new session with pre-built pending_tool_calls map.
+    ///
+    /// Used when ExternalToolBridge instances have already been created and
+    /// share the same pending_tool_calls map (to avoid chicken-and-egg problems).
+    pub fn new_with_pending(
+        id: String,
+        notify_tx: mpsc::Sender<Vec<u8>>,
+        agent_loop: claw_loop::AgentLoop,
+        pending_tool_calls: Arc<DashMap<String, oneshot::Sender<(serde_json::Value, bool)>>>,
+    ) -> Self {
+        Self {
+            id,
+            notify_tx,
+            pending_tool_calls,
+            agent_loop: tokio::sync::Mutex::new(agent_loop),
+            event_forwarder: tokio::sync::Mutex::new(None),
+            scheduled_task_ids: tokio::sync::Mutex::new(vec![]),
         }
     }
 
@@ -45,19 +76,6 @@ impl Session {
             .send(data)
             .await
             .map_err(|_| ServerError::Ipc(claw_pal::error::IpcError::BrokenPipe))
-    }
-
-    /// Sends a tool result to the agent loop.
-    pub async fn send_tool_result(
-        &self,
-        tool_call_id: String,
-        result: serde_json::Value,
-        success: bool,
-    ) -> Result<(), ServerError> {
-        self.tool_result_tx
-            .send((tool_call_id, result, success))
-            .await
-            .map_err(|_| ServerError::Agent("tool result channel closed".to_string()))
     }
 }
 
@@ -89,7 +107,11 @@ impl SessionManager {
     /// Creates a new session and returns it.
     ///
     /// Returns an error if the maximum number of sessions is reached.
-    pub fn create(&self, notify_tx: mpsc::Sender<Vec<u8>>) -> Result<Arc<Session>, ServerError> {
+    pub fn create(
+        &self,
+        notify_tx: mpsc::Sender<Vec<u8>>,
+        agent_loop: claw_loop::AgentLoop,
+    ) -> Result<Arc<Session>, ServerError> {
         if self.sessions.len() >= self.max_sessions {
             return Err(ServerError::MaxSessionsReached {
                 max: self.max_sessions,
@@ -97,9 +119,37 @@ impl SessionManager {
         }
 
         let session_id = Uuid::new_v4().to_string();
-        let session = Arc::new(Session::new(session_id.clone(), notify_tx));
+        let session = Arc::new(Session::new(session_id.clone(), notify_tx, agent_loop));
 
         self.sessions.insert(session_id, Arc::clone(&session));
+
+        Ok(session)
+    }
+
+    /// Creates a new session with a pre-specified ID and pre-built components.
+    ///
+    /// Used when ExternalToolBridge instances need to share the pending_tool_calls
+    /// map before the session is created (to avoid circular dependency).
+    pub fn create_with_id(
+        &self,
+        id: String,
+        notify_tx: mpsc::Sender<Vec<u8>>,
+        agent_loop: claw_loop::AgentLoop,
+        pending_tool_calls: Arc<DashMap<String, oneshot::Sender<(serde_json::Value, bool)>>>,
+    ) -> Result<Arc<Session>, ServerError> {
+        if self.sessions.len() >= self.max_sessions {
+            return Err(ServerError::MaxSessionsReached {
+                max: self.max_sessions,
+            });
+        }
+
+        let session = Arc::new(Session::new_with_pending(
+            id.clone(),
+            notify_tx,
+            agent_loop,
+            pending_tool_calls,
+        ));
+        self.sessions.insert(id, Arc::clone(&session));
 
         Ok(session)
     }
@@ -150,11 +200,70 @@ impl std::fmt::Debug for SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use claw_loop::AgentLoopBuilder;
+    use claw_provider::{
+        error::ProviderError,
+        traits::LLMProvider,
+        types::{CompletionResponse, Delta, FinishReason, Message, Options, TokenUsage},
+    };
+    use futures::stream;
+    use std::pin::Pin;
+
+    /// Mock LLM provider for testing (does not call any external API).
+    struct MockProvider;
+
+    #[async_trait]
+    impl LLMProvider for MockProvider {
+        fn provider_id(&self) -> &str {
+            "mock"
+        }
+        fn model_id(&self) -> &str {
+            "mock-v1"
+        }
+
+        async fn complete(
+            &self,
+            _messages: Vec<Message>,
+            _opts: Options,
+        ) -> Result<CompletionResponse, ProviderError> {
+            Ok(CompletionResponse {
+                id: "id".to_string(),
+                model: "mock-v1".to_string(),
+                message: Message::assistant("ok"),
+                finish_reason: FinishReason::Stop,
+                usage: TokenUsage {
+                    prompt_tokens: 5,
+                    completion_tokens: 3,
+                    total_tokens: 8,
+                },
+            })
+        }
+
+        async fn complete_stream(
+            &self,
+            _messages: Vec<Message>,
+            _opts: Options,
+        ) -> Result<
+            Pin<Box<dyn futures::Stream<Item = Result<Delta, ProviderError>> + Send>>,
+            ProviderError,
+        > {
+            Ok(Box::pin(stream::empty()))
+        }
+    }
+
+    fn make_agent_loop() -> claw_loop::AgentLoop {
+        AgentLoopBuilder::new()
+            .with_provider(Arc::new(MockProvider))
+            .build()
+            .expect("build should succeed")
+    }
 
     #[tokio::test]
     async fn test_session_creation() {
         let (tx, _rx) = mpsc::channel(10);
-        let session = Session::new("test-session".to_string(), tx);
+        let agent_loop = make_agent_loop();
+        let session = Session::new("test-session".to_string(), tx, agent_loop);
 
         assert_eq!(session.id, "test-session");
     }
@@ -162,7 +271,8 @@ mod tests {
     #[tokio::test]
     async fn test_session_notify() {
         let (tx, mut rx) = mpsc::channel(10);
-        let session = Session::new("test-session".to_string(), tx);
+        let agent_loop = make_agent_loop();
+        let session = Session::new("test-session".to_string(), tx, agent_loop);
 
         session.notify(b"hello".to_vec()).await.unwrap();
 
@@ -170,29 +280,13 @@ mod tests {
         assert_eq!(received, b"hello");
     }
 
-    #[tokio::test]
-    async fn test_session_tool_result() {
-        let (tx, _rx) = mpsc::channel(10);
-        let session = Session::new("test-session".to_string(), tx);
-
-        session
-            .send_tool_result("call-1".to_string(), serde_json::json!("result"), true)
-            .await
-            .unwrap();
-
-        let mut rx = session.tool_result_rx.lock().await;
-        let (id, result, success) = rx.recv().await.unwrap();
-        assert_eq!(id, "call-1");
-        assert_eq!(result, serde_json::json!("result"));
-        assert!(success);
-    }
-
     #[test]
     fn test_session_manager_create() {
         let manager = SessionManager::new(10);
         let (tx, _rx) = mpsc::channel(10);
+        let agent_loop = make_agent_loop();
 
-        let session = manager.create(tx).unwrap();
+        let session = manager.create(tx, agent_loop).unwrap();
         assert_eq!(manager.count(), 1);
         assert!(manager.get(&session.id).is_some());
     }
@@ -205,10 +299,10 @@ mod tests {
         let (tx2, _rx2) = mpsc::channel(10);
         let (tx3, _rx3) = mpsc::channel(10);
 
-        manager.create(tx1).unwrap();
-        manager.create(tx2).unwrap();
+        manager.create(tx1, make_agent_loop()).unwrap();
+        manager.create(tx2, make_agent_loop()).unwrap();
 
-        let result = manager.create(tx3);
+        let result = manager.create(tx3, make_agent_loop());
         assert!(matches!(
             result,
             Err(ServerError::MaxSessionsReached { max: 2 })
@@ -220,7 +314,7 @@ mod tests {
         let manager = SessionManager::new(10);
         let (tx, _rx) = mpsc::channel(10);
 
-        let session = manager.create(tx).unwrap();
+        let session = manager.create(tx, make_agent_loop()).unwrap();
         let id = session.id.clone();
 
         assert!(manager.get(&id).is_some());
@@ -232,7 +326,7 @@ mod tests {
         let manager = SessionManager::new(10);
         let (tx, _rx) = mpsc::channel(10);
 
-        let session = manager.create(tx).unwrap();
+        let session = manager.create(tx, make_agent_loop()).unwrap();
         let id = session.id.clone();
 
         assert!(manager.remove(&id));
@@ -246,8 +340,8 @@ mod tests {
         let (tx1, _rx1) = mpsc::channel(10);
         let (tx2, _rx2) = mpsc::channel(10);
 
-        manager.create(tx1).unwrap();
-        manager.create(tx2).unwrap();
+        manager.create(tx1, make_agent_loop()).unwrap();
+        manager.create(tx2, make_agent_loop()).unwrap();
 
         manager.clear();
         assert_eq!(manager.count(), 0);
@@ -257,5 +351,49 @@ mod tests {
     fn test_session_manager_default() {
         let manager: SessionManager = Default::default();
         assert_eq!(manager.max_sessions(), 100);
+    }
+
+    #[test]
+    fn test_session_manager_create_with_id() {
+        let manager = SessionManager::new(10);
+        let (tx, _rx) = mpsc::channel(10);
+        let pending: Arc<DashMap<String, oneshot::Sender<(serde_json::Value, bool)>>> =
+            Arc::new(DashMap::new());
+
+        let session = manager
+            .create_with_id(
+                "fixed-id".to_string(),
+                tx,
+                make_agent_loop(),
+                Arc::clone(&pending),
+            )
+            .unwrap();
+
+        assert_eq!(session.id, "fixed-id");
+        assert_eq!(manager.count(), 1);
+    }
+
+    #[test]
+    fn test_session_pending_tool_calls_shared() {
+        let manager = SessionManager::new(10);
+        let (tx, _rx) = mpsc::channel(10);
+        let pending: Arc<DashMap<String, oneshot::Sender<(serde_json::Value, bool)>>> =
+            Arc::new(DashMap::new());
+
+        // Insert a dummy sender into the shared pending map before session creation
+        let (sender, _receiver) = oneshot::channel::<(serde_json::Value, bool)>();
+        pending.insert("tool-call-1".to_string(), sender);
+
+        let session = manager
+            .create_with_id(
+                "test-id".to_string(),
+                tx,
+                make_agent_loop(),
+                Arc::clone(&pending),
+            )
+            .unwrap();
+
+        // Session should share the same pending map
+        assert!(session.pending_tool_calls.contains_key("tool-call-1"));
     }
 }

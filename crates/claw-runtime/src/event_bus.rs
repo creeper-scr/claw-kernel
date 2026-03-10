@@ -110,6 +110,17 @@ impl EventBus {
         Self { tx, lag_strategy }
     }
 
+    /// Create a new EventBus with a custom broadcast channel capacity.
+    ///
+    /// The default capacity is 1024; increase for high-throughput scenarios.
+    pub fn with_capacity(capacity: usize) -> Self {
+        let (sender, _) = broadcast::channel(capacity);
+        Self {
+            tx: sender,
+            lag_strategy: LagStrategy::Error,
+        }
+    }
+
     /// Create a new `EventBus` with custom capacity and lag strategy.
     ///
     /// 用于测试滞后行为（需要小容量来模拟滞后场景）
@@ -122,13 +133,22 @@ impl EventBus {
     /// Publish an event to all subscribers.
     ///
     /// Returns the number of active receivers that received the event.
-    /// Returns `Ok(0)` when there are no subscribers (not an error).
-    pub fn publish(&self, event: Event) -> Result<usize, RuntimeError> {
+    /// Returns `0` when there are no subscribers — this is unusual at runtime
+    /// and logged at `warn` level so that critical event loss (e.g. `Shutdown`) is
+    /// always visible in traces.
+    pub fn publish(&self, event: Event) -> usize {
         match self.tx.send(event) {
-            Ok(n) => Ok(n),
-            // `SendError` means no active receivers — treat as zero deliveries,
-            // not a failure. The channel itself is still usable.
-            Err(_) => Ok(0),
+            Ok(n) => n,
+            // `SendError` means no active receivers — the channel itself is still
+            // usable, but losing events such as Shutdown silently is dangerous.
+            // Log at warn so operators can detect misconfigured subscriber sets.
+            Err(e) => {
+                tracing::warn!(
+                    "EventBus: no active subscribers, event dropped (event={:?})",
+                    e.0
+                );
+                0
+            }
         }
     }
 
@@ -289,10 +309,7 @@ impl EventReceiver {
                         )))
                     }
                     LagStrategy::Warn => {
-                        eprintln!(
-                            "[EventReceiver] Warning: receiver lagged (skipped {} messages)",
-                            n
-                        );
+                        tracing::warn!(skipped = n, "EventReceiver lagged, messages dropped");
                         Err(RuntimeError::EventBusError(format!(
                             "receiver lagged (warned for {} messages)",
                             n
@@ -356,51 +373,55 @@ impl FilteredReceiver {
         }
     }
 
-    /// Try to receive a matching event without blocking.
+    /// Try to receive a matching event without blocking (single-check).
     ///
-    /// Returns `Err(TryRecvError::Empty)` when no message is currently available.
+    /// Checks **one** message from the channel.  If that message does not
+    /// match the filter the method returns `Err(TryRecvError::Empty)` rather
+    /// than spinning through the entire buffer — that is the job of
+    /// [`drain_until_match`](Self::drain_until_match).
+    ///
+    /// Returns `Err(TryRecvError::Empty)` when no message is currently
+    /// available or the next message does not match.
     /// Returns `Err(TryRecvError::Closed)` when the channel is closed.
-    /// Returns `Err(TryRecvError::Lagged(n))` when the receiver has lagged.
+    /// Returns `Err(TryRecvError::Lagged(n))` when the receiver has lagged
+    /// (subject to the configured `LagStrategy`).
     pub fn try_recv(&mut self) -> Result<Event, TryRecvError> {
+        match self.rx.try_recv() {
+            Ok(event) if (self.filter)(&event) => Ok(event),
+            Ok(_non_matching) => Err(TryRecvError::Empty),
+            Err(broadcast::error::TryRecvError::Empty) => Err(TryRecvError::Empty),
+            Err(broadcast::error::TryRecvError::Closed) => Err(TryRecvError::Closed),
+            Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                match self.lag_strategy {
+                    LagStrategy::Error => Err(TryRecvError::Lagged(n)),
+                    LagStrategy::Skip | LagStrategy::Warn => {
+                        if matches!(self.lag_strategy, LagStrategy::Warn) {
+                            tracing::warn!(lagged = n, "FilteredReceiver: try_recv 跳过了 {} 条消息", n);
+                        }
+                        Err(TryRecvError::Empty)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drain the channel until a matching event is found or the buffer is empty.
+    ///
+    /// Unlike [`try_recv`](Self::try_recv), this method loops through all
+    /// currently available messages and returns the first one that passes the
+    /// filter.  Use this when you want to scan the buffered events rather than
+    /// checking only the head of the queue.
+    pub fn drain_until_match(&mut self) -> Result<Event, TryRecvError> {
         loop {
             match self.rx.try_recv() {
                 Ok(event) => {
                     if (self.filter)(&event) {
                         return Ok(event);
                     }
-                    // Not a match — keep trying (non-blocking).
-                    // If no more messages, next iteration will return Empty.
-                    continue;
                 }
-                Err(broadcast::error::TryRecvError::Empty) => {
-                    return Err(TryRecvError::Empty);
-                }
-                Err(broadcast::error::TryRecvError::Closed) => {
-                    return Err(TryRecvError::Closed);
-                }
-                Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                    match self.lag_strategy {
-                        LagStrategy::Error => {
-                            return Err(TryRecvError::Lagged(n));
-                        }
-                        LagStrategy::Skip => {
-                            tracing::debug!(
-                                "FilteredReceiver skipped {} lagged messages in try_recv",
-                                n
-                            );
-                            // Continue trying to receive
-                            continue;
-                        }
-                        LagStrategy::Warn => {
-                            tracing::warn!(
-                                "FilteredReceiver lagged, skipped {} messages in try_recv",
-                                n
-                            );
-                            // Continue trying to receive
-                            continue;
-                        }
-                    }
-                }
+                Err(broadcast::error::TryRecvError::Empty) => return Err(TryRecvError::Empty),
+                Err(broadcast::error::TryRecvError::Closed) => return Err(TryRecvError::Closed),
+                Err(broadcast::error::TryRecvError::Lagged(n)) => return Err(TryRecvError::Lagged(n)),
             }
         }
     }
@@ -479,10 +500,9 @@ mod tests {
     #[test]
     fn test_event_bus_new() {
         let bus = EventBus::new();
-        // Publish with no subscribers should be Ok(0).
-        let result = bus.publish(Event::Shutdown);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 0);
+        // Publish with no subscribers should return 0.
+        let n = bus.publish(Event::Shutdown);
+        assert_eq!(n, 0);
     }
 
     // ── 2. test_event_bus_publish_subscribe ─────────────────────────────────
@@ -491,7 +511,7 @@ mod tests {
         let bus = EventBus::new();
         let mut rx = bus.subscribe();
 
-        bus.publish(started("a1")).unwrap();
+        bus.publish(started("a1"));
 
         let event = rx.recv().await.unwrap();
         matches!(event, Event::AgentStarted { .. });
@@ -505,7 +525,7 @@ mod tests {
         let mut rx2 = bus.subscribe();
         let mut rx3 = bus.subscribe();
 
-        let n = bus.publish(Event::Shutdown).unwrap();
+        let n = bus.publish(Event::Shutdown);
         assert_eq!(n, 3);
 
         assert!(matches!(rx1.recv().await.unwrap(), Event::Shutdown));
@@ -519,7 +539,7 @@ mod tests {
         let bus = EventBus::new();
         let mut rx = bus.subscribe_filtered(|e| matches!(e, Event::Shutdown));
 
-        bus.publish(Event::Shutdown).unwrap();
+        bus.publish(Event::Shutdown);
 
         let event = rx.recv().await.unwrap();
         assert!(matches!(event, Event::Shutdown));
@@ -535,9 +555,9 @@ mod tests {
         let mut plain = bus.subscribe();
 
         // Publish two non-matching events, then one matching event.
-        bus.publish(started("x")).unwrap();
-        bus.publish(stopped("x")).unwrap();
-        bus.publish(Event::Shutdown).unwrap();
+        bus.publish(started("x"));
+        bus.publish(stopped("x"));
+        bus.publish(Event::Shutdown);
 
         // Consume all three from plain to ensure they were sent.
         plain.recv().await.unwrap();
@@ -556,7 +576,7 @@ mod tests {
         let _rx1 = bus.subscribe();
         let _rx2 = bus.subscribe();
 
-        let n = bus.publish(Event::Shutdown).unwrap();
+        let n = bus.publish(Event::Shutdown);
         assert_eq!(n, 2);
     }
 
@@ -569,7 +589,7 @@ mod tests {
         let mut rx = bus.subscribe();
 
         // Publish via the clone — receiver on original should still get it.
-        bus2.publish(Event::Shutdown).unwrap();
+        bus2.publish(Event::Shutdown);
 
         let event = rx.recv().await.unwrap();
         assert!(matches!(event, Event::Shutdown));
@@ -636,9 +656,9 @@ mod tests {
 
         // 快速发布超过容量的消息（3条消息，容量为2）
         // 由于订阅者没有接收任何消息，它会滞后
-        bus.publish(started("agent-1")).unwrap();
-        bus.publish(started("agent-2")).unwrap();
-        bus.publish(started("agent-3")).unwrap();
+        bus.publish(started("agent-1"));
+        bus.publish(started("agent-2"));
+        bus.publish(started("agent-3"));
 
         // 等待一小会儿确保消息处理完成
         sleep(Duration::from_millis(50)).await;
@@ -681,9 +701,9 @@ mod tests {
         let mut rx = bus.subscribe();
 
         // 快速发布超过容量的消息
-        bus.publish(started("agent-1")).unwrap();
-        bus.publish(started("agent-2")).unwrap();
-        bus.publish(started("agent-3")).unwrap();
+        bus.publish(started("agent-1"));
+        bus.publish(started("agent-2"));
+        bus.publish(started("agent-3"));
 
         sleep(Duration::from_millis(50)).await;
 
@@ -715,9 +735,9 @@ mod tests {
 
         // 发送多个不匹配的事件，最后发送一个匹配的事件
         // 由于订阅者没有接收任何消息，它会滞后
-        bus.publish(started("agent-1")).unwrap(); // 不匹配
-        bus.publish(started("agent-2")).unwrap(); // 不匹配
-        bus.publish(Event::Shutdown).unwrap(); // 匹配
+        bus.publish(started("agent-1")); // 不匹配
+        bus.publish(started("agent-2")); // 不匹配
+        bus.publish(Event::Shutdown); // 匹配
 
         sleep(Duration::from_millis(50)).await;
 
@@ -743,9 +763,9 @@ mod tests {
         let mut filtered_rx = bus.subscribe_filtered(|e| matches!(e, Event::Shutdown));
 
         // 发送超过容量的消息
-        bus.publish(started("agent-1")).unwrap();
-        bus.publish(started("agent-2")).unwrap();
-        bus.publish(Event::Shutdown).unwrap();
+        bus.publish(started("agent-1"));
+        bus.publish(started("agent-2"));
+        bus.publish(Event::Shutdown);
 
         sleep(Duration::from_millis(50)).await;
 

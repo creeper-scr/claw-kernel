@@ -3,7 +3,7 @@ title: claw-tools
 description: Tool registry, hot-loading, schema generation
 status: implemented
 version: "0.1.0"
-last_updated: "2026-03-08"
+last_updated: "2026-03-09"
 language: en
 ---
 
@@ -18,7 +18,7 @@ Tool registry and hot-loading for agent capabilities.
 `claw-tools` implements the tool-use protocol:
 - Tool registration and discovery
 - Schema generation and validation
-- Hot-loading from scripts
+- Hot-loading from scripts (placeholder, requires ScriptEngine integration)
 - Permission management
 
 ---
@@ -27,11 +27,11 @@ Tool registry and hot-loading for agent capabilities.
 
 ```toml
 [dependencies]
-claw-tools = { version = "0.1", features = ["hot-loading"] }
+claw-tools = "0.1"
 ```
 
 ```rust
-use claw_tools::{ToolRegistry, Tool};
+use claw_tools::{ToolRegistry, Tool, ToolContext, PermissionSet};
 
 let registry = ToolRegistry::new();
 
@@ -88,8 +88,10 @@ pub struct ToolRegistry { /* ... */ }
 
 impl ToolRegistry {
     pub fn new() -> Self;
+    pub fn with_max_audit_entries(self, max: usize) -> Self;
     pub fn register(&self, tool: Box<dyn Tool>) -> Result<(), RegistryError>;
     pub fn unregister(&self, name: &str) -> Result<(), RegistryError>;
+    pub fn update(&self, name: &str, tool: Arc<dyn Tool>) -> Result<(), RegistryError>;
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>>;
     pub fn tool_names(&self) -> Vec<String>;
     pub fn tool_count(&self) -> usize;
@@ -220,6 +222,12 @@ let err = WatchError::InvalidConfig("watch_dirs cannot be empty".to_string());
 
 ## Hot-Loading
 
+> **⚠️ Note:** Hot-loading in `claw-tools` is currently a **placeholder implementation**. 
+> The kernel provides the foundation APIs, but actual script compilation and execution 
+> requires integration with a ScriptEngine (Layer 3 responsibility).
+> 
+> See [`claw-script`](claw-script.md) for the script engine integration.
+
 The hot-reload system provides file watching, debouncing, and atomic hot-swapping capabilities.
 
 ### Architecture
@@ -249,7 +257,34 @@ let config = HotLoadingConfig {
 config.validate()?;
 ```
 
-### Usage
+### Registry Hot-Loading API
+
+```rust
+impl ToolRegistry {
+    /// Load a tool from a script file (metadata only, placeholder implementation).
+    /// 
+    /// Note: Actual script compilation requires ScriptEngine integration.
+    pub async fn load_from_script(&self, path: &Path) -> Result<ToolMeta, LoadError>;
+    
+    /// Load all tools from a directory.
+    pub async fn load_from_directory(&self, path: &Path) -> Result<Vec<ToolMeta>, LoadError>;
+    
+    /// Unload a script tool.
+    pub fn unload(&self, name: &str) -> Result<(), RegistryError>;
+    
+    /// Enable hot-loading (placeholder, validates config only).
+    /// 
+    /// Note: Actual implementation requires ScriptEngine integration.
+    pub async fn enable_hot_loading(&self, config: HotLoadingConfig) -> Result<(), WatchError>;
+    
+    /// Disable hot-loading.
+    pub async fn disable_hot_loading(&self);
+}
+```
+
+### Full Hot-Reload Setup (Application Layer)
+
+For complete hot-reload functionality, the application layer needs to wire up the components:
 
 ```rust
 use std::sync::Arc;
@@ -387,8 +422,7 @@ let registry = ToolRegistry::new().with_max_audit_entries(10_000);
 
 ```toml
 [features]
-default = ["hot-loading"]
-hot-loading = ["notify"]  # File watching (50ms debounce)
+default = []
 ```
 
----
+> **Note:** Hot-loading support is built-in and does not require a feature flag. The `notify` crate is always included for file watching capabilities.

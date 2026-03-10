@@ -5,8 +5,8 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/rust-1.83%2B-orange.svg)](https://www.rust-lang.org)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey.svg)](docs/platform/)
-[![Tests](https://img.shields.io/badge/tests-389+%20passing-brightgreen.svg)](#)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/tests-670+%20passing-brightgreen.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](CHANGELOG.md)
 
 ---
 
@@ -19,7 +19,7 @@ It is a **shared infrastructure library**, not a standalone agent — think of i
 ```
 ┌─────────────────────────────────────────────────────┐
 │              Layer 3: Extension Foundation          │
-│    Lua (default) · Deno/V8 · PyO3                   │
+│    Lua (default✅) · V8/TypeScript (optional✅)      │
 ├─────────────────────────────────────────────────────┤
 │              Layer 2: Agent Kernel Protocol         │
 │    Provider · ToolRegistry · AgentLoop · Memory     │
@@ -76,7 +76,7 @@ See [`examples/`](examples/) for `simple-agent`, `custom-tool`, and `self-evolvi
 | [`claw-loop`](docs/crates/claw-loop.md) | 2 | Agent loop engine, history, stop conditions |
 | [`claw-memory`](docs/crates/claw-memory.md) | 2 | Ngram embedder, SQLite store, SecureMemoryStore (50 MB) |
 | [`claw-channel`](docs/crates/claw-channel.md) | 2 | Channel trait: Discord, HTTP Webhook, Stdin |
-| [`claw-script`](docs/crates/claw-script.md) | 3 | Script engines: Lua (default), Deno/V8, PyO3 |
+| [`claw-script`](docs/crates/claw-script.md) | 3 | Script engines: Lua (default✅), V8/TypeScript (✅) |
 | `claw-kernel` | meta | Re-exports all of the above + prelude |
 
 ## Platform Support
@@ -105,7 +105,7 @@ cargo test --workspace               # 389+ tests
 cargo clippy --workspace -- -D warnings
 ```
 
-Optional features: `engine-v8` (Node.js ≥ 20), `engine-py` (Python ≥ 3.10, Rust 1.83+). See [CONTRIBUTING.md](CONTRIBUTING.md#feature-matrix) for the full feature matrix.
+Optional features: `engine-v8` (~100MB binary size increase). See [CONTRIBUTING.md](CONTRIBUTING.md#feature-matrix) for the full feature matrix.
 
 > All build profiles set `panic = "unwind"` — required by mlua. Already configured in `Cargo.toml`.
 
@@ -135,7 +135,7 @@ Details: [Safe Mode](docs/guides/safe-mode.md) · [Power Mode](docs/guides/power
 
 ## Contributing
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md). Priority areas: new LLM providers (Gemini, Mistral, GGUF) · Windows sandbox hardening · Deno/V8 bridge · integration test coverage.
+Read [CONTRIBUTING.md](CONTRIBUTING.md). Priority areas: new LLM providers (Gemini, Mistral, GGUF) · Windows sandbox hardening · integration test coverage.
 
 - **Questions:** [GitHub Discussions](https://github.com/creeper-scr/claw-kernel/discussions)
 - **Bugs:** [GitHub Issues](https://github.com/creeper-scr/claw-kernel/issues)

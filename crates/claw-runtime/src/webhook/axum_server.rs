@@ -102,7 +102,14 @@ impl AxumWebhookServer {
         };
 
         // Check HTTP method
-        let http_method = Self::convert_method(&method);
+        // FIX-05: convert_method returns None for unknown methods; return 405 rather than
+        // silently treating them as POST, which could allow unintended writes.
+        let http_method = match Self::convert_method(&method) {
+            Some(m) => m,
+            None => {
+                return (StatusCode::METHOD_NOT_ALLOWED, "Method not allowed").into_response();
+            }
+        };
         if !state.config.methods.contains(&http_method) {
             return (StatusCode::METHOD_NOT_ALLOWED, "Method not allowed").into_response();
         }
@@ -124,15 +131,42 @@ impl AxumWebhookServer {
 
         // Verify HMAC if configured
         if let HmacConfig::Sha256 { secret, header, prefix } = &state.config.hmac {
-            let sig_header = header_map
+            // Reject immediately if the signature header is absent or empty.
+            let sig_header_value = match header_map
                 .get(&header.to_lowercase())
-                .cloned()
-                .unwrap_or_default();
+                .filter(|v| !v.is_empty())
+            {
+                Some(v) => v.clone(),
+                None => {
+                    tracing::warn!(
+                        "Webhook: missing or empty HMAC signature header '{}'",
+                        header
+                    );
+                    let mut stats = state.stats.write().await;
+                    stats.hmac_failures += 1;
+                    return (StatusCode::UNAUTHORIZED, "Missing HMAC signature").into_response();
+                }
+            };
 
-            let sig = prefix
-                .as_ref()
-                .and_then(|p| sig_header.strip_prefix(p))
-                .unwrap_or(&sig_header);
+            // Strip the expected prefix (e.g. "sha256="). If the prefix is
+            // configured but absent, reject rather than falling back to the raw value.
+            let sig = if let Some(p) = prefix {
+                match sig_header_value.strip_prefix(p.as_str()) {
+                    Some(stripped) => stripped,
+                    None => {
+                        tracing::warn!(
+                            "Webhook: HMAC signature header '{}' is missing expected prefix '{}'",
+                            header,
+                            p
+                        );
+                        let mut stats = state.stats.write().await;
+                        stats.hmac_failures += 1;
+                        return (StatusCode::UNAUTHORIZED, "Invalid HMAC signature format").into_response();
+                    }
+                }
+            } else {
+                sig_header_value.as_str()
+            };
 
             if let Err(e) = super::verification::verify_hmac_sha256(secret, &body, sig) {
                 // Update HMAC failure stats
@@ -203,22 +237,25 @@ impl AxumWebhookServer {
     }
 
     /// Convert Axum Method to our HttpMethod.
-    fn convert_method(method: &Method) -> HttpMethod {
+    ///
+    /// Returns `None` for unrecognised methods (e.g. OPTIONS, HEAD, CONNECT)
+    /// so that callers can return 405 instead of silently treating them as POST.
+    fn convert_method(method: &Method) -> Option<HttpMethod> {
         match method.as_str() {
-            "GET" => HttpMethod::Get,
-            "POST" => HttpMethod::Post,
-            "PUT" => HttpMethod::Put,
-            "PATCH" => HttpMethod::Patch,
-            _ => HttpMethod::Post,
+            "GET" => Some(HttpMethod::Get),
+            "POST" => Some(HttpMethod::Post),
+            "PUT" => Some(HttpMethod::Put),
+            "PATCH" => Some(HttpMethod::Patch),
+            _ => None,
         }
     }
 
     /// Get statistics for an endpoint.
     pub async fn stats(&self, path: &str) -> Option<WebhookStats> {
-        self.endpoints.get(path).map(|e| {
-            let rt = tokio::runtime::Handle::current();
-            rt.block_on(async { e.stats.read().await.clone() })
-        })
+        match self.endpoints.get(path) {
+            Some(e) => Some(e.stats.read().await.clone()),
+            None => None,
+        }
     }
 }
 
@@ -271,12 +308,15 @@ impl WebhookServer for AxumWebhookServer {
         let local_addr = listener.local_addr().ok();
         *self.local_addr.write().await = local_addr;
 
-        let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         *self.shutdown_tx.lock().await = Some(shutdown_tx);
 
         let server = axum::serve(listener, app);
 
         let handle = tokio::spawn(async move {
+            let server = server.with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            });
             let _ = server.await;
         });
 

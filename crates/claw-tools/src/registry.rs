@@ -7,13 +7,9 @@ use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-/// Global monotonic counter for audit log entry IDs.
-/// Using SeqCst ordering for maximum safety across all threads.
-static AUDIT_COUNTER: AtomicU64 = AtomicU64::new(1);
-
 use crate::{
     error::RegistryError,
-    traits::Tool,
+    traits::{Tool, ToolEventPublisher},
     types::{LogEntry, SubprocessPolicy, ToolContext, ToolError, ToolMeta, ToolResult, LoadedToolMeta},
 };
 
@@ -22,10 +18,16 @@ pub struct ToolRegistry {
     tools: DashMap<String, Arc<dyn Tool>>,
     audit_log: RwLock<BTreeMap<u64, LogEntry>>, // key → entry (ordered by ID)
     max_audit_entries: usize,
+    /// Per-instance monotonic counter for audit log entry IDs.
+    /// Instance-level field (instead of a global static) ensures each registry
+    /// maintains its own independent counter, preventing cross-instance ID leakage.
+    audit_counter: AtomicU64,
     /// Hot reload processor (if enabled)
     hot_reload: tokio::sync::RwLock<Option<crate::hot_reload::HotReloadProcessor>>,
     /// Loaded script tools metadata
     script_tools: DashMap<String, LoadedToolMeta>,
+    /// Optional event publisher for tool lifecycle events (TASK-28)
+    event_publisher: Option<Arc<dyn ToolEventPublisher>>,
 }
 
 impl ToolRegistry {
@@ -35,8 +37,10 @@ impl ToolRegistry {
             tools: DashMap::new(),
             audit_log: RwLock::new(BTreeMap::new()),
             max_audit_entries: 10_000,
+            audit_counter: AtomicU64::new(1),
             hot_reload: tokio::sync::RwLock::new(None),
             script_tools: DashMap::new(),
+            event_publisher: None,
         }
     }
 
@@ -48,13 +52,33 @@ impl ToolRegistry {
         self
     }
 
-    /// Generate a unique monotonic audit ID using a global AtomicU64 counter.
+    /// Attach an event publisher for tool lifecycle events.
+    ///
+    /// When set, the registry will publish events on tool calls, results,
+    /// registrations, and unregistrations. This enables Layer 1 (claw-runtime)
+    /// to observe tool activity via the EventBus without circular dependencies.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use claw_tools::{ToolRegistry, NoopToolEventPublisher};
+    /// use std::sync::Arc;
+    ///
+    /// let registry = ToolRegistry::new()
+    ///     .with_event_publisher(NoopToolEventPublisher::new());
+    /// ```
+    pub fn with_event_publisher(mut self, p: Arc<dyn ToolEventPublisher>) -> Self {
+        self.event_publisher = Some(p);
+        self
+    }
+
+    /// Generate a unique monotonic audit ID using a per-instance AtomicU64 counter.
     ///
     /// This approach eliminates clock skew risk (NTP sync, manual time changes)
     /// by using a purely monotonic counter instead of timestamp-based IDs.
     /// Uses SeqCst ordering for maximum thread safety.
     fn generate_audit_id(&self) -> u64 {
-        AUDIT_COUNTER.fetch_add(1, Ordering::SeqCst)
+        self.audit_counter.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Register a tool. Returns `RegistryError::AlreadyExists` if already registered.
@@ -94,7 +118,10 @@ impl ToolRegistry {
         if self.tools.contains_key(&name) {
             return Err(RegistryError::AlreadyExists(name));
         }
-        self.tools.insert(name, Arc::from(tool));
+        self.tools.insert(name.clone(), Arc::from(tool));
+        if let Some(publisher) = &self.event_publisher {
+            publisher.publish_tool_registered(&name, "native");
+        }
         Ok(())
     }
 
@@ -107,6 +134,9 @@ impl ToolRegistry {
     pub fn unregister(&self, name: &str) -> Result<(), RegistryError> {
         if self.tools.remove(name).is_none() {
             return Err(RegistryError::ToolNotFound(name.to_string()));
+        }
+        if let Some(publisher) = &self.event_publisher {
+            publisher.publish_tool_unregistered(name);
         }
         Ok(())
     }
@@ -210,6 +240,8 @@ impl ToolRegistry {
             .ok_or_else(|| RegistryError::ToolNotFound(name.to_string()))?;
 
         // 2. Permission check: subprocess policy
+        // TODO(v1.1.0): implement glob pattern matching for permission strings
+        // (e.g., "tool.*", "memory.*"); currently uses exact string match only
         if tool.permissions().subprocess == SubprocessPolicy::Allowed
             && ctx.permissions.subprocess == SubprocessPolicy::Denied
         {
@@ -254,9 +286,30 @@ impl ToolRegistry {
         }
 
         // 3. Execute with timeout and cancellation support using JoinSet (RES-001)
-        let tool_timeout = tool.timeout();
+        // FIX-20: treat zero-duration timeout as "no limit configured" and fall back to
+        // a safe 30-second default so tools cannot run forever due to misconfiguration.
+        const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        let raw_timeout = tool.timeout();
+        let tool_timeout = if raw_timeout.is_zero() {
+            tracing::warn!(
+                tool = %name,
+                "工具报告零超时；使用 30 秒回退值以防无限阻塞"
+            );
+            DEFAULT_TIMEOUT
+        } else {
+            raw_timeout
+        };
         let start = Instant::now();
         let cancellation_token = CancellationToken::new();
+
+        // TASK-28: generate a unique call_id for event correlation
+        let call_id = format!("call-{}", self.audit_counter.fetch_add(1, Ordering::SeqCst));
+
+        // TASK-28: publish ToolCalled event before execution (debug-level tracing supplement)
+        if let Some(publisher) = &self.event_publisher {
+            publisher.publish_tool_called(&ctx.agent_id, name, &call_id);
+        }
+        tracing::debug!(tool = %name, call_id = %call_id, agent = %ctx.agent_id, "tool called");
 
         // Create a JoinSet to manage the tool execution task
         let mut join_set = JoinSet::new();
@@ -313,6 +366,11 @@ impl ToolRegistry {
                 join_set.shutdown().await;
 
                 let elapsed_ms = start.elapsed().as_millis() as u64;
+                // TASK-28: publish ToolResult event (timeout = failure)
+                if let Some(publisher) = &self.event_publisher {
+                    publisher.publish_tool_result(&ctx.agent_id, name, &call_id, false);
+                }
+                tracing::debug!(tool = %name, call_id = %call_id, success = false, "tool result (timeout)");
                 let entry = self.make_log_entry(&ctx.agent_id, name, false, elapsed_ms);
                 self.insert_log(entry).await;
                 return Ok(ToolResult::err(ToolError::timeout(), elapsed_ms));
@@ -320,6 +378,12 @@ impl ToolRegistry {
         };
 
         let elapsed_ms = start.elapsed().as_millis() as u64;
+
+        // TASK-28: publish ToolResult event after execution completes
+        if let Some(publisher) = &self.event_publisher {
+            publisher.publish_tool_result(&ctx.agent_id, name, &call_id, tool_result.success);
+        }
+        tracing::debug!(tool = %name, call_id = %call_id, success = %tool_result.success, "tool result");
 
         // 4. Audit log
         let entry = self.make_log_entry(&ctx.agent_id, name, tool_result.success, elapsed_ms);
@@ -337,9 +401,14 @@ impl ToolRegistry {
     // ── helpers ──────────────────────────────────────────────────────────────
 
     fn now_ms() -> u64 {
+        // FIX-28: log a warning when the system clock is before the Unix epoch
+        // (e.g., due to clock misconfiguration) instead of silently returning 0.
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                tracing::warn!("System clock is before the Unix epoch: {e}");
+                std::time::Duration::ZERO
+            })
             .as_millis() as u64
     }
 
@@ -367,16 +436,13 @@ impl ToolRegistry {
         guard.insert(key, entry);
 
         // Evict the oldest 10 % when over capacity (smallest IDs are oldest).
-        // BTreeMap provides O(1) access to first (oldest) entry via first_key_value().
-        // Removal is O(log n) per entry, making this O(k log n) for k entries removed.
+        // FIX-26: collect keys to remove first, then batch-delete to avoid repeated
+        // first_key_value() + remove() calls which are redundant O(log n) per entry.
         if guard.len() > self.max_audit_entries {
             let to_remove = (self.max_audit_entries / 10).max(1);
-            for _ in 0..to_remove {
-                if let Some((&oldest_key, _)) = guard.first_key_value() {
-                    guard.remove(&oldest_key);
-                } else {
-                    break;
-                }
+            let keys_to_remove: Vec<u64> = guard.keys().take(to_remove).copied().collect();
+            for key in keys_to_remove {
+                guard.remove(&key);
             }
         }
     }
@@ -506,7 +572,7 @@ impl ToolRegistry {
         &self,
         config: crate::types::HotLoadingConfig,
     ) -> Result<(), crate::types::WatchError> {
-        config.validate().map_err(|e| crate::types::WatchError::InvalidConfig(e))?;
+        config.validate().map_err(crate::types::WatchError::InvalidConfig)?;
 
         // Placeholder: actual implementation requires ScriptEngine integration
         tracing::info!("Hot-loading enabled with config: {:?}", config);
@@ -525,6 +591,24 @@ impl ToolRegistry {
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(feature = "builtins")]
+impl ToolRegistry {
+    /// Create a new registry pre-loaded with all safe built-in tools.
+    ///
+    /// Registered by default: `web_fetch`, `file_read`, `file_write`.
+    /// NOT included: `ShellExecTool` (security risk — register explicitly if needed).
+    ///
+    /// # Panics
+    ///
+    /// Panics if built-in registration fails (should never happen under normal conditions).
+    pub fn with_builtins() -> Self {
+        let reg = Self::new();
+        crate::builtins::register_all_builtins(&reg)
+            .expect("built-in tools should always register successfully");
+        reg
     }
 }
 

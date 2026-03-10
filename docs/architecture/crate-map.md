@@ -2,7 +2,7 @@
 title: claw-kernel Crate Map
 description: Crate structure, dependencies, and relationships
 status: implemented
-version: "0.1.0"
+version: "1.0.0"
 last_updated: "2026-03-01"
 language: en
 ---
@@ -121,7 +121,14 @@ pub struct AgentHandle {
     pub pid: u32,
 }
 
-pub type AgentId = String;
+/// Newtype wrapper for agent identifiers. Provides type safety over raw strings.
+pub struct AgentId(pub String);
+
+impl AgentId {
+    pub fn new(id: impl Into<String>) -> Self;
+    pub fn generate() -> Self;
+    pub fn as_str(&self) -> &str;
+}
 
 pub struct AgentInfo {
     pub handle: AgentHandle,
@@ -137,16 +144,54 @@ pub enum AgentStatus {
 }
 
 pub struct A2AMessage {
-    pub from: AgentId,
-    pub to: AgentId,                 // Required: target agent ID
-    pub correlation_id: String,      // For request-response correlation
-    pub payload: serde_json::Value,  // Serialized message payload
+    pub id: String,                  // Unique message ID
+    pub source: AgentId,             // Source agent ID
+    pub target: Option<AgentId>,     // Target agent ID (None for broadcast)
+    pub message_type: A2AMessageType, // Request, Response, Event, Command
+    pub payload: A2AMessagePayload,  // Typed payload (see below)
+    pub priority: MessagePriority,   // Critical, High, Normal, Low, Background
+    pub correlation_id: Option<String>, // For request-response matching
+    pub timestamp: u64,              // Unix milliseconds
+    pub ttl_secs: Option<u32>,       // Time-to-live (None for no expiry)
 }
-// 注意: 当前代码缺少 message_type, timeout, priority, timestamp 字段
 
-pub enum Payload {
-    Json(serde_json::Value),
-    Cbor(Vec<u8>),
+pub enum A2AMessageType {
+    Request,           // Expects response
+    Response,          // Response to request
+    Event,             // Fire-and-forget
+    DiscoveryRequest,  // Query for available capabilities
+    DiscoveryResponse, // Reply to discovery request
+    Heartbeat,         // Keep-alive message
+    Error,             // Indicates a processing error
+}
+
+pub enum A2AMessagePayload {
+    Request {
+        action: String,
+        extra: HashMap<String, serde_json::Value>,
+    },
+    Response {
+        status: ResponseStatus,
+        result: serde_json::Value,
+    },
+    Event {
+        event_type: String,
+        data: serde_json::Value,
+    },
+    DiscoveryRequest {
+        query: Option<String>,
+    },
+    DiscoveryResponse {
+        capabilities: Vec<AgentCapability>,
+        metadata: Option<HashMap<String, String>>,
+    },
+    Heartbeat {
+        status: AgentStatus,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
 }
 
 pub enum MessagePriority {
@@ -157,11 +202,17 @@ pub enum MessagePriority {
     Background = 4,
 }
 
-pub enum A2AMessageType {
-    Request,      // Expects response
-    Response,     // Response to request
-    Event,        // Fire-and-forget
-    Command,      // Directive (parent to child)
+pub enum ResponseStatus {
+    Success,
+    Partial,
+    Failure,
+}
+
+pub enum AgentStatus {
+    Active,
+    Idle,
+    Busy,
+    ShuttingDown,
 }
 
 /// Event filter for subscription
@@ -240,29 +291,30 @@ pub enum Role {
 }
 
 pub struct Options {
-    pub model: Option<String>,       // Model identifier, None = use provider default
-    pub temperature: Option<f32>,    // Range: 0.0-2.0, default: 1.0
-    pub max_tokens: Option<usize>,   // Maximum tokens to generate, default: 4096
+    pub model: String,               // Model identifier (required)
+    pub temperature: f32,            // Range: 0.0-2.0, default: 0.7
+    pub max_tokens: u32,             // Maximum tokens to generate, default: 4096
     pub stop_sequences: Vec<String>, // Stop sequences, default: empty
     pub tools: Option<Vec<ToolDef>>, // Available tools for function calling
-    pub timeout: Duration,           // Request timeout, default: 60s
+    pub timeout_seconds: u64,        // Request timeout, default: 60s
     pub max_retries: u32,            // Max retry attempts, default: 3
+    pub stream: bool,                // Enable streaming, default: false
+    pub system: Option<String>,      // System prompt override
 }
 
-// Level 2: Reusable HTTP transport
-#[async_trait]
+// Level 2: Reusable HTTP transport (uses RPITIT - Rust 2021+)
 pub trait HttpTransport: Send + Sync {
     fn base_url(&self) -> &str;
     fn auth_headers(&self) -> HeaderMap;
     fn http_client(&self) -> &Client;
     
-    async fn request<F: MessageFormat>(
-        &self, messages: &[Message], opts: &Options
-    ) -> Result<CompletionResponse, ProviderError>;
+    fn request<F: MessageFormat>(
+        &self, messages: &[Message], opts: &Options,
+    ) -> impl Future<Output = Result<CompletionResponse, ProviderError>> + Send;
     
-    async fn stream_request<F: MessageFormat>(
-        &self, messages: &[Message], opts: &Options
-    ) -> Result<BoxStream<'static, Result<Delta, ProviderError>>, ProviderError>;
+    fn stream_request<F: MessageFormat>(
+        &self, messages: &[Message], opts: &Options,
+    ) -> impl Future<Output = Result<BoxStream<'static, Result<Delta, ProviderError>>, ProviderError>> + Send;
 }
 
 pub struct CompletionResponse {
@@ -278,9 +330,9 @@ pub struct Delta {
 }
 
 pub struct TokenUsage {
-    pub prompt_tokens: usize,
-    pub completion_tokens: usize,
-    pub total_tokens: usize,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub total_tokens: u64,
 }
 
 pub enum FinishReason {
@@ -299,12 +351,26 @@ pub struct ToolCall {
 
 pub type Embedding = Vec<f32>;
 
-// Level 3: User-facing provider trait
-#[async_trait]
+// Level 3: User-facing provider trait (uses RPITIT - Rust 2021+)
 pub trait LLMProvider: Send + Sync {
-    async fn complete(&self, messages: &[Message], opts: &Options) -> Result<CompletionResponse, ProviderError>;
-    async fn stream_complete(&self, messages: &[Message], opts: &Options) -> Result<BoxStream<'static, Result<Delta, ProviderError>>, ProviderError>;
-    fn token_count(&self, messages: &[Message]) -> usize;
+    fn provider_id(&self) -> &str;
+    fn model_id(&self) -> &str;
+    
+    async fn complete(
+        &self,
+        messages: Vec<Message>,
+        options: Options,
+    ) -> Result<CompletionResponse, ProviderError>;
+    
+    async fn complete_stream(
+        &self,
+        messages: Vec<Message>,
+        options: Options,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError>;
+    
+    fn token_count(&self, text: &str) -> usize {
+        text.len() / 4
+    }
 }
 
 // Separate trait for embedding capability (not all providers support this)
@@ -465,10 +531,9 @@ pub struct PermissionSet {
     pub subprocess: SubprocessPolicy,
 }
 
-pub enum FsPermissions {
-    ReadOnly(Vec<PathBuf>),
-    ReadWrite(Vec<PathBuf>),
-    None,
+pub struct FsPermissions {
+    pub read_paths: HashSet<String>,   // Allowlisted read paths
+    pub write_paths: HashSet<String>,  // Allowlisted write paths
 }
 
 pub struct NetworkPermissions {
@@ -479,11 +544,8 @@ pub struct NetworkPermissions {
 }
 
 pub enum SubprocessPolicy {
-    Allow { 
-        allowed_commands: Vec<String>,
-        max_concurrent: usize,
-    },
-    Deny,
+    Denied,
+    Allowed,
 }
 
 pub struct ToolRegistry {
@@ -523,30 +585,45 @@ schema-gen = ["schemars"]
 pub struct AgentLoop {
     pub history: Box<dyn HistoryManager>,
     pub stop_conditions: Vec<Box<dyn StopCondition>>,
-    pub max_turns: Option<usize>,
-    pub token_budget: Option<usize>,
+    pub max_turns: u32,
+    pub token_budget: u64,
 }
 
 pub trait StopCondition: Send + Sync {
+    /// Return true if the loop should stop given the current state.
     fn should_stop(&self, state: &LoopState) -> bool;
+    /// Human-readable name for this condition (used in logs).
+    fn name(&self) -> &str;
 }
 
 pub trait HistoryManager: Send + Sync {
-    fn append(&self, message: Message); // &self with internal mutability
-    fn get_context(&self, max_tokens: usize) -> Vec<Message>;
-    fn truncate_to_fit(&self, max_tokens: usize);
-    fn summarize(&self, strategy: &dyn Summarizer);
+    /// Append a message to history.
+    fn append(&mut self, message: Message);
+    /// Get all current messages.
+    fn messages(&self) -> &[Message];
+    /// Number of messages in history.
+    fn len(&self) -> usize;
+    /// Whether history is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    /// Rough token estimate for the whole history.
+    fn token_estimate(&self) -> usize;
+    /// Clear all history.
+    fn clear(&mut self);
+    /// Set a callback invoked when history approaches the context limit.
+    fn set_overflow_callback(&mut self, f: Box<dyn Fn(usize, usize) + Send + Sync>);
 }
 
 pub trait Summarizer: Send + Sync {
-    fn summarize(&self, messages: &[Message]) -> String;
+    /// Summarize the given messages. Returns a concise summary string.
+    async fn summarize(&self, messages: &[Message]) -> Result<String, AgentError>;
 }
 
 pub struct LoopState {
-    pub turn_count: usize,
-    pub token_usage: TokenUsage,
-    pub last_message: Option<Message>,
-    pub tool_calls_made: usize,
+    pub turn: u32,
+    pub usage: TokenUsage,
+    pub history_len: usize,
 }
 ```
 
@@ -562,6 +639,127 @@ pub struct LoopState {
 
 ---
 
+### `claw-memory` — Memory System
+
+**Layer**: 2  
+**Purpose**: Long-term memory layer with semantic search, persistent storage, and quota management.  
+**[Info] Note**: This is an **optional reference implementation** per [ADR-010](../adr/010-memory-system-boundary.md). The kernel only requires `HistoryManager` for short-term context window; mid/long-term memory is application responsibility.
+
+**Architecture:**
+```
+Agent -> SecureMemoryStore (50MB quota)
+      -> SqliteMemoryStore (cosine similarity search)
+      -> NgramEmbedder (64-dim bigram+trigram)
+      -> SQLite (rusqlite + sqlite-vec)
+```
+
+**Key Types:**
+```rust
+/// 64-dimensional character n-gram embedder (no external API needed)
+pub struct NgramEmbedder {
+    dim: usize,  // default: 64
+}
+
+impl Embedder for NgramEmbedder {
+    fn embed(&self, text: &str) -> Vec<f32>;
+    fn embed_batch(&self, texts: &[String]) -> Vec<Vec<f32>>;
+}
+
+/// SQLite-backed memory store with in-process cosine similarity
+pub struct SqliteMemoryStore {
+    conn: Connection,
+    embedder: Arc<dyn Embedder>,
+}
+
+impl MemoryStore for SqliteMemoryStore {
+    async fn store(&self, item: MemoryItem) -> Result<MemoryId, MemoryError>;
+    async fn store_batch(&self, items: Vec<MemoryItem>) -> Result<Vec<MemoryId>, MemoryError>;
+    async fn retrieve(&self, id: &MemoryId) -> Option<MemoryItem>;
+    async fn semantic_search(
+        &self,
+        query: &str,
+        namespace: &str,
+        limit: usize,
+    ) -> Result<Vec<ScoredMemory>, MemoryError>;
+}
+
+/// Quota-enforcing wrapper (50MB default per agent)
+pub struct SecureMemoryStore {
+    inner: SqliteMemoryStore,
+    quota_bytes: usize,  // default: 50MB
+    current_usage: AtomicUsize,
+}
+
+/// Memory item with metadata
+pub struct MemoryItem {
+    pub id: MemoryId,              // Unique identifier (auto-generated)
+    pub namespace: String,          // Agent-specific isolation
+    pub content: String,
+    pub embedding: Option<Vec<f32>>, // Auto-computed if None
+    pub tags: Vec<String>,
+    pub created_at_ms: u64,
+    pub accessed_at_ms: u64,
+    pub importance: f32,            // 0.0-1.0, affects retention
+}
+
+/// Episodic memory entry (conversation context linking)
+pub struct EpisodicEntry {
+    pub episode_id: String,         // Conversation/session ID
+    pub role: String,               // "user", "assistant", "system"
+    pub turn_index: usize,          // Position in conversation
+    pub content: String,
+    pub timestamp_ms: u64,
+}
+```
+
+**MemoryStore Trait API:**
+```rust
+#[async_trait]
+pub trait MemoryStore: Send + Sync {
+    async fn store(&self, item: MemoryItem) -> Result<MemoryId, MemoryError>;
+    async fn store_batch(&self, items: Vec<MemoryItem>) -> Result<Vec<MemoryId>, MemoryError>;
+    
+    /// Store with quota check - fails if would exceed quota
+    async fn store_with_quota_check(&self, item: MemoryItem) -> Result<MemoryId, MemoryError>;
+    
+    async fn retrieve(&self, id: &MemoryId) -> Option<MemoryItem>;
+    
+    /// Semantic search by embedding similarity
+    async fn semantic_search(
+        &self,
+        query_embedding: &[f32],
+        namespace: &str,
+        limit: usize,
+    ) -> Result<Vec<ScoredMemory>, MemoryError>;
+    
+    /// Search episodic memory by episode_id and filters
+    async fn search_episodic(
+        &self,
+        filter: EpisodicFilter,
+    ) -> Result<Vec<EpisodicEntry>, MemoryError>;
+    
+    async fn clear_namespace(&self, namespace: &str) -> Result<(), MemoryError>;
+}
+```
+
+**Features:**
+```toml
+[features]
+default = ["sqlite", "ngram-embedder"]
+sqlite = ["rusqlite", "sqlite-vec"]
+ngram-embedder = []  # Pure Rust, no external deps
+```
+
+**Dependencies:**
+- `rusqlite` — SQLite binding
+- `sqlite-vec` — Vector similarity search extension
+
+**See also:**
+- [ADR-010: Memory System Boundary](../adr/010-memory-system-boundary.md)
+- [Writing Tools Guide](../guides/writing-tools.md)
+
+---
+
 ### `claw-script` — Extension Foundation
 
 **Layer**: 3  
@@ -574,37 +772,44 @@ pub struct LoopState {
 default = ["engine-lua"]
 engine-lua = ["mlua"]        # Lua (default, zero deps)
 engine-v8 = ["deno_core"]    # Deno/V8 (full TS/JS)
-engine-py = ["pyo3"]         # Python (ML ecosystem)
 ```
 
 **Key Types:**
 ```rust
 pub trait ScriptEngine: Send + Sync {
-    fn compile(&self, source: &str, source_name: &str) -> Result<Script>;
-    fn execute(&self, script: &Script, context: &Context, timeout: Duration) -> Result<Value>;
-    fn register_native(&self, name: &str, func: NativeFunction);
+    /// Name of this engine (e.g., "lua").
+    fn engine_type(&self) -> &str;
+    /// Execute a script and return the last expression value.
+    async fn execute(&self, script: &Script, ctx: &ScriptContext) -> Result<ScriptValue, ScriptError>;
+    /// Check if a script compiles (no execution).
+    fn validate(&self, script: &Script) -> Result<(), ScriptError>;
 }
 
-/// Compiled script (engine-specific representation)
-pub enum Script {
-    Lua(mlua::Function),
+/// Compiled/loaded script.
+pub struct Script {
+    pub name: String,
+    pub source: String,
+    pub engine: EngineType,
+}
+
+/// Supported scripting engines.
+pub enum EngineType {
+    Lua,
     #[cfg(feature = "engine-v8")]
-    V8(deno_core::JsRuntime),
-    #[cfg(feature = "engine-py")]
-    Python(PythonScriptHandle),
+    JavaScript,
 }
 
-/// Execution context passed to scripts
-pub struct Context {
-    pub agent_id: AgentId,
+/// Execution context passed to scripts.
+pub struct ScriptContext {
+    pub agent_id: String,
+    pub globals: HashMap<String, ScriptValue>,
+    pub timeout: Duration,
+    pub fs_config: FsBridgeConfig,
+    pub net_config: NetBridgeConfig,
     pub permissions: PermissionSet,
-    pub runtime_data: HashMap<String, Value>,
 }
 
-pub type Value = serde_json::Value;
-
-/// Native function callable from scripts
-pub type NativeFunction = Arc<dyn Fn(&Context, Vec<Value>) -> Result<Value, ScriptError> + Send + Sync>;
+pub type ScriptValue = serde_json::Value;
 
 pub struct ScriptError {
     pub code: String,
@@ -612,21 +817,20 @@ pub struct ScriptError {
     pub stack_trace: Option<String>,
 }
 
+/// Bridge exposing kernel capabilities to scripts.
 pub struct RustBridge {
-    // Exposed to scripts
-    pub llm: LlmBridge,
     pub tools: ToolsBridge,
     pub memory: MemoryBridge,
     pub events: EventsBridge,
     pub fs: FsBridge,
     pub agent: AgentBridge,
+    pub dirs: DirsBridge,
 }
 ```
 
 **Dependencies:**
 - `mlua` (optional) — Lua binding
 - `deno_core` (optional) — V8 embedding
-- `pyo3` (optional) — Python embedding
 
 ---
 
@@ -643,6 +847,8 @@ The Core Kernel consists of the following crates, all of which are stable, minim
 | `claw-tools` | 2 | Tool protocol (essential) |
 | `claw-loop` | 2 | Agent loop (essential) |
 | `claw-script` | 3 | Script Runtime (optional but stable) |
+| `claw-memory` | 2 | Memory system - NgramEmbedder, SqliteMemoryStore, SecureMemoryStore (optional reference implementation) |
+| `claw-channel` | 2 | Channel integrations - Discord, Webhook, Stdin (optional) |
 
 Applications built on claw-kernel can implement:
 - Custom `MemoryBackend` trait for memory storage
@@ -682,7 +888,6 @@ default = ["engine-lua"]
 # Re-export from claw-script
 engine-lua = ["claw-script/engine-lua"]
 engine-v8 = ["claw-script/engine-v8"]
-engine-py = ["claw-script/engine-py"]
 ```
 
 ---
@@ -728,7 +933,7 @@ engine-py = ["claw-script/engine-py"]
 
 All crates in the workspace are versioned together ("unified versioning"):
 
-- Current version: `0.1.0`
+- Current version: `1.0.0`
 - All crates share the same version number
 - Breaking changes bump all crates
 
@@ -744,7 +949,6 @@ This simplifies dependency management for users.
    - Example: `engine-v8` (100MB+ binary impact)
 
 2. **Optional script engines**
-   - Example: `engine-py` (requires Python 3.10+)
 
 ### When NOT to Use Features
 

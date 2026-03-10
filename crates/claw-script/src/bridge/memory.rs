@@ -1,15 +1,20 @@
 //! Memory bridge — exposes the memory store to Lua scripts.
+//!
+//! Note: `memory:search()` (semantic search) was removed in v1.1.0.
+//! Use the `claw-memory` crate directly for LTM/semantic-search features.
 
 use std::sync::Arc;
 
 use claw_memory::{MemoryItem, MemoryStore};
-use claw_provider::embedding::{Embedder, NgramEmbedder};
 use mlua::{Lua, Result as LuaResult, UserData, UserDataMethods};
 
 /// Memory bridge exposing the memory store to Lua scripts.
 ///
 /// Memory is automatically namespaced by `agent_id`, so scripts cannot
 /// accidentally access another agent's memory.
+///
+/// Provides session-scoped scratch space: `set`, `get`, `delete`.
+/// For long-term memory / semantic search, use the `claw-memory` crate directly.
 ///
 /// Registered as the global `memory` table.
 ///
@@ -23,18 +28,12 @@ use mlua::{Lua, Result as LuaResult, UserData, UserDataMethods};
 /// if val then
 ///     print("Preference:", val)
 /// end
-///
-/// -- Semantic search
-/// local results = memory:search("user preferences", 5)
-/// for _, item in ipairs(results) do
-///     print(item.content)
-/// end
 /// ```
 pub struct MemoryBridge {
-    store: Arc<dyn MemoryStore>,
-    embedder: Arc<NgramEmbedder>,
+    /// The memory store.
+    pub store: Arc<dyn MemoryStore>,
     /// Namespace = agent_id; not visible to scripts.
-    namespace: String,
+    pub namespace: String,
 }
 
 impl MemoryBridge {
@@ -42,35 +41,35 @@ impl MemoryBridge {
     pub fn new(store: Arc<dyn MemoryStore>, namespace: impl Into<String>) -> Self {
         Self {
             store,
-            embedder: Arc::new(NgramEmbedder::new()),
             namespace: namespace.into(),
         }
     }
 
     /// Build the deterministic memory ID for a key in this namespace.
-    fn item_id(&self, key: &str) -> claw_memory::MemoryId {
+    pub fn item_id(&self, key: &str) -> claw_memory::MemoryId {
         claw_memory::MemoryId::new(format!("{}::{}", self.namespace, key))
     }
 }
 
 impl UserData for MemoryBridge {
     fn add_methods<'lua, M: UserDataMethods<'lua, Self>>(methods: &mut M) {
+        // NOTE: These methods use `add_method` with `block_on` because they run inside
+        // `spawn_blocking` context (see LuaEngine::eval/exec).
         // set(key, value) — stores a string value under the given key.
-        methods.add_async_method(
+        methods.add_method(
             "set",
-            |_lua, this, (key, value): (String, String)| async move {
+            |_lua, this, (key, value): (String, String)| {
+                // Note: Called from spawn_blocking context; use block_on for async operations.
                 let id = this.item_id(&key);
                 // Delete existing entry if present (upsert semantics).
-                let _ = this.store.delete(&id).await;
+                let _ = tokio::runtime::Handle::current()
+                    .block_on(this.store.delete(&id));
 
-                let embedding = this.embedder.embed(&value);
                 let mut item = MemoryItem::new(this.namespace.clone(), value);
                 item.id = id;
-                item.embedding = Some(embedding);
 
-                this.store
-                    .store(item)
-                    .await
+                tokio::runtime::Handle::current()
+                    .block_on(this.store.store(item))
                     .map_err(|e| mlua::Error::RuntimeError(format!("memory set error: {}", e)))?;
 
                 Ok(())
@@ -78,9 +77,10 @@ impl UserData for MemoryBridge {
         );
 
         // get(key) -> string | nil
-        methods.add_async_method("get", |_lua, this, key: String| async move {
+        methods.add_method("get", |_lua, this, key: String| {
+            // Note: Called from spawn_blocking context; use block_on for async operations.
             let id = this.item_id(&key);
-            match this.store.retrieve(&id).await {
+            match tokio::runtime::Handle::current().block_on(this.store.retrieve(&id)) {
                 Ok(Some(item)) => Ok(Some(item.content)),
                 Ok(None) => Ok(None),
                 Err(e) => Err(mlua::Error::RuntimeError(format!(
@@ -91,45 +91,14 @@ impl UserData for MemoryBridge {
         });
 
         // delete(key) -> nil
-        methods.add_async_method("delete", |_lua, this, key: String| async move {
+        methods.add_method("delete", |_lua, this, key: String| {
+            // Note: Called from spawn_blocking context; use block_on for async operations.
             let id = this.item_id(&key);
-            this.store
-                .delete(&id)
-                .await
+            tokio::runtime::Handle::current()
+                .block_on(this.store.delete(&id))
                 .map_err(|e| mlua::Error::RuntimeError(format!("memory delete error: {}", e)))?;
             Ok(())
         });
-
-        // search(query, top_k) -> [{id, content, importance}]
-        methods.add_async_method(
-            "search",
-            |lua, this, (query, top_k): (String, usize)| async move {
-                let embedding = this.embedder.embed(&query);
-                let results = this
-                    .store
-                    .semantic_search(&embedding, top_k)
-                    .await
-                    .map_err(|e| {
-                        mlua::Error::RuntimeError(format!("memory search error: {}", e))
-                    })?;
-
-                // Filter to this namespace only.
-                let results: Vec<_> = results
-                    .into_iter()
-                    .filter(|item| item.namespace == this.namespace)
-                    .collect();
-
-                let table = lua.create_table()?;
-                for (i, item) in results.into_iter().enumerate() {
-                    let entry = lua.create_table()?;
-                    entry.set("id", item.id.as_str().to_string())?;
-                    entry.set("content", item.content)?;
-                    entry.set("importance", item.importance as f64)?;
-                    table.raw_set(i + 1, entry)?;
-                }
-                Ok(table)
-            },
-        );
     }
 }
 

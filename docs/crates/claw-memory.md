@@ -20,7 +20,7 @@ Long-term memory layer for agent kernels — semantic search, persistent storage
 
 ## Components
 
-- **NgramEmbedder**: 64-dimensional bigram + trigram character-level embedder
+- **NgramEmbedder**: 64-dimensional bigram + trigram character-level embedder (defined within `claw-memory`; requires no external embedding service)
 - **SqliteMemoryStore**: Cosine similarity search performed in-memory over SQLite-backed records
 - **SecureMemoryStore**: Wraps `SqliteMemoryStore` with a 50 MB per-agent quota
 
@@ -30,7 +30,7 @@ Long-term memory layer for agent kernels — semantic search, persistent storage
 Agent
   └── SecureMemoryStore (50 MB quota)
         └── SqliteMemoryStore (cosine sim, in-memory index)
-              └── NgramEmbedder (64-dim bigram+trigram)
+              └── NgramEmbedder (64-dim bigram+trigram, defined in claw-memory)
                     └── SQLite (rusqlite + sqlite-vec)
 ```
 
@@ -43,6 +43,8 @@ See [Writing Tools](../guides/writing-tools.md) for integration examples.
 ### NgramEmbedder
 
 64-dimensional character-level embedder using bigram + trigram n-grams. Produces deterministic embeddings with no external API dependency.
+
+> **Note:** `NgramEmbedder` is defined within `claw-memory` and requires no external embedding service.
 
 ```rust
 use claw_memory::NgramEmbedder;
@@ -128,9 +130,16 @@ use claw_memory::EpisodicFilter;
 
 let filter = EpisodicFilter::new()
     .for_namespace("agent-1")
-    .after(1700000000000)  // Unix ms
-    .before(1700100000000)
     .limit(100);
+
+// Or construct directly with fields
+let filter = EpisodicFilter {
+    namespace: Some("agent-1".to_string()),
+    after_ms: Some(1700000000000),   // Unix ms
+    before_ms: Some(1700100000000),
+    limit: Some(100),
+    ..Default::default()
+};
 ```
 
 ### Memory Types
