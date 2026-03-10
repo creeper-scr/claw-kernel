@@ -1,5 +1,7 @@
 # Known Issues — claw-kernel v1.0.0
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 > **⚠️ Security Notice**
 > 
 > This document lists known security limitations. **Contributions welcome!**

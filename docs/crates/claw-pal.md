@@ -7,6 +7,8 @@ last_updated: "2026-03-09"
 language: en
 ---
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 > **⚠️ Security Warning / 安全警告**
 > 
 > Platform sandbox implementations are **incomplete and vary by platform**:

@@ -1,5 +1,7 @@
 # Message Flow Architecture
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 **Version**: 1.5.0-dev
 **Status**: Implemented (GAP-05 / G-12 resolved)
 

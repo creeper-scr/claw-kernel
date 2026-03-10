@@ -4,6 +4,7 @@
 
 # Contributing to claw-kernel
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
 claw-kernel is the shared foundation of the Claw ecosystem. We hold contributions to a high standard, but the bar for getting started is intentionally low. Every bug report, doc fix, and test improvement matters.
 
 > **Project Status**: v1.0.0 released. 9 crates implemented, 670+ tests passing. Great time to contribute new providers, sandbox hardening, or test coverage.

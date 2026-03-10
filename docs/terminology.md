@@ -8,6 +8,8 @@ last_updated: "2026-03-01"
 
 # claw-kernel 术语对照表 / Terminology Reference
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 > 本文档提供 claw-kernel 项目中英文术语对照，确保文档一致性。
 
 ---

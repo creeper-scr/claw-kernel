@@ -7,6 +7,8 @@ last_updated: "2026-03-08"
 language: en
 ---
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 > **⚠️ Security Notice**
 > 
 > macOS sandbox implementation uses the native `sandbox(7)` (Seatbelt) system. Limitations:

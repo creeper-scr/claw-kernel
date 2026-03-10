@@ -7,6 +7,8 @@ last_updated: "2026-03-10"
 language: en
 ---
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 > **⚠️ Critical Security Warning / 重要安全警告**
 > 
 > Windows sandbox is a **degraded implementation** with significant limitations:

@@ -11,6 +11,8 @@ language: en
 
 # Writing Custom Tools
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 Tools are the primary way to extend your agent's capabilities at Layer 2 (Agent Kernel Protocol) and Layer 3 (Extension Foundation). This guide covers writing tools in Lua (default) and TypeScript/Deno.
 
 > [Info] **Note**: This guide documents the implemented API in v1.0.0.

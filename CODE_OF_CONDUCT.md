@@ -16,6 +16,7 @@ language: bilingual
 
 # Contributor Covenant Code of Conduct
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
 ## Our Pledge
 
 We as members, contributors, and leaders pledge to make participation in our

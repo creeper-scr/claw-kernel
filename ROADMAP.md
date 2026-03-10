@@ -13,6 +13,7 @@ language: bilingual
 
 # claw-kernel Roadmap
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
 > **Strategy: Fast to v1.0.0 — Capture market share first, add features later.**
 
 ---

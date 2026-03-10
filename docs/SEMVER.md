@@ -1,5 +1,7 @@
 # Semver Policy
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 ## Guarantees (v1.0+)
 
 claw-kernel follows Semantic Versioning 2.0.0.

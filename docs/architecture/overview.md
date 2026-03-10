@@ -10,6 +10,8 @@ language: en
 
 # claw-kernel Architecture Overview
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 > The Claw Ecosystem's Foundation — A Cross-Platform Agent Kernel Built in Rust
 
 ---

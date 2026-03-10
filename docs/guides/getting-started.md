@@ -10,6 +10,8 @@ language: en
 
 # Getting Started with claw-kernel
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 This guide will help you build your first agent using claw-kernel.
 
 claw-kernel is a lightweight Rust framework for building LLM-powered agents. It provides core components like provider interfaces, tool systems, and agent loops at Layer 1–3.

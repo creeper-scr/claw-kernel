@@ -7,7 +7,7 @@ last_updated: "2026-03-10"
 language: en
 ---
 
-
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
 
 System runtime with event bus, process management, and multi-agent orchestration.
 

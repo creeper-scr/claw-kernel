@@ -1,5 +1,7 @@
 # SDK Auto-Discovery Protocol
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 This document describes the standard protocol for language SDK clients (Python, TypeScript, Go, etc.) to automatically discover and connect to a running `claw-kernel-server` daemon, or start one if not running.
 
 ## Overview

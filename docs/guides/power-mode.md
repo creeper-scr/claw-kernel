@@ -20,6 +20,8 @@ language: en
 
 # Power Mode Guide
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 Power Mode grants agents full system access. Use it when you need agents to perform unrestricted automation tasks.
 
 > [Info] **Note**: This guide documents the implemented API in v1.0.0. Windows sandbox is stub-only (see KNOWN-ISSUES.md).

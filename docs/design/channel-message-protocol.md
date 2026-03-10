@@ -11,6 +11,8 @@ language: en
 
 # Channel Message Protocol
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 **Status:** Accepted  
 **Date:** 2026-02-28  
 **Crate:** `claw-channel` (Phase 6)

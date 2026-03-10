@@ -1,5 +1,8 @@
 # claw-kernel
 
+> [!WARNING]
+> **v0.4.0 is a pre-release beta — unstable and not intended for production use.** APIs may change without notice. See [ROADMAP.md](ROADMAP.md) for the stable release timeline.
+
 > The shared Rust foundation for the Claw agent ecosystem — cross-platform, sandboxed, hot-loadable.
 
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)

@@ -5,6 +5,8 @@ description: FSM-driven execution model for AgentLoop
 
 # Agent Loop State Machine
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 `AgentLoop` uses a finite state machine to manage execution lifecycle.
 
 ## States

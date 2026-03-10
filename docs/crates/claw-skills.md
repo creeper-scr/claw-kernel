@@ -10,6 +10,8 @@ language: en
 
 # claw-skills
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 Skill discovery, indexing, and loading for the Claw skill ecosystem.
 
 ---

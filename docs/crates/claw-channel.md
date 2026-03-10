@@ -10,6 +10,8 @@ language: en
 
 # claw-channel
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 Platform-agnostic channel abstraction for connecting agents to external messaging systems.
 
 ---

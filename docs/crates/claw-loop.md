@@ -7,7 +7,7 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
 
 Agent loop engine for multi-turn conversations.
 

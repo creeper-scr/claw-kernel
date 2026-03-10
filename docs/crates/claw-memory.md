@@ -10,6 +10,8 @@ language: en
 
 # claw-memory
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 > **重要变更 (v1.3.0 D1 决策)**
 >
 > `claw-memory` 已从内核必需组件降级为**可选应用层依赖**。

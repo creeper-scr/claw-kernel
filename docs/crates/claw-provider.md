@@ -7,7 +7,7 @@ last_updated: "2026-03-09"
 language: en
 ---
 
-
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
 
 LLM Provider abstraction with a three-tier internal architecture: Message Format → HTTP Transport → Provider Configuration.
 

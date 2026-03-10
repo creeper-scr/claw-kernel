@@ -24,6 +24,8 @@ language: en
 
 # Extension Capabilities Guide
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 claw-kernel provides **infrastructure** for building extensible agents. This guide explains the capabilities the kernel offers at Layer 2 (Agent Kernel Protocol) and Layer 3 (Extension Foundation).
 
 > [Info] **Note**: This guide documents the implemented API in v1.0.0.

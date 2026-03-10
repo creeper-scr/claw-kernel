@@ -10,6 +10,8 @@ language: en
 
 # Crate Map & Dependency Graph
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 This document describes the crate structure of claw-kernel, including dependencies and relationships.
 
 ---

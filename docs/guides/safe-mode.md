@@ -23,6 +23,8 @@ language: en
 
 # Safe Mode Guide
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 Safe Mode is the kernel's sandbox feature (Layer 0.5). It provides sandboxed execution suitable for running LLM-generated code safely.
 
 > **Note**: This guide describes the current PAL (Platform Abstraction Layer) implementation in `claw-pal` crate.

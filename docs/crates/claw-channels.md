@@ -10,6 +10,8 @@ language: en
 
 # claw-channels
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 Official channel implementations for the Claw ecosystem — Discord and WebSocket.
 
 ---

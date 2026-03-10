@@ -1,5 +1,7 @@
 # claw-kernel 内核功能规范
 
+> ⚠️ **Pre-release notice:** v0.4.0 is a beta and may be unstable. APIs are subject to change without notice.
+
 > 本文档从 OpenClaw 的功能全集中提取**属于内核职责的部分**，
 > 定义每项能力的边界：内核提供什么、应用自己实现什么。
 >
