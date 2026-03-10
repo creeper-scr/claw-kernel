@@ -7,3 +7,5 @@ CLAUDE.md
 # Example build artifacts
 examples/*/target/
 examples/*/Cargo.lock
+**/node_modules/
+
