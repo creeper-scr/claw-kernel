@@ -23,7 +23,7 @@ language: bilingual
 |------|--------|
 | Architecture design | ✅ Complete |
 | ADRs (001-014) | ✅ 001-013 accepted, 014 proposed |
-| Core implementation (10 crates) | ✅ Complete |
+| Core implementation (13 crates) | ✅ Complete |
 | 129+ unit + integration tests (claw-runtime) | ✅ All passing |
 | Clippy / fmt / doc checks | ✅ Clean (zero warnings) |
 | Current release | ✅ v1.4.1 |
@@ -311,10 +311,10 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
 - [ ] Telegram channel integration
 - [ ] Slack channel integration (including Thread support)
-- [ ] WebSocket bidirectional channel
-- [ ] Gemini (Google) provider
-- [ ] Mistral provider
-- [ ] Azure OpenAI provider
+- [x] ~~WebSocket bidirectional channel~~ — ✅ Implemented in `claw-channels` (`WebSocketChannel`, multi-client fan-out)
+- [x] ~~Gemini (Google) provider~~ — ✅ Implemented in `claw-provider` (`gemini` feature)
+- [x] ~~Mistral provider~~ — ✅ Implemented in `claw-provider` (`mistral` feature)
+- [x] ~~Azure OpenAI provider~~ — ✅ Implemented in `claw-provider` (`azure-openai` feature)
 - [ ] Streaming response support across all providers
 
 ### v1.7.0 — Sandbox Hardening
@@ -330,7 +330,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
 **Target:** 2027 Q1
 
 - [ ] Local GGUF model support via `llama-cpp-rs` (optional feature)
-- [ ] SQLite history backend for `claw-loop` (`sqlite-history` feature)
+- [x] ~~SQLite history backend for `claw-loop` (`sqlite-history` feature)~~ — ✅ Implemented (`SqliteHistory` + `SqliteHistoryStore`)
 - [ ] Performance benchmarks (provider latency, tool throughput)
 
 1. **Documentation** — examples, guides, rustdoc
@@ -394,7 +394,7 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 |------|------|
 | 架构设计 | ✅ 已完成 |
 | ADR（001-014） | ✅ 001-013 已接受，014 Proposed |
-| 核心实现（10 个 crate） | ✅ 已完成 |
+| 核心实现（13 个 crate） | ✅ 已完成 |
 | 129+ 个单元+集成测试（claw-runtime） | ✅ 全部通过 |
 | Clippy / fmt / 文档检查 | ✅ 干净 |
 | 当前版本 | ✅ v1.4.1 |
@@ -631,10 +631,10 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 - [ ] Telegram 渠道集成
 - [ ] Slack 渠道集成（含 Thread 支持）
-- [ ] WebSocket 双向渠道
-- [ ] Gemini（Google）Provider
-- [ ] Mistral Provider
-- [ ] Azure OpenAI Provider
+- [x] ~~WebSocket 双向渠道~~ — ✅ 已在 `claw-channels` 中实现（`WebSocketChannel`，多客户端广播）
+- [x] ~~Gemini（Google）Provider~~ — ✅ 已在 `claw-provider` 中实现（`gemini` feature）
+- [x] ~~Mistral Provider~~ — ✅ 已在 `claw-provider` 中实现（`mistral` feature）
+- [x] ~~Azure OpenAI Provider~~ — ✅ 已在 `claw-provider` 中实现（`azure-openai` feature）
 - [ ] 所有 Provider 的流式响应支持
 
 ### v1.7.0 — 沙箱加固
@@ -650,7 +650,7 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 **目标时间：** 2027 Q1
 
 - [ ] 通过 `llama-cpp-rs` 支持本地 GGUF 模型（可选 feature）
-- [ ] `claw-loop` SQLite 历史后端（`sqlite-history` feature）
+- [x] ~~`claw-loop` SQLite 历史后端（`sqlite-history` feature）~~ — ✅ 已实现（`SqliteHistory` + `SqliteHistoryStore`）
 - [ ] 性能基准测试（Provider 延迟、工具吞吐量）
 
 ---

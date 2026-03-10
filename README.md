@@ -75,14 +75,16 @@ See [`examples/`](examples/) for `simple-agent`, `custom-tool`, and `self-evolvi
 | Crate | Layer | Description |
 |-------|-------|-------------|
 | [`claw-pal`](docs/crates/claw-pal.md) | 0.5 | Platform Abstraction: sandbox, IPC, process management |
-| [`claw-runtime`](docs/crates/claw-runtime.md) | 1 | EventBus (broadcast 1024), AgentOrchestrator, IpcRouter |
-| [`claw-provider`](docs/crates/claw-provider.md) | 2 | LLM providers: Anthropic, OpenAI, Ollama, DeepSeek, Moonshot |
+| [`claw-runtime`](docs/crates/claw-runtime.md) | 1 | EventBus (broadcast 1024), AgentOrchestrator, IpcRouter, TriggerStore |
+| [`claw-provider`](docs/crates/claw-provider.md) | 2 | LLM providers: Anthropic, OpenAI, Ollama, DeepSeek, Moonshot, Gemini, Mistral, Azure OpenAI |
 | [`claw-tools`](docs/crates/claw-tools.md) | 2 | Tool registry, JSON Schema gen, hot-loading (50ms debounce) |
-| [`claw-loop`](docs/crates/claw-loop.md) | 2 | Agent loop engine, history, stop conditions |
+| [`claw-loop`](docs/crates/claw-loop.md) | 2 | Agent loop engine, history (in-memory + SQLite), stop conditions |
 | [`claw-memory`](docs/crates/claw-memory.md) | 2 | Ngram embedder, SQLite store, SecureMemoryStore (50 MB) — **optional application-layer dependency** |
-| [`claw-channel`](docs/crates/claw-channel.md) | 2 | Channel trait: Discord, HTTP Webhook, Stdin |
-| [`claw-server`](docs/crates/claw-server.md) | 2.5 | IPC daemon server, channel registry, tool bridge, trigger store |
-| [`claw-script`](docs/crates/claw-script.md) | 3 | Script engines: Lua (default✅), V8/TypeScript (✅) |
+| [`claw-channel`](docs/crates/claw-channel.md) | 2 | Channel trait: Discord, HTTP Webhook, Stdin; ChannelRouter |
+| [`claw-channels`](docs/crates/claw-channels.md) | 2 | Official channel implementations: Discord (Twilight), WebSocket (multi-client fan-out) |
+| [`claw-server`](docs/crates/claw-server.md) | 2.5 | IPC daemon server, channel registry, global tool/skill registry, trigger store |
+| [`claw-script`](docs/crates/claw-script.md) | 3 | Script engines: Lua (default✅), V8/TypeScript (✅); 7 host bridges |
+| [`claw-skills`](docs/crates/claw-skills.md) | 3 | SKILL.md scanner, skill manifest indexer, lazy loader |
 | `claw-kernel` | meta | Re-exports all of the above + prelude |
 
 ## Platform Support

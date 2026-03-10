@@ -26,6 +26,7 @@
 //! The `execute` field is mandatory. Compilation fails with a
 //! [`LoadError::ParseError`] when it is absent.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,7 +34,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use claw_tools::{
     traits::{ScriptToolCompiler, Tool},
-    types::{PermissionSet, ToolContext, ToolError, ToolResult, ToolSchema},
+    types::{
+        FsPermissions, NetworkPermissions, PermissionSet, SubprocessPolicy, ToolContext, ToolError,
+        ToolResult, ToolSchema,
+    },
 };
 use claw_tools::error::LoadError;
 
@@ -119,7 +123,7 @@ impl ScriptToolCompiler for LuaToolCompiler {
              if type(__t.execute) ~= \"function\" then\n\
                error(\"tool script table must have an 'execute' function field\")\n\
              end\n\
-             return {{ name = __t.name, description = __t.description, schema = __t.schema }}",
+             return {{ name = __t.name, description = __t.description, schema = __t.schema, permissions = __t.permissions }}",
             content_owned
         );
         let meta_script = Script::lua(&file_stem, &meta_wrapper);
@@ -154,13 +158,76 @@ impl ScriptToolCompiler for LuaToolCompiler {
 
         let schema = ToolSchema::new(&name, &description, schema_value);
 
+        let permissions = parse_permissions(meta.get("permissions"));
+
         Ok(Arc::new(ScriptTool {
             tool_name: name,
             tool_description: description,
             schema,
             script_content: content_owned,
-            permissions: PermissionSet::minimal(),
+            permissions,
         }))
+    }
+}
+
+// ─── Permission parsing ───────────────────────────────────────────────────────
+
+/// Parse a `PermissionSet` from the optional `permissions` table returned by a
+/// Lua tool script.
+///
+/// The expected Lua table shape is:
+///
+/// ```lua
+/// permissions = {
+///     fs_read    = { "/tmp/**", "/home/user/data/**" },  -- optional
+///     fs_write   = { "/tmp/out/**" },                     -- optional
+///     network    = { "api.example.com", "cdn.example.io" }, -- optional
+///     subprocess = false,                                 -- optional bool
+/// }
+/// ```
+///
+/// Any absent or `nil` key falls back to an empty / denied value.
+/// If `value` itself is `None` or not an object the function returns
+/// [`PermissionSet::minimal()`].
+fn parse_permissions(value: Option<&serde_json::Value>) -> PermissionSet {
+    let Some(obj) = value.and_then(|v| v.as_object()) else {
+        return PermissionSet::minimal();
+    };
+
+    let string_list = |key: &str| -> HashSet<String> {
+        obj.get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let fs_read = string_list("fs_read");
+    let fs_write = string_list("fs_write");
+    let network_domains = string_list("network");
+    let subprocess = obj
+        .get("subprocess")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    PermissionSet {
+        filesystem: FsPermissions {
+            read_paths: fs_read,
+            write_paths: fs_write,
+        },
+        network: if network_domains.is_empty() {
+            NetworkPermissions::none()
+        } else {
+            NetworkPermissions::allow(network_domains)
+        },
+        subprocess: if subprocess {
+            SubprocessPolicy::Allowed
+        } else {
+            SubprocessPolicy::Denied
+        },
     }
 }
 
@@ -358,6 +425,110 @@ return {
 
         assert!(result.success, "execute must succeed");
         assert_eq!(result.output.unwrap()["sum"], serde_json::json!(7));
+    }
+
+    // ── permissions ──
+
+    #[tokio::test]
+    async fn test_compile_parses_fs_read_permissions() {
+        let script = r#"
+return {
+    name = "reader",
+    permissions = {
+        fs_read = { "/tmp/**", "/data/shared/**" },
+    },
+    execute = function(args) return {} end
+}
+"#;
+        let tool = compiler()
+            .compile(Path::new("/tools/reader.lua"), script)
+            .await
+            .expect("compile must succeed");
+
+        let perms = tool.permissions();
+        assert!(perms.filesystem.read_paths.contains("/tmp/**"));
+        assert!(perms.filesystem.read_paths.contains("/data/shared/**"));
+        assert!(perms.filesystem.write_paths.is_empty());
+        assert!(perms.network.allowed_domains.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_compile_parses_network_permissions() {
+        let script = r#"
+return {
+    name = "fetcher",
+    permissions = {
+        network = { "api.example.com", "cdn.example.io" },
+    },
+    execute = function(args) return {} end
+}
+"#;
+        let tool = compiler()
+            .compile(Path::new("/tools/fetcher.lua"), script)
+            .await
+            .expect("compile must succeed");
+
+        let perms = tool.permissions();
+        assert!(perms.network.allowed_domains.contains("api.example.com"));
+        assert!(perms.network.allowed_domains.contains("cdn.example.io"));
+        assert!(perms.filesystem.read_paths.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_compile_parses_subprocess_permission() {
+        let script = r#"
+return {
+    name = "runner",
+    permissions = { subprocess = true },
+    execute = function(args) return {} end
+}
+"#;
+        let tool = compiler()
+            .compile(Path::new("/tools/runner.lua"), script)
+            .await
+            .expect("compile must succeed");
+
+        assert_eq!(
+            tool.permissions().subprocess,
+            claw_tools::types::SubprocessPolicy::Allowed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_compile_no_permissions_falls_back_to_minimal() {
+        let script = "return { execute = function(args) return {} end }";
+        let tool = compiler()
+            .compile(Path::new("/tools/t.lua"), script)
+            .await
+            .expect("compile must succeed");
+
+        let perms = tool.permissions();
+        assert!(perms.filesystem.read_paths.is_empty());
+        assert!(perms.filesystem.write_paths.is_empty());
+        assert!(perms.network.allowed_domains.is_empty());
+        assert_eq!(perms.subprocess, claw_tools::types::SubprocessPolicy::Denied);
+    }
+
+    #[test]
+    fn test_parse_permissions_none() {
+        let perms = parse_permissions(None);
+        assert!(perms.filesystem.read_paths.is_empty());
+        assert_eq!(perms.subprocess, claw_tools::types::SubprocessPolicy::Denied);
+    }
+
+    #[test]
+    fn test_parse_permissions_full() {
+        let value = serde_json::json!({
+            "fs_read": ["/tmp/**"],
+            "fs_write": ["/out/**"],
+            "network": ["example.com"],
+            "subprocess": true,
+        });
+        let perms = parse_permissions(Some(&value));
+        assert!(perms.filesystem.read_paths.contains("/tmp/**"));
+        assert!(perms.filesystem.write_paths.contains("/out/**"));
+        assert!(perms.network.allowed_domains.contains("example.com"));
+        assert_eq!(perms.subprocess, claw_tools::types::SubprocessPolicy::Allowed);
     }
 
     #[tokio::test]

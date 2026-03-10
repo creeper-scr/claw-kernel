@@ -1,14 +1,16 @@
 use dashmap::DashMap;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
+    audit::{AuditEvent, AuditLogWriterHandle},
     error::RegistryError,
+    sandbox::SandboxApplier,
     traits::{Tool, ToolEventPublisher},
     types::{LogEntry, RegistryExecutionMode, SubprocessPolicy, ToolContext, ToolError, ToolMeta, ToolResult, LoadedToolMeta},
 };
@@ -29,6 +31,44 @@ pub trait PowerKeyVerify: Send + Sync {
     fn verify(&self, candidate: &str) -> bool;
 }
 
+/// RAII guard for Power Mode sessions in [`ToolRegistry`].
+///
+/// Returned by [`ToolRegistry::enter_power_mode`]. While this guard is alive the
+/// registry operates in Power Mode (all permission checks bypassed). When the guard
+/// is dropped the registry reverts to Safe Mode automatically.
+///
+/// # Process-restart semantics (ADR-003)
+///
+/// Per ADR-003, Power → Safe is not a valid software transition — it normally
+/// requires a process restart. Within the `ToolRegistry` model the guard plays
+/// the role of a process-lifetime token: the caller holds it for the duration of
+/// the privileged session and dropping it (or letting it fall out of scope) is the
+/// sole approved mechanism for ending that session, mirroring what a process restart
+/// would achieve in a full deployment.
+///
+/// # Security note
+///
+/// Keep the guard in a tightly-scoped block. Do **not** leak it via `Box::leak` or
+/// store it in an `Arc` that outlives the intended session — that defeats the reset.
+pub struct PowerModeGuard {
+    mode: Arc<std::sync::RwLock<RegistryExecutionMode>>,
+}
+
+impl Drop for PowerModeGuard {
+    /// Revert the registry to Safe Mode when the guard is dropped.
+    ///
+    /// The reset happens even on panics, ensuring the registry never permanently
+    /// remains in Power Mode due to an error in caller code.
+    fn drop(&mut self) {
+        // If the lock is poisoned a previous panic already unwound the stack;
+        // the mode value is unreliable — skip the reset rather than double-panicking.
+        if let Ok(mut m) = self.mode.write() {
+            *m = RegistryExecutionMode::Safe;
+        }
+        tracing::info!("ToolRegistry: PowerModeGuard dropped — global mode reset to SAFE");
+    }
+}
+
 /// Thread-safe tool registry with permission checking and timeout execution.
 pub struct ToolRegistry {
     tools: DashMap<String, Arc<dyn Tool>>,
@@ -44,6 +84,29 @@ pub struct ToolRegistry {
     script_tools: DashMap<String, LoadedToolMeta>,
     /// Optional event publisher for tool lifecycle events (TASK-28)
     event_publisher: Option<Arc<dyn ToolEventPublisher>>,
+    /// Optional persistent audit log writer (HMAC-signed, with async file I/O).
+    ///
+    /// When `Some`, every tool call and mode-switch is forwarded to the background
+    /// `AuditLogWriter` task in addition to the in-memory `BTreeMap` log.
+    audit_writer: Option<AuditLogWriterHandle>,
+    /// Optional OS-level sandbox applier (G-2 fix).
+    ///
+    /// When `Some` and the registry is in `Safe` mode, `apply_safe_mode()` is called
+    /// exactly once (on the first `execute()` call) via `sandbox_state`.  After
+    /// successful application the OS-level restrictions complement the Rust-layer
+    /// permission checks with kernel-enforced isolation (seccomp-bpf on Linux,
+    /// `sandbox_init` on macOS).
+    ///
+    /// In the main kernel process use `NoopSandboxApplier` (or leave `None`) to
+    /// avoid sandboxing the daemon itself.  Inject a real implementation in agent
+    /// subprocesses that are dedicated to tool execution.
+    sandbox_applier: Option<Arc<dyn SandboxApplier>>,
+    /// Tracks the result of the one-shot OS sandbox application.
+    ///
+    /// `OnceLock` guarantees that `sandbox_applier.apply_safe_mode()` is invoked
+    /// at most once per registry instance, even under concurrent `execute()` calls.
+    /// A stored `Err(String)` causes all subsequent `execute()` calls to fail-closed.
+    sandbox_state: OnceLock<Result<(), String>>,
     /// Global execution mode — cannot be overridden by per-call ToolContext.
     ///
     /// When `Safe` (default), all permission checks are enforced regardless of
@@ -64,6 +127,9 @@ impl ToolRegistry {
             hot_reload: tokio::sync::RwLock::new(None),
             script_tools: DashMap::new(),
             event_publisher: None,
+            audit_writer: None,
+            sandbox_applier: None,
+            sandbox_state: OnceLock::new(),
             global_mode: Arc::new(std::sync::RwLock::new(RegistryExecutionMode::Safe)),
         }
     }
@@ -93,6 +159,58 @@ impl ToolRegistry {
     /// ```
     pub fn with_event_publisher(mut self, p: Arc<dyn ToolEventPublisher>) -> Self {
         self.event_publisher = Some(p);
+        self
+    }
+
+    /// Attach a persistent audit log writer for tamper-evident, HMAC-signed logging.
+    ///
+    /// When set, every `execute()` call writes `AuditEvent::ToolCall` +
+    /// `AuditEvent::ToolResult` to the background `AuditLogWriter` task, and
+    /// `enter_power_mode()` writes an `AuditEvent::ModeSwitch` record.
+    ///
+    /// The existing in-memory `BTreeMap` log is retained for backward compatibility
+    /// with `recent_log()`.
+    pub fn with_audit_writer(mut self, handle: AuditLogWriterHandle) -> Self {
+        self.audit_writer = Some(handle);
+        self
+    }
+
+    /// Inject an OS-level sandbox applier (G-2 fix).
+    ///
+    /// When set, the first `execute()` call in `Safe` mode will invoke
+    /// `applier.apply_safe_mode()` exactly once.  The OS-level restrictions then
+    /// complement the Rust-layer glob-based permission checks for the lifetime of
+    /// this registry instance.
+    ///
+    /// # When to use
+    ///
+    /// - **Agent subprocesses** (dedicated to tool execution): inject a real
+    ///   `SandboxApplier` backed by `claw_pal::linux::LinuxSandbox` or
+    ///   `claw_pal::macos::MacOSSandbox` for kernel-enforced isolation.
+    /// - **Main kernel process** (runs the daemon alongside channels, event bus,
+    ///   etc.): use [`NoopSandboxApplier`][crate::sandbox::NoopSandboxApplier] or
+    ///   omit this call — sandboxing the whole daemon would break network and FS
+    ///   access for other components.
+    ///
+    /// # Fail-closed behaviour
+    ///
+    /// If `apply_safe_mode()` returns an error, all subsequent `execute()` calls
+    /// return `RegistryError::ExecutionFailed` immediately.  This prevents tools
+    /// from running without OS-level protection when protection was explicitly
+    /// requested.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use claw_tools::{ToolRegistry, sandbox::{SandboxApplier, NoopSandboxApplier}};
+    /// use std::sync::Arc;
+    ///
+    /// // In production agent subprocess: replace with a real platform applier.
+    /// let registry = ToolRegistry::new()
+    ///     .with_sandbox_applier(NoopSandboxApplier::new());
+    /// ```
+    pub fn with_sandbox_applier(mut self, applier: Arc<dyn SandboxApplier>) -> Self {
+        self.sandbox_applier = Some(applier);
         self
     }
 
@@ -204,14 +322,15 @@ impl ToolRegistry {
     /// The `stored_hash` should have been produced by `claw_pal::security::PowerKeyHash::new()`
     /// (Argon2id, random salt).  Verification is performed by calling `stored_hash.verify()`.
     ///
-    /// Once Power Mode is entered the registry bypasses all permission checks.  To return
-    /// to Safe Mode the registry must be dropped and a new one created (process-restart
-    /// semantics per ADR-003).
+    /// Once Power Mode is entered the registry bypasses all permission checks. The
+    /// returned [`PowerModeGuard`] must be kept alive for as long as the privileged
+    /// session should last; dropping it atomically resets the registry to Safe Mode
+    /// (process-restart semantics per ADR-003).
     ///
     /// # Errors
     ///
     /// Returns `RegistryError::ExecutionFailed` if the key does not match.
-    pub fn enter_power_mode<H>(&self, power_key: &str, stored_hash: &H) -> Result<(), RegistryError>
+    pub fn enter_power_mode<H>(&self, power_key: &str, stored_hash: &H) -> Result<PowerModeGuard, RegistryError>
     where
         H: PowerKeyVerify,
     {
@@ -224,7 +343,19 @@ impl ToolRegistry {
         tracing::warn!(
             "ToolRegistry: global mode switched to POWER — permission checks bypassed"
         );
-        Ok(())
+        // Record Safe→Power mode transition in the persistent audit log.
+        if let Some(w) = &self.audit_writer {
+            w.send_blocking(AuditEvent::ModeSwitch {
+                timestamp_ms: Self::now_ms(),
+                agent_id: "system".to_string(),
+                from_mode: "safe".to_string(),
+                to_mode: "power".to_string(),
+                reason: "power_key_verified".to_string(),
+            });
+        }
+        Ok(PowerModeGuard {
+            mode: Arc::clone(&self.global_mode),
+        })
     }
 
     /// Execute a tool with permission checking, timeout, and audit logging.
@@ -322,6 +453,40 @@ impl ToolRegistry {
             RegistryExecutionMode::Safe
         };
 
+        // 2.5. G-2 fix: apply OS-level sandbox on the first Safe-mode execution.
+        //
+        // `sandbox_state` is an `OnceLock<Result<(), String>>` — `get_or_init` is
+        // called on every execute() but only runs the closure once, even under
+        // concurrent callers (std::sync::OnceLock is thread-safe by spec).
+        //
+        // Fail-closed: if the sandbox couldn't be applied we refuse ALL tool calls.
+        // This prevents a "partial sandbox" scenario where some tools run protected
+        // and others run unprotected because of an apply() error.
+        if effective_mode == RegistryExecutionMode::Safe {
+            if let Some(ref applier) = self.sandbox_applier {
+                let applier_ref = Arc::clone(applier);
+                let state = self.sandbox_state.get_or_init(|| {
+                    let result = applier_ref.apply_safe_mode();
+                    match &result {
+                        Ok(()) => tracing::info!(
+                            "ToolRegistry: OS-level sandbox applied to process (Safe mode, G-2)"
+                        ),
+                        Err(ref msg) => tracing::error!(
+                            error = %msg,
+                            "ToolRegistry: OS sandbox application failed — \
+                             all subsequent tool executions will be refused (fail-closed)"
+                        ),
+                    }
+                    result
+                });
+                if let Err(ref msg) = *state {
+                    return Err(RegistryError::ExecutionFailed(format!(
+                        "OS sandbox apply failed — tool execution refused for safety: {msg}"
+                    )));
+                }
+            }
+        }
+
         // Skip all permission checks when in Power mode.
         if effective_mode == RegistryExecutionMode::Safe {
             // 2a. Subprocess policy
@@ -403,6 +568,16 @@ impl ToolRegistry {
         }
         tracing::debug!(tool = %name, call_id = %call_id, agent = %ctx.agent_id, "tool called");
 
+        // G-1 fix: forward ToolCall event to the persistent AuditLogWriter (HMAC path).
+        if let Some(w) = &self.audit_writer {
+            w.send_blocking(AuditEvent::ToolCall {
+                timestamp_ms: Self::now_ms(),
+                agent_id: ctx.agent_id.clone(),
+                tool_name: name.to_string(),
+                args: Some(args.clone()),
+            });
+        }
+
         // Create a JoinSet to manage the tool execution task
         let mut join_set = JoinSet::new();
 
@@ -465,6 +640,17 @@ impl ToolRegistry {
                 tracing::debug!(tool = %name, call_id = %call_id, success = false, "tool result (timeout)");
                 let entry = self.make_log_entry(&ctx.agent_id, name, false, elapsed_ms);
                 self.insert_log(entry).await;
+                // G-1 fix: write ToolResult (timeout) to persistent audit writer.
+                if let Some(w) = &self.audit_writer {
+                    w.send_blocking(AuditEvent::ToolResult {
+                        timestamp_ms: Self::now_ms(),
+                        agent_id: ctx.agent_id.clone(),
+                        tool_name: name.to_string(),
+                        success: false,
+                        duration_ms: elapsed_ms,
+                        error_code: Some("timeout".to_string()),
+                    });
+                }
                 return Ok(ToolResult::err(ToolError::timeout(), elapsed_ms));
             }
         };
@@ -480,6 +666,19 @@ impl ToolRegistry {
         // 4. Audit log
         let entry = self.make_log_entry(&ctx.agent_id, name, tool_result.success, elapsed_ms);
         self.insert_log(entry).await;
+
+        // G-1 fix: write ToolResult to persistent audit writer (HMAC path).
+        if let Some(w) = &self.audit_writer {
+            let error_code = tool_result.error.as_ref().map(|e| format!("{:?}", e.code));
+            w.send_blocking(AuditEvent::ToolResult {
+                timestamp_ms: Self::now_ms(),
+                agent_id: ctx.agent_id.clone(),
+                tool_name: name.to_string(),
+                success: tool_result.success,
+                duration_ms: elapsed_ms,
+                error_code,
+            });
+        }
 
         Ok(tool_result)
     }
@@ -1289,7 +1488,7 @@ mod tests {
 
         let reg = ToolRegistry::new();
         assert_eq!(reg.global_mode(), RegistryExecutionMode::Safe);
-        reg.enter_power_mode("any-key", &AlwaysOkHash).expect("valid key should succeed");
+        let _guard = reg.enter_power_mode("any-key", &AlwaysOkHash).expect("valid key should succeed");
         assert_eq!(reg.global_mode(), RegistryExecutionMode::Power);
     }
 
@@ -1305,6 +1504,26 @@ mod tests {
         let result = reg.enter_power_mode("wrong-key", &AlwaysFailHash);
         assert!(result.is_err(), "invalid key should be rejected");
         assert_eq!(reg.global_mode(), RegistryExecutionMode::Safe, "mode must remain Safe");
+    }
+
+    /// dropping the guard reverts the registry to Safe Mode (regression: GAP-F8 fix)
+    #[test]
+    fn test_power_mode_guard_drop_resets_to_safe() {
+        struct AlwaysOkHash;
+        impl PowerKeyVerify for AlwaysOkHash {
+            fn verify(&self, _candidate: &str) -> bool { true }
+        }
+
+        let reg = ToolRegistry::new();
+        {
+            let _guard = reg.enter_power_mode("any-key", &AlwaysOkHash)
+                .expect("valid key should succeed");
+            assert_eq!(reg.global_mode(), RegistryExecutionMode::Power,
+                "registry must be in Power mode while guard is alive");
+        } // _guard dropped here
+
+        assert_eq!(reg.global_mode(), RegistryExecutionMode::Safe,
+            "registry must revert to Safe mode after guard is dropped");
     }
 
     /// 全局 Safe 模式时，ctx.execution_mode = Power 的调用者不能绕过权限检查
@@ -1389,13 +1608,234 @@ mod tests {
             },
         })).unwrap();
 
-        // Switch registry to Power mode
-        reg.enter_power_mode("valid-key", &AlwaysOk).unwrap();
+        // Switch registry to Power mode — keep the guard alive for the duration of this test.
+        let _guard = reg.enter_power_mode("valid-key", &AlwaysOk).unwrap();
 
         // ctx with minimal (subprocess Denied) — should succeed because global=Power
         let ctx = ToolContext::new("agent", PermissionSet::minimal());
         let result = reg.execute("subproc2", serde_json::json!({}), ctx).await;
         assert!(result.is_ok(), "Power mode should bypass checks; got {:?}", result);
         assert!(result.unwrap().success);
+    }
+
+    // ── G-1 audit writer integration tests ────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_audit_writer_tool_call_and_result_written() {
+        use crate::audit::{AuditEvent, AuditLogConfig, AuditLogWriter};
+
+        let config = AuditLogConfig::new().with_max_memory_entries(50);
+        let (handle, store, _task) = AuditLogWriter::start(config);
+
+        let reg = ToolRegistry::new().with_audit_writer(handle);
+        reg.register(make_echo_tool()).unwrap();
+
+        let ctx = default_ctx();
+        let args = serde_json::json!({"msg": "hello"});
+        let result = reg.execute("echo", args.clone(), ctx).await.unwrap();
+        assert!(result.success);
+
+        // Give the background writer a tick to process events.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let entries = store.list(50, Some("agent-1"), None);
+        let call_entry = entries.iter().find(|e| e.event_type() == "TOOL_CALL");
+        let result_entry = entries.iter().find(|e| e.event_type() == "TOOL_RESULT");
+
+        assert!(call_entry.is_some(), "ToolCall event must be in AuditStore");
+        assert!(result_entry.is_some(), "ToolResult event must be in AuditStore");
+
+        if let AuditEvent::ToolCall { tool_name, agent_id, args: logged_args, .. } =
+            call_entry.unwrap()
+        {
+            assert_eq!(tool_name, "echo");
+            assert_eq!(agent_id, "agent-1");
+            assert_eq!(logged_args.as_ref().unwrap()["msg"], "hello");
+        } else {
+            panic!("expected ToolCall variant");
+        }
+
+        if let AuditEvent::ToolResult { tool_name, success, error_code, .. } =
+            result_entry.unwrap()
+        {
+            assert_eq!(tool_name, "echo");
+            assert!(*success);
+            assert!(error_code.is_none());
+        } else {
+            panic!("expected ToolResult variant");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_audit_writer_enter_power_mode_written() {
+        use crate::audit::{AuditEvent, AuditLogConfig, AuditLogWriter};
+
+        let config = AuditLogConfig::new().with_max_memory_entries(50);
+        let (handle, store, _task) = AuditLogWriter::start(config);
+
+        struct AlwaysOkHash;
+        impl PowerKeyVerify for AlwaysOkHash {
+            fn verify(&self, _: &str) -> bool {
+                true
+            }
+        }
+
+        let reg = ToolRegistry::new().with_audit_writer(handle);
+        let _guard = reg.enter_power_mode("any-key", &AlwaysOkHash).unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // ModeSwitch uses "system" as agent_id — query without agent filter
+        let entries = store.list(50, None, None);
+        let mode_entry = entries.iter().find(|e| e.event_type() == "MODE_SWITCH");
+        assert!(
+            mode_entry.is_some(),
+            "ModeSwitch event must be in AuditStore after enter_power_mode"
+        );
+
+        if let AuditEvent::ModeSwitch { from_mode, to_mode, reason, agent_id, .. } =
+            mode_entry.unwrap()
+        {
+            assert_eq!(from_mode, "safe");
+            assert_eq!(to_mode, "power");
+            assert_eq!(reason, "power_key_verified");
+            assert_eq!(agent_id, "system");
+        } else {
+            panic!("expected ModeSwitch variant");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_audit_writer_timeout_writes_error_code() {
+        use crate::audit::{AuditEvent, AuditLogConfig, AuditLogWriter};
+
+        let config = AuditLogConfig::new().with_max_memory_entries(50);
+        let (handle, store, _task) = AuditLogWriter::start(config);
+
+        let reg = ToolRegistry::new().with_audit_writer(handle);
+        reg.register(make_slow_tool()).unwrap();
+
+        let ctx = default_ctx();
+        let result = reg.execute("slow", serde_json::json!({}), ctx).await.unwrap();
+        assert!(!result.success);
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let entries = store.list(50, Some("agent-1"), None);
+        let result_entry = entries.iter().find(|e| e.event_type() == "TOOL_RESULT");
+        assert!(result_entry.is_some(), "ToolResult event must be written on timeout");
+
+        if let AuditEvent::ToolResult { success, error_code, .. } = result_entry.unwrap() {
+            assert!(!*success);
+            assert_eq!(error_code.as_deref(), Some("timeout"));
+        } else {
+            panic!("expected ToolResult variant");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_no_audit_writer_no_panic() {
+        // Registry without audit_writer must not panic on any code path.
+        let reg = ToolRegistry::new();
+        reg.register(make_echo_tool()).unwrap();
+        let ctx = default_ctx();
+        let result = reg.execute("echo", serde_json::json!({}), ctx).await;
+        assert!(result.is_ok());
+    }
+
+    // ── G-2: SandboxApplier integration tests ────────────────────────────────
+
+    use std::sync::atomic::AtomicU32;
+
+    /// Applier that succeeds and counts calls.
+    struct TrackingApplier {
+        calls: Arc<AtomicU32>,
+    }
+    impl crate::sandbox::SandboxApplier for TrackingApplier {
+        fn apply_safe_mode(&self) -> Result<(), String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// Applier that always fails.
+    struct BrokenApplier;
+    impl crate::sandbox::SandboxApplier for BrokenApplier {
+        fn apply_safe_mode(&self) -> Result<(), String> {
+            Err("simulated OS sandbox failure".into())
+        }
+    }
+
+    /// `apply_safe_mode()` is called exactly once even with concurrent execute() calls.
+    #[tokio::test]
+    async fn test_sandbox_applier_called_at_most_once() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let applier = Arc::new(TrackingApplier { calls: Arc::clone(&calls) });
+
+        let reg = ToolRegistry::new().with_sandbox_applier(applier);
+        reg.register(make_echo_tool()).unwrap();
+
+        // Three sequential Safe-mode executions — applier must be called only once.
+        for _ in 0..3 {
+            let ctx = default_ctx();
+            let r = reg.execute("echo", serde_json::json!({}), ctx).await;
+            assert!(r.is_ok(), "execute should succeed after sandbox is applied");
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "apply_safe_mode must be called exactly once");
+    }
+
+    /// When no sandbox applier is set, execute() succeeds as before (backward-compat).
+    #[tokio::test]
+    async fn test_no_sandbox_applier_still_works() {
+        let reg = ToolRegistry::new();
+        reg.register(make_echo_tool()).unwrap();
+        let ctx = default_ctx();
+        assert!(reg.execute("echo", serde_json::json!({}), ctx).await.is_ok());
+    }
+
+    /// When the applier fails, execute() returns ExecutionFailed (fail-closed).
+    #[tokio::test]
+    async fn test_failing_sandbox_applier_refuses_all_executions() {
+        let reg = ToolRegistry::new().with_sandbox_applier(Arc::new(BrokenApplier));
+        reg.register(make_echo_tool()).unwrap();
+
+        for _ in 0..2 {
+            let ctx = default_ctx();
+            let err = reg.execute("echo", serde_json::json!({}), ctx).await;
+            assert!(
+                matches!(err, Err(RegistryError::ExecutionFailed(_))),
+                "broken applier must produce ExecutionFailed, got: {:?}", err
+            );
+        }
+    }
+
+    /// In Power mode the sandbox applier is NOT invoked.
+    #[tokio::test]
+    async fn test_sandbox_applier_skipped_in_power_mode() {
+        let calls = Arc::new(AtomicU32::new(0));
+        let applier = Arc::new(TrackingApplier { calls: Arc::clone(&calls) });
+
+        let reg = ToolRegistry::new().with_sandbox_applier(applier);
+        reg.register(make_echo_tool()).unwrap();
+
+        // Enter Power mode with a trivially-verifying key.
+        struct TrueHash;
+        impl PowerKeyVerify for TrueHash { fn verify(&self, _: &str) -> bool { true } }
+        let _guard = reg.enter_power_mode("any", &TrueHash).expect("power mode");
+
+        let ctx = ToolContext::with_mode("agent", PermissionSet::minimal(), RegistryExecutionMode::Power);
+        reg.execute("echo", serde_json::json!({}), ctx).await.unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "applier must NOT be called in Power mode");
+    }
+
+    /// `NoopSandboxApplier` integrates cleanly and succeeds.
+    #[tokio::test]
+    async fn test_noop_sandbox_applier_integration() {
+        let reg = ToolRegistry::new()
+            .with_sandbox_applier(crate::sandbox::NoopSandboxApplier::new());
+        reg.register(make_echo_tool()).unwrap();
+        let ctx = default_ctx();
+        assert!(reg.execute("echo", serde_json::json!({}), ctx).await.is_ok());
     }
 }

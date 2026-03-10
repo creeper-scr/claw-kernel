@@ -58,6 +58,7 @@ pub mod builtins;
 pub mod error;
 pub mod hot_reload;
 pub mod registry;
+pub mod sandbox;
 pub mod traits;
 pub mod types;
 
@@ -66,7 +67,8 @@ pub use audit::{
     SecurityAuditEventRepr, ToolsAuditSink,
 };
 pub use error::{RegistryError, ValidationError};
-pub use registry::{PowerKeyVerify, ToolRegistry};
+pub use registry::{PowerKeyVerify, PowerModeGuard, ToolRegistry};
+pub use sandbox::{NoopSandboxApplier, SandboxApplier};
 pub use traits::{NoopToolEventPublisher, ScriptToolCompiler, Tool, ToolEventPublisher};
 pub use types::{
     FsPermissions, HotLoadingConfig, LoadedToolMeta, LoadError, LogEntry, NetworkPermissions,

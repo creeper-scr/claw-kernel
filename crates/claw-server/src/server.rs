@@ -285,6 +285,10 @@ impl Default for ServerConfig {
 }
 
 /// The KernelServer that exposes agent functionality via JSON-RPC 2.0 over IPC.
+// TODO(G-5): migrate webhook_server field from AxumWebhookServer to WebhookTriggerServer.
+// Blocked on refactoring handle_trigger_add_webhook to use EventBus subscription
+// instead of synchronous AgentLoop callbacks. See docs/gap-analysis.md §G-5.
+#[allow(deprecated)]
 pub struct KernelServer {
     /// Server configuration.
     config: ServerConfig,

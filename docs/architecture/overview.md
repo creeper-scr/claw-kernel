@@ -393,6 +393,9 @@ pub struct ToolCall {
 | `DeepSeekProvider` | OpenAIFormat | ~20 lines (config) | ✅ Implemented |
 | `MoonshotProvider` | OpenAIFormat | ~20 lines (config) | ✅ Implemented |
 | `OllamaProvider` | OllamaFormat | ~25 lines (config) | ✅ Implemented |
+| `GeminiProvider` | OpenAIFormat | ~20 lines (config) | ✅ Implemented (`gemini` feature) |
+| `MistralProvider` | OpenAIFormat | ~20 lines (config) | ✅ Implemented (`mistral` feature) |
+| `AzureOpenAIProvider` | OpenAIFormat | ~20 lines (config) | ✅ Implemented (`azure-openai` feature) |
 | `QwenProvider` | OpenAIFormat | ~20 lines (config) | 🚧 Planned |
 | `GrokProvider` | OpenAIFormat | ~20 lines (config) | 🚧 Planned |
 | `ScriptableProvider` | Custom via script | Runtime defined | 🚧 Planned |

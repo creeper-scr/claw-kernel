@@ -23,6 +23,7 @@ tokio = { workspace = true, features = ["io-std"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 regex = { workspace = true }
 dashmap = { workspace = true }
+uuid = { workspace = true }
 toml = "0.8"
 axum = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }

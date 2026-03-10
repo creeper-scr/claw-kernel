@@ -36,14 +36,36 @@ use crate::{
     types::{ChannelId, ChannelMessage},
 };
 
-/// Wraps any [`Channel`] to add transparent exponential-backoff retry on `send()`.
+/// Wraps any [`Channel`] to add transparent exponential-backoff retry on both
+/// `send()` and `recv()`.
 ///
-/// `recv()`, `connect()`, and `disconnect()` are forwarded directly to the inner
-/// channel without retry, because:
+/// ## `send()` retry
 ///
-/// - `recv()` is a long-poll that naturally blocks until a message arrives.
-/// - `connect()` and `disconnect()` are lifecycle methods whose retry semantics
-///   are better handled at the application level.
+/// The message is cloned on each attempt.  Transient errors are retried up to
+/// `retry_config.max_retries` additional times with full-jitter exponential
+/// backoff.
+///
+/// ## `recv()` reconnect-retry
+///
+/// Network channels (WebSocket, Discord, …) can lose their connection while
+/// waiting for the next message.  When `recv()` returns a retryable error the
+/// wrapper:
+///
+/// 1. Sleeps for the computed backoff duration.
+/// 2. Calls `inner.connect()` to re-establish the connection (best-effort; a
+///    connect failure does not consume an extra retry slot).
+/// 3. Re-issues `inner.recv()`.
+///
+/// The sequence repeats up to `retry_config.max_retries` additional times.
+///
+/// ## Permanent errors
+///
+/// [`ChannelError::AuthFailed`] and [`ChannelError::InvalidConfig`] are
+/// considered permanent and surface immediately on both `send()` and `recv()`
+/// without retrying.
+///
+/// `connect()` and `disconnect()` are forwarded directly to the inner channel
+/// without retry, as their retry semantics are better handled at the call site.
 pub struct RetryableChannel<T: Channel> {
     inner: T,
     retry_config: RetryConfig,
@@ -109,9 +131,42 @@ impl<T: Channel> Channel for RetryableChannel<T> {
         .await
     }
 
-    /// Receive a message from the underlying channel (no retry applied).
+    /// Receive the next message, reconnecting on transient failures.
+    ///
+    /// When `recv()` returns a retryable error the wrapper:
+    ///
+    /// 1. Sleeps for the computed backoff duration.
+    /// 2. Calls `inner.connect()` (best-effort reconnect; a connect failure
+    ///    does not consume an extra retry slot).
+    /// 3. Re-issues `inner.recv()`.
+    ///
+    /// [`ChannelError::AuthFailed`] and [`ChannelError::InvalidConfig`] are
+    /// permanent and surface immediately without retrying.
     async fn recv(&self) -> Result<ChannelMessage, ChannelError> {
-        self.inner.recv().await
+        for attempt in 0..=self.retry_config.max_retries {
+            match self.inner.recv().await {
+                Ok(msg) => return Ok(msg),
+                Err(e) if !is_retryable(&e) => return Err(e),
+                Err(e) => {
+                    if attempt == self.retry_config.max_retries {
+                        return Err(e);
+                    }
+                    let delay = self.retry_config.calculate_delay(attempt);
+                    tracing::warn!(
+                        attempt,
+                        delay_ms = delay.as_millis(),
+                        error = %e,
+                        "recv transient error — reconnecting and retrying",
+                    );
+                    tokio::time::sleep(delay).await;
+                    // Best-effort reconnect; ignore connect errors so the
+                    // retry budget is spent on recv attempts only.
+                    let _ = self.inner.connect().await;
+                }
+            }
+        }
+        // The loop always returns via one of the branches above.
+        unreachable!("retry loop must always return")
     }
 
     /// Connect to the underlying channel (no retry applied).
@@ -144,10 +199,18 @@ mod tests {
         id: ChannelId,
         /// How many times `send()` has been called.
         send_calls: Arc<AtomicUsize>,
-        /// If `Some`, return this error on calls ≤ fail_until.
+        /// How many times `recv()` has been called.
+        recv_calls: Arc<AtomicUsize>,
+        /// How many times `connect()` has been called.
+        connect_calls: Arc<AtomicUsize>,
+        /// If `Some`, return this error on send calls ≤ fail_until.
         fail_until: Option<usize>,
-        /// Error to return when failing.
+        /// Error to return when failing sends.
         fail_with: Option<ChannelError>,
+        /// If `Some`, return this error on recv calls ≤ recv_fail_until.
+        recv_fail_until: Option<usize>,
+        /// Error to return when failing recvs.
+        recv_fail_with: Option<ChannelError>,
     }
 
     impl CountingChannel {
@@ -155,8 +218,12 @@ mod tests {
             Self {
                 id: ChannelId::new(id),
                 send_calls: Arc::new(AtomicUsize::new(0)),
+                recv_calls: Arc::new(AtomicUsize::new(0)),
+                connect_calls: Arc::new(AtomicUsize::new(0)),
                 fail_until: None,
                 fail_with: None,
+                recv_fail_until: None,
+                recv_fail_with: None,
             }
         }
 
@@ -172,8 +239,30 @@ mod tests {
             self
         }
 
+        /// Fail the first `count` `recv()` calls with the given error.
+        fn with_recv_transient_failures(mut self, count: usize, err: ChannelError) -> Self {
+            self.recv_fail_until = Some(count);
+            self.recv_fail_with = Some(err);
+            self
+        }
+
+        /// Fail all `recv()` calls with the given error.
+        fn with_recv_permanent_failure(mut self, err: ChannelError) -> Self {
+            self.recv_fail_until = Some(usize::MAX);
+            self.recv_fail_with = Some(err);
+            self
+        }
+
         fn send_calls(&self) -> Arc<AtomicUsize> {
             Arc::clone(&self.send_calls)
+        }
+
+        fn recv_calls(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.recv_calls)
+        }
+
+        fn connect_calls(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.connect_calls)
         }
     }
 
@@ -193,13 +282,18 @@ mod tests {
             }
         }
         async fn recv(&self) -> Result<ChannelMessage, ChannelError> {
-            Ok(ChannelMessage::inbound(
-                self.id.clone(),
-                Platform::Stdin,
-                "hello",
-            ))
+            let n = self.recv_calls.fetch_add(1, Ordering::SeqCst);
+            match (&self.recv_fail_until, &self.recv_fail_with) {
+                (Some(limit), Some(err)) if n < *limit => Err(err.clone()),
+                _ => Ok(ChannelMessage::inbound(
+                    self.id.clone(),
+                    Platform::Stdin,
+                    "hello",
+                )),
+            }
         }
         async fn connect(&self) -> Result<(), ChannelError> {
+            self.connect_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
         async fn disconnect(&self) -> Result<(), ChannelError> {
@@ -316,5 +410,76 @@ mod tests {
         let wrapper = RetryableChannel::with_defaults(inner);
         let recovered = wrapper.into_inner();
         assert_eq!(recovered.channel_id().as_str(), "ch");
+    }
+
+    // ── recv retry tests ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_recv_succeeds_without_retry() {
+        let ch = RetryableChannel::new(CountingChannel::new("ch"), fast_config());
+        let msg = ch.recv().await.unwrap();
+        assert_eq!(msg.content, "hello");
+    }
+
+    #[tokio::test]
+    async fn test_recv_retries_disconnected_error_then_succeeds() {
+        // First 2 recv() calls return Disconnected; 3rd succeeds.
+        let inner = CountingChannel::new("ch")
+            .with_recv_transient_failures(2, ChannelError::Disconnected);
+        let recv_calls = inner.recv_calls();
+        let connect_calls = inner.connect_calls();
+        let ch = RetryableChannel::new(inner, fast_config());
+
+        let msg = ch.recv().await.unwrap();
+
+        assert_eq!(msg.content, "hello");
+        // 3 total recv() calls: 2 failures + 1 success.
+        assert_eq!(recv_calls.load(Ordering::SeqCst), 3);
+        // connect() called once per failure (2 reconnect attempts).
+        assert_eq!(connect_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_recv_exhausts_retries_and_returns_error() {
+        // recv() always returns a transient error — exhaust max_retries (3).
+        let inner = CountingChannel::new("ch")
+            .with_recv_permanent_failure(ChannelError::ReceiveFailed("timeout".into()));
+        let recv_calls = inner.recv_calls();
+        let ch = RetryableChannel::new(inner, fast_config());
+
+        let err = ch.recv().await.unwrap_err();
+
+        assert!(matches!(err, ChannelError::ReceiveFailed(_)));
+        // 1 initial + 3 retries = 4 total calls.
+        assert_eq!(recv_calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn test_recv_does_not_retry_auth_failed() {
+        let inner = CountingChannel::new("ch")
+            .with_recv_permanent_failure(ChannelError::AuthFailed);
+        let recv_calls = inner.recv_calls();
+        let connect_calls = inner.connect_calls();
+        let ch = RetryableChannel::new(inner, fast_config());
+
+        let err = ch.recv().await.unwrap_err();
+
+        assert_eq!(err, ChannelError::AuthFailed);
+        // Must not retry permanent errors.
+        assert_eq!(recv_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(connect_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_recv_does_not_retry_invalid_config() {
+        let inner = CountingChannel::new("ch")
+            .with_recv_permanent_failure(ChannelError::InvalidConfig("bad url".into()));
+        let recv_calls = inner.recv_calls();
+        let ch = RetryableChannel::new(inner, fast_config());
+
+        let err = ch.recv().await.unwrap_err();
+
+        assert!(matches!(err, ChannelError::InvalidConfig(_)));
+        assert_eq!(recv_calls.load(Ordering::SeqCst), 1);
     }
 }

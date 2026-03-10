@@ -21,6 +21,15 @@ pub enum ChannelError {
     RateLimited,
     #[error("invalid configuration: {0}")]
     InvalidConfig(String),
+    /// The underlying transport dropped the connection mid-receive.
+    ///
+    /// This is distinct from [`ConnectionFailed`](Self::ConnectionFailed) (a
+    /// failed *connect attempt*): `Disconnected` signals that a previously
+    /// healthy connection was lost while waiting for the next message.
+    /// [`RetryableChannel`](crate::RetryableChannel) treats this as transient
+    /// and will attempt to reconnect before retrying `recv()`.
+    #[error("channel disconnected")]
+    Disconnected,
 }
 
 #[cfg(test)]

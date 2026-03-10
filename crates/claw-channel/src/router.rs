@@ -39,6 +39,7 @@ use thiserror::Error;
 use tracing::{debug, warn};
 use dashmap::DashMap;
 
+use crate::traits::Channel;
 use crate::types::ChannelMessage;
 
 // ─── AgentId type alias ────────────────────────────────────────────────────
@@ -184,6 +185,12 @@ pub struct RoutingRuleSpec {
 /// Constructed via [`ChannelRouterBuilder`].
 pub struct ChannelRouter {
     rules: Arc<std::sync::RwLock<Vec<RoutingRule>>>,
+    /// Named channel instances registered with this router.
+    ///
+    /// Keyed by the name passed to [`register`][Self::register] (typically the
+    /// channel's own ID, e.g. `"ch-discord"`).  `route_to_channel` resolves the
+    /// routing rule **and** returns the `Arc<dyn Channel>` in one step.
+    channels: Arc<DashMap<String, Arc<dyn Channel>>>,
 }
 
 impl ChannelRouter {
@@ -312,6 +319,51 @@ impl ChannelRouter {
     /// Return the number of routing rules (including any Default rule).
     pub fn rule_count(&self) -> usize {
         self.rules.read().map(|r| r.len()).unwrap_or(0)
+    }
+
+    // ── Channel instance registry ─────────────────────────────────────────
+
+    /// Register a [`Channel`] instance by `name`.
+    ///
+    /// `name` is typically the channel's own ID (e.g. `"ch-discord"`), matching
+    /// the `channel_id` used in routing rules so that callers can resolve a
+    /// routed agent directly to a live channel.
+    ///
+    /// Registering under an existing name overwrites the previous entry.
+    pub fn register(&self, name: impl Into<String>, channel: Arc<dyn Channel>) {
+        self.channels.insert(name.into(), channel);
+    }
+
+    /// Remove a previously registered channel.
+    ///
+    /// Returns `true` if the channel existed and was removed, `false` if it
+    /// was not found.
+    pub fn unregister(&self, name: &str) -> bool {
+        self.channels.remove(name).is_some()
+    }
+
+    /// Look up a registered channel by `name`.
+    pub fn get_channel(&self, name: &str) -> Option<Arc<dyn Channel>> {
+        self.channels.get(name).map(|e| e.value().clone())
+    }
+
+    /// Convenience: route `msg` *and* look up the channel registered under the
+    /// resolved channel-id.
+    ///
+    /// Returns `Some((agent_id, channel))` only when **both** a routing rule
+    /// matches **and** a channel is registered under `msg.channel_id`.  If
+    /// either look-up fails, returns `None`.
+    ///
+    /// This is the primary dispatch entry-point when the caller registered
+    /// channels via [`register`][Self::register] and wants a single call that
+    /// avoids the double look-up.
+    pub fn route_to_channel(
+        &self,
+        msg: &ChannelMessage,
+    ) -> Option<(String, Arc<dyn Channel>)> {
+        let agent_id = self.route(msg)?;
+        let channel = self.get_channel(msg.channel_id.as_str())?;
+        Some((agent_id, channel))
     }
 
     /// Add a routing rule dynamically at runtime.
@@ -511,7 +563,10 @@ impl ChannelRouterBuilder {
 
     /// Consume the builder and produce a [`ChannelRouter`].
     pub fn build(self) -> ChannelRouter {
-        ChannelRouter { rules: Arc::new(std::sync::RwLock::new(self.rules)) }
+        ChannelRouter {
+            rules: Arc::new(std::sync::RwLock::new(self.rules)),
+            channels: Arc::new(DashMap::new()),
+        }
     }
 }
 
@@ -639,6 +694,21 @@ impl DeduplicatingRouter {
     /// Forward to the inner router for rule management.
     pub fn inner(&self) -> &ChannelRouter {
         &self.inner
+    }
+
+    /// Forward to [`ChannelRouter::register`].
+    pub fn register(&self, name: impl Into<String>, channel: Arc<dyn Channel>) {
+        self.inner.register(name, channel);
+    }
+
+    /// Forward to [`ChannelRouter::unregister`].
+    pub fn unregister(&self, name: &str) -> bool {
+        self.inner.unregister(name)
+    }
+
+    /// Forward to [`ChannelRouter::get_channel`].
+    pub fn get_channel(&self, name: &str) -> Option<Arc<dyn Channel>> {
+        self.inner.get_channel(name)
     }
 }
 
@@ -1089,5 +1159,128 @@ agent_id = "agent-default"
             agents,
             vec!["agent-channel", "agent-pattern", "agent-sender"]
         );
+    }
+}
+
+// ─── Channel registry tests ───────────────────────────────────────────────
+
+#[cfg(test)]
+mod channel_registry_tests {
+    use super::*;
+    use crate::error::ChannelError;
+    use crate::types::{ChannelId, ChannelMessage, Platform};
+    use async_trait::async_trait;
+
+    // ── Minimal mock channel ──────────────────────────────────────────────
+
+    struct MockChannel {
+        id: ChannelId,
+    }
+
+    impl MockChannel {
+        fn new(id: &str) -> Arc<dyn Channel> {
+            Arc::new(Self { id: ChannelId::new(id) })
+        }
+    }
+
+    #[async_trait]
+    impl Channel for MockChannel {
+        fn platform(&self) -> &str { "mock" }
+        fn channel_id(&self) -> &ChannelId { &self.id }
+        async fn send(&self, _msg: ChannelMessage) -> Result<(), ChannelError> { Ok(()) }
+        async fn recv(&self) -> Result<ChannelMessage, ChannelError> {
+            Err(ChannelError::ReceiveFailed("closed".to_string()))
+        }
+        async fn connect(&self) -> Result<(), ChannelError> { Ok(()) }
+        async fn disconnect(&self) -> Result<(), ChannelError> { Ok(()) }
+    }
+
+    fn make_msg(channel: &str, content: &str) -> ChannelMessage {
+        ChannelMessage::inbound(ChannelId::new(channel), Platform::Stdin, content)
+    }
+
+    // ── register / get_channel / unregister ──────────────────────────────
+
+    #[test]
+    fn test_register_and_get_channel() {
+        let router = ChannelRouterBuilder::new().build();
+        router.register("ch-discord", MockChannel::new("ch-discord"));
+        assert!(router.get_channel("ch-discord").is_some());
+    }
+
+    #[test]
+    fn test_get_channel_unknown_returns_none() {
+        let router = ChannelRouterBuilder::new().build();
+        assert!(router.get_channel("ch-unknown").is_none());
+    }
+
+    #[test]
+    fn test_unregister_existing_returns_true() {
+        let router = ChannelRouterBuilder::new().build();
+        router.register("ch-1", MockChannel::new("ch-1"));
+        assert!(router.unregister("ch-1"));
+        assert!(router.get_channel("ch-1").is_none());
+    }
+
+    #[test]
+    fn test_unregister_missing_returns_false() {
+        let router = ChannelRouterBuilder::new().build();
+        assert!(!router.unregister("ch-missing"));
+    }
+
+    #[test]
+    fn test_register_overwrites_existing() {
+        let router = ChannelRouterBuilder::new().build();
+        router.register("ch-1", MockChannel::new("ch-1-old"));
+        router.register("ch-1", MockChannel::new("ch-1-new"));
+        // Should not panic; the new entry replaces the old one.
+        assert!(router.get_channel("ch-1").is_some());
+    }
+
+    // ── route_to_channel ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_route_to_channel_succeeds() {
+        let router = ChannelRouterBuilder::new()
+            .route_channel("ch-discord", "agent-discord")
+            .build();
+        router.register("ch-discord", MockChannel::new("ch-discord"));
+
+        let msg = make_msg("ch-discord", "hi");
+        let result = router.route_to_channel(&msg);
+        assert!(result.is_some());
+        let (agent_id, _ch) = result.unwrap();
+        assert_eq!(agent_id, "agent-discord");
+    }
+
+    #[test]
+    fn test_route_to_channel_no_rule_returns_none() {
+        let router = ChannelRouterBuilder::new().build();
+        router.register("ch-discord", MockChannel::new("ch-discord"));
+
+        let msg = make_msg("ch-discord", "hi");
+        assert!(router.route_to_channel(&msg).is_none());
+    }
+
+    #[test]
+    fn test_route_to_channel_no_registered_channel_returns_none() {
+        let router = ChannelRouterBuilder::new()
+            .route_channel("ch-discord", "agent-discord")
+            .build();
+        // No channel registered → route() succeeds but get_channel() fails.
+        let msg = make_msg("ch-discord", "hi");
+        assert!(router.route_to_channel(&msg).is_none());
+    }
+
+    // ── DeduplicatingRouter forwards ─────────────────────────────────────
+
+    #[test]
+    fn test_dedup_router_register_forward() {
+        let inner = ChannelRouterBuilder::new().build();
+        let dedup = DeduplicatingRouter::new(inner);
+        dedup.register("ch-1", MockChannel::new("ch-1"));
+        assert!(dedup.get_channel("ch-1").is_some());
+        assert!(dedup.unregister("ch-1"));
+        assert!(dedup.get_channel("ch-1").is_none());
     }
 }

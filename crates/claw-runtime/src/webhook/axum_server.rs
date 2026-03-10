@@ -32,6 +32,25 @@ struct EndpointState {
 }
 
 /// Axum-based webhook server implementation.
+///
+/// # Deprecation
+///
+/// This type is **deprecated** since v1.5.0.
+///
+/// For kernel-level trigger webhooks use [`crate::webhook_server::WebhookTriggerServer`], which:
+/// - Restricts methods at the axum routing layer (`post()` only), eliminating endpoint
+///   enumeration side-channels.
+/// - Uses the canonical `/hooks/{trigger_id}` multi-plex path.
+/// - Integrates directly with [`crate::event_bus::EventBus`] via `TriggerEvent`.
+///
+/// `AxumWebhookServer` remains in place while `claw-server` depends on its synchronous
+/// agent-loop callback model. Migrate `handle_trigger_add_webhook` to subscribe to
+/// `Event::TriggerFired` from the `EventBus` and then remove this type.
+#[deprecated(
+    since = "1.5.0",
+    note = "Use WebhookTriggerServer (claw_runtime::webhook_server) instead. \
+            See docs/gap-analysis.md G-5 for migration rationale."
+)]
 pub struct AxumWebhookServer {
     config: WebhookConfig,
     endpoints: Arc<DashMap<String, Arc<EndpointState>>>,
@@ -105,17 +124,20 @@ impl AxumWebhookServer {
             }
         };
 
-        // Check HTTP method
-        // FIX-05: convert_method returns None for unknown methods; return 405 rather than
-        // silently treating them as POST, which could allow unintended writes.
+        // Check HTTP method.
+        // Security: return 404 (not 405) on method mismatch to prevent side-channel
+        // enumeration of registered endpoints. A 405 at this point would reveal that
+        // the path is registered, which is information an unauthenticated caller should
+        // not have. WebhookTriggerServer avoids this entirely by restricting at the
+        // routing layer (axum `post()` route); here we approximate that at the handler level.
         let http_method = match Self::convert_method(&method) {
             Some(m) => m,
             None => {
-                return (StatusCode::METHOD_NOT_ALLOWED, "Method not allowed").into_response();
+                return (StatusCode::NOT_FOUND, "Endpoint not found").into_response();
             }
         };
         if !state.config.methods.contains(&http_method) {
-            return (StatusCode::METHOD_NOT_ALLOWED, "Method not allowed").into_response();
+            return (StatusCode::NOT_FOUND, "Endpoint not found").into_response();
         }
 
         // Check body size

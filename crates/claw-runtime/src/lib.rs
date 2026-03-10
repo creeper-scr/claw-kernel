@@ -140,6 +140,7 @@ pub use webhook::{
 pub use webhook::verification::{verify_hmac_sha256, HmacSha256Verifier, NoopVerifier};
 
 #[cfg(feature = "webhook")]
+#[allow(deprecated)]
 pub use webhook::AxumWebhookServer;
 
 // WebhookTriggerServer exports (GAP-F6-03)

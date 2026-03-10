@@ -502,6 +502,110 @@ scheduler.shutdown().await?;
 
 ---
 
+## Trigger Infrastructure (v1.4.0+, GAP-F6)
+
+`claw-runtime` provides a full trigger infrastructure for time-based and event-based automation.
+
+### CronScheduler (GAP-F6-01)
+
+High-level cron scheduler backed by the `cron` and `chrono` crates:
+
+```rust
+use claw_runtime::{CronScheduler, TriggerEvent};
+
+// Basic scheduler (in-memory only)
+let scheduler = CronScheduler::new(event_bus);
+scheduler.add_cron("cleanup", "0 2 * * *", payload).await?;
+
+// With SQLite persistence (GAP-F6-02)
+let store = TriggerStore::open("~/.local/share/claw-kernel/triggers.db").await?;
+let scheduler = CronScheduler::with_store(event_bus, store);
+// Triggers survive kernel restarts — loaded automatically on startup
+scheduler.restore_from_store().await?;
+```
+
+### TriggerStore (GAP-F6-02)
+
+SQLite-backed persistence for trigger definitions. Ensures all scheduled and webhook triggers survive kernel restarts.
+
+```rust
+use claw_runtime::TriggerStore;
+
+let store = TriggerStore::open("/path/to/triggers.db").await?;
+
+// Persist a trigger
+store.save(&trigger_event).await?;
+
+// Load all persisted triggers on startup
+let triggers = store.load_all().await?;
+
+// Remove a trigger
+store.delete(&trigger_id).await?;
+```
+
+### EventTriggerRegistry (GAP-F6-06)
+
+Registry mapping event patterns to trigger callbacks:
+
+```rust
+use claw_runtime::EventTriggerRegistry;
+
+let registry = EventTriggerRegistry::new();
+
+// Register a trigger that fires on matching events
+registry.register("tool.called:calculator", trigger_fn).await;
+
+// Match an incoming event against registered triggers
+registry.dispatch(&event).await;
+```
+
+### TriggerDispatcher (GAP-F6-03)
+
+Routes incoming webhook requests to the appropriate trigger handler:
+
+```rust
+use claw_runtime::TriggerDispatcher;
+
+// The dispatcher is wired into AxumWebhookServer automatically
+// POST /hooks/{trigger_id} → TriggerDispatcher → TriggerStore lookup → orchestrator.steer()
+```
+
+### WebhookTriggerServer (GAP-F6-03)
+
+Axum-based HTTP server for webhook trigger endpoints (requires `webhook` feature):
+
+```rust
+use claw_runtime::webhook::AxumWebhookServer;
+
+let server = AxumWebhookServer::new(dispatcher, "0.0.0.0:9000".parse()?);
+server.start().await?;
+// Listens on POST /hooks/{trigger_id}
+// Verifies HMAC signature if configured
+// Dispatches to registered trigger handlers
+```
+
+### TriggerEvent Types
+
+```rust
+pub struct TriggerEvent {
+    pub id: String,
+    pub trigger_type: TriggerType,
+    pub payload: serde_json::Value,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+pub enum TriggerType {
+    /// Cron expression (e.g., "0 9 * * *")
+    Cron { expression: String },
+    /// Incoming webhook POST request
+    Webhook { path: String, hmac_secret: Option<String> },
+    /// EventBus event pattern match
+    Event { pattern: String },
+}
+```
+
+---
+
 ## Agent Types
 
 ### `AgentConfig`

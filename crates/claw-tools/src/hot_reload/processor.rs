@@ -9,8 +9,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -35,6 +35,16 @@ pub enum ProcessResult {
     Failed { path: PathBuf, error: String },
 }
 
+/// A previous tool version being kept alive for the TTL window so that
+/// in-flight `execute()` calls can finish before the Arc is dropped.
+struct RetainedVersion {
+    /// The old tool Arc — dropped when this struct is dropped.
+    #[allow(dead_code)]
+    tool: Arc<dyn Tool>,
+    /// When this version was retired (replaced by a hot-reload).
+    retired_at: Instant,
+}
+
 /// Processor that handles file watch events and triggers hot-reloads.
 pub struct HotReloadProcessor {
     registry: Arc<ToolRegistry>,
@@ -42,6 +52,9 @@ pub struct HotReloadProcessor {
     tool_watcher: ToolWatcher,
     /// Optional script compiler injected at construction time.
     compiler: Option<Arc<dyn ScriptToolCompiler>>,
+    /// Previous tool versions kept alive for `keep_previous_secs` so that
+    /// any in-flight `execute()` call can complete against the old Arc.
+    retained_versions: Arc<Mutex<Vec<RetainedVersion>>>,
 }
 
 impl HotReloadProcessor {
@@ -53,6 +66,7 @@ impl HotReloadProcessor {
             config,
             tool_watcher,
             compiler: None,
+            retained_versions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -66,6 +80,7 @@ impl HotReloadProcessor {
             config,
             tool_watcher,
             compiler: None,
+            retained_versions: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -197,6 +212,10 @@ impl HotReloadProcessor {
         // Get tool name
         let tool_name = compiled.name().to_string();
 
+        // Retire the previous version: keep it alive for `keep_previous_secs`
+        // so that any in-flight `execute()` call against the old Arc can finish.
+        self.retire_old_version(&tool_name);
+
         // Update the tool in the registry
         match self.registry.update(&tool_name, compiled) {
             Ok(()) => {}
@@ -258,6 +277,33 @@ impl HotReloadProcessor {
             .and_then(|e| e.to_str())
             .map(|e| self.config.is_watched_extension(e))
             .unwrap_or(false)
+    }
+
+    /// Retire the currently-registered version of a tool before a hot-swap.
+    ///
+    /// The old [`Arc<dyn Tool>`] is moved into [`Self::retained_versions`] with the
+    /// current timestamp.  It stays alive (preventing premature drop) until the
+    /// `keep_previous_secs` TTL expires, giving any in-flight `execute()` call time
+    /// to complete against the old implementation.
+    ///
+    /// Expired entries are pruned on every call so the list stays bounded.
+    fn retire_old_version(&self, tool_name: &str) {
+        let Some(old) = self.registry.get(tool_name) else {
+            return; // First load — nothing to retire.
+        };
+
+        let ttl = Duration::from_secs(self.config.keep_previous_secs);
+        let now = Instant::now();
+
+        if let Ok(mut retained) = self.retained_versions.lock() {
+            // Prune entries whose TTL has expired.
+            retained.retain(|v| now.duration_since(v.retired_at) < ttl);
+            // Keep the old version alive for the TTL window.
+            retained.push(RetainedVersion {
+                tool: old,
+                retired_at: now,
+            });
+        }
     }
 
     /// Compile a tool from source content.
@@ -632,6 +678,125 @@ mod tests {
             .await;
         assert!(
             matches!(result, ProcessResult::Skipped { reason, .. } if reason.contains("no tool"))
+        );
+    }
+
+    #[test]
+    fn test_retire_old_version_noop_when_empty_registry() {
+        let registry = Arc::new(ToolRegistry::new());
+        let config = test_config();
+        let processor = HotReloadProcessor::new(registry, config);
+
+        // retire on an empty registry must not panic and leave retained list empty
+        processor.retire_old_version("nonexistent");
+        assert_eq!(
+            processor.retained_versions.lock().unwrap().len(),
+            0,
+            "no version to retire"
+        );
+    }
+
+    #[test]
+    fn test_retire_old_version_keeps_arc_alive() {
+        use crate::traits::Tool;
+        use crate::types::{PermissionSet, ToolContext, ToolResult, ToolSchema};
+        use async_trait::async_trait;
+
+        struct DummyTool;
+
+        #[async_trait]
+        impl Tool for DummyTool {
+            fn name(&self) -> &str { "dummy" }
+            fn description(&self) -> &str { "dummy" }
+            fn schema(&self) -> &ToolSchema {
+                static S: std::sync::OnceLock<ToolSchema> = std::sync::OnceLock::new();
+                S.get_or_init(|| ToolSchema::new("dummy", "dummy", serde_json::json!({})))
+            }
+            fn permissions(&self) -> &PermissionSet {
+                static P: std::sync::OnceLock<PermissionSet> = std::sync::OnceLock::new();
+                P.get_or_init(PermissionSet::minimal)
+            }
+            async fn execute(&self, _args: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
+                ToolResult::ok(serde_json::json!({}), 0)
+            }
+        }
+
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Box::new(DummyTool)).unwrap();
+
+        let config = test_config();
+        let processor = HotReloadProcessor::new(Arc::clone(&registry), config);
+
+        // Capture a weak reference to the inner tool Arc
+        let old_tool = registry.get("dummy").expect("must exist");
+        let weak = Arc::downgrade(&old_tool);
+        drop(old_tool); // drop local reference — registry still holds one
+
+        processor.retire_old_version("dummy");
+
+        // retained_versions now holds the old Arc, so weak must still be upgradable
+        assert!(
+            weak.upgrade().is_some(),
+            "old Arc must stay alive while in retained_versions"
+        );
+
+        // Verify one entry in retained list
+        assert_eq!(processor.retained_versions.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_retire_old_version_prunes_expired_entries() {
+        use crate::traits::Tool;
+        use crate::types::{PermissionSet, ToolContext, ToolResult, ToolSchema};
+        use async_trait::async_trait;
+
+        struct DummyTool2;
+
+        #[async_trait]
+        impl Tool for DummyTool2 {
+            fn name(&self) -> &str { "dummy2" }
+            fn description(&self) -> &str { "dummy2" }
+            fn schema(&self) -> &ToolSchema {
+                static S: std::sync::OnceLock<ToolSchema> = std::sync::OnceLock::new();
+                S.get_or_init(|| ToolSchema::new("dummy2", "dummy2", serde_json::json!({})))
+            }
+            fn permissions(&self) -> &PermissionSet {
+                static P: std::sync::OnceLock<PermissionSet> = std::sync::OnceLock::new();
+                P.get_or_init(PermissionSet::minimal)
+            }
+            async fn execute(&self, _args: serde_json::Value, _ctx: &ToolContext) -> ToolResult {
+                ToolResult::ok(serde_json::json!({}), 0)
+            }
+        }
+
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Box::new(DummyTool2)).unwrap();
+
+        // Config with keep_previous_secs = 0 means every retained entry is immediately expired
+        let config = HotLoadingConfig {
+            keep_previous_secs: 0,
+            ..test_config()
+        };
+        let processor = HotReloadProcessor::new(Arc::clone(&registry), config);
+
+        // Seed one entry that is already past TTL
+        {
+            let old = registry.get("dummy2").unwrap();
+            processor.retained_versions.lock().unwrap().push(RetainedVersion {
+                tool: old,
+                retired_at: Instant::now() - Duration::from_secs(1),
+            });
+        }
+        assert_eq!(processor.retained_versions.lock().unwrap().len(), 1);
+
+        // retire_old_version prunes expired before adding new
+        processor.retire_old_version("dummy2");
+
+        // The expired entry should be gone; the new one added (len == 1, not 2)
+        assert_eq!(
+            processor.retained_versions.lock().unwrap().len(),
+            1,
+            "expired entry pruned, new entry added"
         );
     }
 }

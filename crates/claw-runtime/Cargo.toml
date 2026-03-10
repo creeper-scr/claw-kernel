@@ -32,6 +32,7 @@ sha2 = { workspace = true }
 cron = "0.12"
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.32.0", features = ["bundled"] }
+sysinfo = "0.30"
 
 [features]
 default = ["webhook"]

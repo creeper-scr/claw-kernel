@@ -37,6 +37,7 @@ pub use error::WebhookError;
 pub use verification::{verify_hmac_sha256, WebhookVerifier};
 
 #[cfg(feature = "webhook")]
+#[allow(deprecated)]
 pub use axum_server::AxumWebhookServer;
 
 use serde::{Deserialize, Serialize};

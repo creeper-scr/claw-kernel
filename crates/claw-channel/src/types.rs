@@ -69,6 +69,12 @@ pub struct ChannelMessage {
 
 impl ChannelMessage {
     /// Create a new inbound message.
+    ///
+    /// `id` is set to a UUID v4 string so that every call produces a globally
+    /// unique identifier.  This prevents the `DeduplicatingRouter` from
+    /// incorrectly suppressing two distinct messages that happened to arrive
+    /// within the same millisecond (which would collide under a timestamp-based
+    /// scheme).
     pub fn inbound(channel_id: ChannelId, platform: Platform, content: impl Into<String>) -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
         let ts = SystemTime::now()
@@ -76,7 +82,7 @@ impl ChannelMessage {
             .unwrap_or_default()
             .as_millis() as u64;
         Self {
-            id: format!("msg-{ts}"),
+            id: uuid::Uuid::new_v4().to_string(),
             channel_id,
             direction: MessageDirection::Inbound,
             platform,
@@ -118,6 +124,23 @@ mod tests {
         assert!(msg.timestamp_ms > 0);
         assert!(msg.sender_id.is_none());
         assert!(msg.thread_id.is_none());
+        // id must be a valid UUID v4 (non-empty, no "msg-" prefix collision risk)
+        assert!(!msg.id.is_empty());
+        assert!(
+            !msg.id.starts_with("msg-"),
+            "id should be UUID v4, not timestamp-based"
+        );
+        uuid::Uuid::parse_str(&msg.id).expect("id must be a valid UUID");
+    }
+
+    #[test]
+    fn test_inbound_ids_are_unique() {
+        // Two consecutive inbound() calls must produce different IDs even when
+        // they execute within the same millisecond (regression: timestamp-based
+        // IDs caused DeduplicatingRouter false-positive suppression).
+        let m1 = ChannelMessage::inbound(ChannelId::new("c1"), Platform::Stdin, "a");
+        let m2 = ChannelMessage::inbound(ChannelId::new("c1"), Platform::Stdin, "b");
+        assert_ne!(m1.id, m2.id, "consecutive inbound() calls must have unique IDs");
     }
 
     #[test]

@@ -373,7 +373,16 @@ impl Channel for WebhookChannel {
 
                     // Parse JSON and enqueue message.
                     match serde_json::from_slice::<ChannelMessage>(&body) {
-                        Ok(msg) => {
+                        Ok(mut msg) => {
+                            // G-13: bridge the HTTP-layer dedup key into msg.id so
+                            // that DeduplicatingRouter uses the same canonical
+                            // identifier.  This gives defense-in-depth: even if a
+                            // duplicate slips past the RequestDeduplicator (e.g.
+                            // after a server restart), the router layer will still
+                            // suppress it because both layers share the same key.
+                            if let Some(rid) = request_id {
+                                msg.id = rid.to_string();
+                            }
                             // 忽略满队列错误（接收方关闭时服务器也将随之关闭）
                             let _ = tx.send(msg).await;
                             StatusCode::OK.into_response()
@@ -1090,6 +1099,110 @@ mod tests {
             }
             _ => unreachable!(),
         }
+
+        ch.disconnect().await.expect("disconnect");
+    }
+
+    // ── G-13 dedup bridge tests ───────────────────────────────────────────────
+
+    /// G-13: When X-Request-Id is present the webhook handler must propagate
+    /// that header value into msg.id.  This ensures DeduplicatingRouter shares
+    /// the same canonical key as the HTTP-layer RequestDeduplicator.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_x_request_id_bridged_to_msg_id() {
+        let ch = WebhookChannel::new(
+            ChannelId::new("wh-bridge"),
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+        );
+        ch.connect().await.expect("connect");
+        let addr = ch.local_addr().await.expect("local_addr");
+        let url = format!("http://{addr}/webhook");
+
+        let msg = ChannelMessage {
+            id: "original-json-id".to_string(),
+            channel_id: ChannelId::new("wh-bridge"),
+            direction: MessageDirection::Inbound,
+            platform: Platform::Webhook,
+            content: "bridge test".to_string(),
+            sender_id: None,
+            thread_id: None,
+            metadata: serde_json::Value::Null,
+            timestamp_ms: 0,
+        };
+
+        let client = reqwest::Client::new();
+        client
+            .post(&url)
+            .header("x-request-id", "canonical-id-xyz")
+            .json(&msg)
+            .send()
+            .await
+            .unwrap();
+
+        let received = tokio::time::timeout(
+            tokio::time::Duration::from_secs(3),
+            ch.recv(),
+        )
+        .await
+        .expect("recv timeout")
+        .expect("recv ok");
+
+        // msg.id must be overwritten with the HTTP header value so that both
+        // dedup layers (HTTP + router) operate on the same key.
+        assert_eq!(
+            received.id, "canonical-id-xyz",
+            "msg.id should reflect X-Request-Id header (dedup bridge)"
+        );
+        assert_eq!(received.content, "bridge test");
+
+        ch.disconnect().await.expect("disconnect");
+    }
+
+    /// G-13: When no X-Request-Id / X-Idempotency-Key is present the handler
+    /// must preserve the sender's own msg.id (no overwrite).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_msg_id_preserved_when_no_header() {
+        let ch = WebhookChannel::new(
+            ChannelId::new("wh-nohdr"),
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+        );
+        ch.connect().await.expect("connect");
+        let addr = ch.local_addr().await.expect("local_addr");
+        let url = format!("http://{addr}/webhook");
+
+        let msg = ChannelMessage {
+            id: "sender-chosen-id-123".to_string(),
+            channel_id: ChannelId::new("wh-nohdr"),
+            direction: MessageDirection::Inbound,
+            platform: Platform::Webhook,
+            content: "no header test".to_string(),
+            sender_id: None,
+            thread_id: None,
+            metadata: serde_json::Value::Null,
+            timestamp_ms: 0,
+        };
+
+        reqwest::Client::new()
+            .post(&url)
+            .json(&msg)  // no X-Request-Id header
+            .send()
+            .await
+            .unwrap();
+
+        let received = tokio::time::timeout(
+            tokio::time::Duration::from_secs(3),
+            ch.recv(),
+        )
+        .await
+        .expect("recv timeout")
+        .expect("recv ok");
+
+        assert_eq!(
+            received.id, "sender-chosen-id-123",
+            "msg.id should be untouched when no HTTP dedup header is present"
+        );
 
         ch.disconnect().await.expect("disconnect");
     }

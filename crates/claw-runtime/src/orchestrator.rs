@@ -4,6 +4,7 @@ use dashmap::DashMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use sysinfo::{Pid, ProcessRefreshKind, System};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
@@ -15,6 +16,25 @@ use crate::{
     events::Event,
     restart_policy::RestartState,
 };
+
+// ─── ResourceSnapshot ─────────────────────────────────────────────────────────
+
+/// A point-in-time resource usage sample collected by `start_resource_monitor_task`.
+///
+/// Updated independently of the health-check cycle (default: every 5 s) by
+/// sampling the OS process table via `sysinfo`.  Unlike the agent-reported
+/// metrics stored in `HealthStatus`, this snapshot is **authoritative** and
+/// always current regardless of whether the agent has responded to a health
+/// check.
+#[derive(Debug, Clone, Default)]
+pub struct ResourceSnapshot {
+    /// Resident memory in kilobytes (RSS).
+    pub memory_kb: u64,
+    /// CPU usage percentage since the previous sample (0.0–100.0 per core).
+    pub cpu_percent: f32,
+    /// Unix timestamp in milliseconds when this snapshot was taken.
+    pub sampled_at_ms: u64,
+}
 
 // ─── Health Status ────────────────────────────────────────────────────────────
 
@@ -236,6 +256,16 @@ pub(crate) struct AgentState {
     /// the inner sender on each restart so existing `IpcAgentHandle` clones remain
     /// usable without callers needing to re-obtain a handle.
     pub(crate) ipc_tx: Option<SharedSender>,
+
+    // ── G-6: Real-time resource snapshot ──
+    /// Latest resource usage sample collected by `start_resource_monitor_task`.
+    ///
+    /// Uses a `std::sync::RwLock` (not `tokio`) so that synchronous callers
+    /// (e.g. `to_agent_info()`) can read without blocking the async executor.
+    /// The `Arc` allows the monitoring task to hold a clone across
+    /// `spawn_blocking` boundaries without needing a `'static` reference into
+    /// `AgentState`.
+    pub(crate) resource_snapshot: Arc<std::sync::RwLock<Option<ResourceSnapshot>>>,
 }
 
 impl AgentState {
@@ -256,6 +286,7 @@ impl AgentState {
             restart_count: 0,
             last_start_time: now,
             ipc_tx: None,
+            resource_snapshot: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -271,16 +302,22 @@ impl AgentState {
         }
     }
 
-    /// Extract the latest [`ResourceUsage`] snapshot from health data.
+    /// Extract the latest [`ResourceUsage`] snapshot.
     ///
-    /// Returns `None` when no health check has completed yet or when the agent
-    /// shares the kernel process address space (no OS-level memory isolation).
+    /// G-6: Prefers the live sysinfo sample; falls back to health-check-reported
+    /// data for in-process agents that have no OS-level PID.
     pub(crate) fn to_resource_usage(&self) -> Option<ResourceUsage> {
+        if let Ok(guard) = self.resource_snapshot.read() {
+            if let Some(ref snap) = *guard {
+                return Some(ResourceUsage {
+                    cpu_ms: None,
+                    memory_bytes: Some(snap.memory_kb * 1024),
+                });
+            }
+        }
+        // Fallback: health-check-reported data (in-process agents without a pid).
         self.health.as_ref().map(|h| ResourceUsage {
-            // HealthStatus tracks instantaneous cpu_usage_percent, not cumulative
-            // CPU time, so cpu_ms is unavailable at this layer.
             cpu_ms: None,
-            // memory_usage_kb → bytes (1 KB = 1024 bytes).
             memory_bytes: h.memory_usage_kb.map(|kb| kb * 1024),
         })
     }
@@ -322,6 +359,13 @@ pub struct OrchestratorConfig {
     pub heartbeat_timeout_ms: u64,
     /// 健康检查扫描间隔（秒）。默认: 10 秒。
     pub health_check_interval_secs: u64,
+    /// 资源监控采样间隔（秒）。默认: 5 秒。
+    ///
+    /// The resource monitor runs independently of the health-check loop and
+    /// uses `sysinfo` to poll each agent's OS process for memory and CPU usage.
+    /// A shorter interval gives fresher data at the cost of slightly more CPU
+    /// overhead.  Set to `0` to disable the resource monitor entirely.
+    pub resource_monitor_interval_secs: u64,
 }
 
 impl Default for OrchestratorConfig {
@@ -329,6 +373,7 @@ impl Default for OrchestratorConfig {
         Self {
             heartbeat_timeout_ms: 30_000,
             health_check_interval_secs: 10,
+            resource_monitor_interval_secs: 5,
         }
     }
 }
@@ -373,6 +418,8 @@ pub struct AgentOrchestrator {
     restart_policy: Arc<RwLock<RestartPolicy>>,
     health_check_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     auto_restart_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
+    /// G-6: Background task that polls OS process stats via sysinfo.
+    resource_monitor_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     cancel_token: tokio_util::sync::CancellationToken,
     /// Orchestrator behaviour configuration.
     config: OrchestratorConfig,
@@ -410,6 +457,7 @@ impl AgentOrchestrator {
             restart_policy: Arc::new(RwLock::new(RestartPolicy::default())),
             health_check_handle: Arc::new(RwLock::new(None)),
             auto_restart_handle: Arc::new(RwLock::new(None)),
+            resource_monitor_handle: Arc::new(RwLock::new(None)),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             config: OrchestratorConfig::default(),
             restart_states: Arc::new(DashMap::new()),
@@ -424,6 +472,7 @@ impl AgentOrchestrator {
     pub fn start(&self) {
         self.start_health_check_task();
         self.start_auto_restart_task();
+        self.start_resource_monitor_task();
     }
 
     /// Attach an audit log writer handle.
@@ -460,6 +509,7 @@ impl AgentOrchestrator {
             restart_policy: Arc::new(RwLock::new(RestartPolicy::default())),
             health_check_handle: Arc::new(RwLock::new(None)),
             auto_restart_handle: Arc::new(RwLock::new(None)),
+            resource_monitor_handle: Arc::new(RwLock::new(None)),
             cancel_token: tokio_util::sync::CancellationToken::new(),
             config: OrchestratorConfig::default(),
             restart_states: Arc::new(DashMap::new()),
@@ -480,6 +530,9 @@ impl AgentOrchestrator {
             let _ = handle.await;
         }
         if let Some(handle) = self.auto_restart_handle.write().await.take() {
+            let _ = handle.await;
+        }
+        if let Some(handle) = self.resource_monitor_handle.write().await.take() {
             let _ = handle.await;
         }
     }
@@ -526,10 +579,25 @@ impl AgentOrchestrator {
             status.is_responsive = true;
         }
 
-        // Copy last known metrics from previously stored health
+        // G-6: Populate resource metrics from the live sysinfo snapshot first.
+        // This is independent of the health-check cycle and always reflects the
+        // most recent OS-level sample (default: every 5 s).
+        if let Ok(snap_guard) = entry.resource_snapshot.read() {
+            if let Some(ref snap) = *snap_guard {
+                status.memory_usage_kb = Some(snap.memory_kb);
+                status.cpu_usage_percent = Some(snap.cpu_percent);
+            }
+        }
+
+        // Merge any non-resource metrics from the stored health record.
+        // Also provide fallback resource values for in-process agents with no pid.
         if let Some(ref health) = entry.health {
-            status.memory_usage_kb = health.memory_usage_kb;
-            status.cpu_usage_percent = health.cpu_usage_percent;
+            if status.memory_usage_kb.is_none() {
+                status.memory_usage_kb = health.memory_usage_kb;
+            }
+            if status.cpu_usage_percent.is_none() {
+                status.cpu_usage_percent = health.cpu_usage_percent;
+            }
             status.metrics = health.metrics.clone();
         }
 
@@ -618,6 +686,36 @@ impl AgentOrchestrator {
     /// Get current restart policy.
     pub async fn get_restart_policy(&self) -> RestartPolicy {
         self.restart_policy.read().await.clone()
+    }
+
+    /// Dynamically update the [`AgentRestartPolicy`] for a specific IPC agent
+    /// **without** re-spawning it (G-9 fix).
+    ///
+    /// Only agents created via [`spawn_agent`](Self::spawn_agent) have a
+    /// per-agent [`RestartState`]; agents registered with [`register`](Self::register)
+    /// use the global restart policy instead and are not addressable here.
+    ///
+    /// The new policy takes effect immediately: the next time the agent's
+    /// supervisor loop calls `trigger_restart`, it reads the updated policy.
+    /// The existing attempt counter is preserved so that a policy upgrade
+    /// (e.g. raising `max_retries`) extends the remaining budget without
+    /// resetting progress.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RuntimeError::AgentNotFound`] if the agent ID is unknown or
+    /// was not created via `spawn_agent`.
+    pub fn set_agent_restart_policy(
+        &self,
+        agent_id: &AgentId,
+        policy: crate::restart_policy::AgentRestartPolicy,
+    ) -> Result<(), RuntimeError> {
+        let mut state = self
+            .restart_states
+            .get_mut(agent_id)
+            .ok_or_else(|| RuntimeError::AgentNotFound(agent_id.0.clone()))?;
+        state.policy = policy;
+        Ok(())
     }
 
     // ── Steer (Control) ────────────────────────────────────────────────────────
@@ -860,6 +958,99 @@ impl AgentOrchestrator {
         });
 
         let _ = self.auto_restart_handle.try_write().map(|mut h| *h = Some(handle));
+    }
+
+    /// Start the resource monitor background task (G-6).
+    ///
+    /// Samples CPU and memory for every agent that has a live OS PID using the
+    /// `sysinfo` crate.  Results are written into each agent's
+    /// `resource_snapshot` (`Arc<std::sync::RwLock<_>>`), which is then read
+    /// by `health_check()` and `to_resource_usage()`.
+    ///
+    /// The task is a no-op when `resource_monitor_interval_secs == 0`.
+    fn start_resource_monitor_task(&self) {
+        let interval_secs = self.config.resource_monitor_interval_secs;
+        if interval_secs == 0 {
+            return;
+        }
+
+        let agents = Arc::clone(&self.agents);
+        let cancel_token = self.cancel_token.clone();
+
+        let handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+
+            loop {
+                tokio::select! {
+                    _ = cancel_token.cancelled() => {
+                        tracing::debug!("resource_monitor_task cancelled");
+                        break;
+                    }
+                    _ = interval.tick() => {
+                        // Collect (pid, Arc<snapshot_lock>) for every running agent
+                        // that has an OS-level process handle.
+                        let targets: Vec<(u32, Arc<std::sync::RwLock<Option<ResourceSnapshot>>>)> =
+                            agents
+                                .iter()
+                                .filter_map(|e| {
+                                    let ph = e.value().process_handle.as_ref()?;
+                                    Some((
+                                        ph.pid,
+                                        Arc::clone(&e.value().resource_snapshot),
+                                    ))
+                                })
+                                .collect();
+
+                        if targets.is_empty() {
+                            continue;
+                        }
+
+                        // sysinfo is a synchronous API — run in a blocking thread.
+                        let result = tokio::task::spawn_blocking(move || {
+                            let mut sys = System::new();
+                            let now_ms = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as u64;
+
+                            for (pid, snap_lock) in targets {
+                                let sysinfo_pid = Pid::from_u32(pid);
+                                // Refresh this process only; pass `true` to also
+                                // update the CPU-usage delta since the last refresh.
+                                sys.refresh_process_specifics(
+                                    sysinfo_pid,
+                                    ProcessRefreshKind::new()
+                                        .with_memory()
+                                        .with_cpu(),
+                                );
+
+                                if let Some(proc) = sys.process(sysinfo_pid) {
+                                    // sysinfo 0.30+: memory() is in bytes.
+                                    let snap = ResourceSnapshot {
+                                        memory_kb: proc.memory() / 1024,
+                                        cpu_percent: proc.cpu_usage(),
+                                        sampled_at_ms: now_ms,
+                                    };
+                                    if let Ok(mut guard) = snap_lock.write() {
+                                        *guard = Some(snap);
+                                    }
+                                }
+                            }
+                        })
+                        .await;
+
+                        if let Err(e) = result {
+                            tracing::warn!(
+                                err = ?e,
+                                "resource_monitor_task: spawn_blocking failed"
+                            );
+                        }
+                    }
+                }
+            }
+        });
+
+        let _ = self.resource_monitor_handle.try_write().map(|mut h| *h = Some(handle));
     }
 
     // ── In-process registration ───────────────────────────────────────────────
@@ -1959,5 +2150,115 @@ mod tests {
         assert!(result.is_err(), "panicking task should produce Err JoinHandle");
         let err = result.unwrap_err();
         assert!(err.is_panic(), "JoinError should report is_panic() == true");
+    }
+
+    // ── G-9: set_agent_restart_policy ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_set_agent_restart_policy_updates_live() {
+        use crate::event_bus::EventBus;
+        use crate::restart_policy::AgentRestartPolicy;
+        use claw_pal::TokioProcessManager;
+
+        let bus = Arc::new(EventBus::new());
+        let pm = Arc::new(TokioProcessManager::new());
+        let orc = AgentOrchestrator::new_for_test(Arc::clone(&bus), pm);
+
+        // Spawn with a never-restart policy.
+        let handle = orc
+            .spawn_agent("g9-agent", AgentRestartPolicy::never())
+            .await
+            .expect("spawn_agent should succeed");
+
+        // Confirm initial policy allows 0 retries.
+        {
+            let state = orc.restart_states.get(&handle.agent_id).unwrap();
+            assert_eq!(state.policy.max_retries, 0);
+        }
+
+        // Dynamically upgrade to 5 retries.
+        let new_policy = AgentRestartPolicy::with_max_retries(5);
+        orc.set_agent_restart_policy(&handle.agent_id, new_policy)
+            .expect("set_agent_restart_policy should succeed for a known IPC agent");
+
+        // Verify the in-place update — attempt counter must be untouched.
+        {
+            let state = orc.restart_states.get(&handle.agent_id).unwrap();
+            assert_eq!(state.policy.max_retries, 5, "policy must reflect new max_retries");
+            assert_eq!(state.attempt, 0, "attempt counter must not be reset by policy update");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_agent_restart_policy_unknown_agent_returns_error() {
+        use crate::event_bus::EventBus;
+        use crate::restart_policy::AgentRestartPolicy;
+        use claw_pal::TokioProcessManager;
+
+        let bus = Arc::new(EventBus::new());
+        let pm = Arc::new(TokioProcessManager::new());
+        let orc = AgentOrchestrator::new_for_test(Arc::clone(&bus), pm);
+
+        let unknown_id = AgentId::new("ghost");
+        let result = orc.set_agent_restart_policy(&unknown_id, AgentRestartPolicy::default());
+
+        assert!(
+            matches!(result, Err(RuntimeError::AgentNotFound(_))),
+            "unknown agent must return AgentNotFound"
+        );
+    }
+
+    // ── G-6: ResourceSnapshot tests ───────────────────────────────────────────
+
+    /// Verify that a freshly registered agent has an empty (None) resource
+    /// snapshot, and that `to_resource_usage()` returns None accordingly.
+    #[test]
+    fn test_resource_snapshot_initially_none() {
+        let orc = make_orchestrator();
+        let config = AgentConfig::new("snap-test");
+        let id = config.agent_id.clone();
+
+        orc.register(config).unwrap();
+
+        let info = orc.agent_info(&id).unwrap();
+        // No sysinfo sample has been taken yet — resource_usage must be None.
+        assert!(
+            info.resource_usage.is_none(),
+            "resource_usage should be None before any sysinfo sample"
+        );
+    }
+
+    /// Verify that once a ResourceSnapshot is written into AgentState,
+    /// `to_resource_usage()` and `health_check()` reflect it correctly.
+    #[tokio::test]
+    async fn test_resource_snapshot_populates_health_status() {
+        let bus = Arc::new(crate::event_bus::EventBus::new());
+        let pm = Arc::new(claw_pal::TokioProcessManager::new());
+        let orc = AgentOrchestrator::new_for_test(Arc::clone(&bus), pm);
+
+        let config = AgentConfig::new("snap-health-test");
+        let id = config.agent_id.clone();
+        orc.register(config).unwrap();
+
+        // Manually inject a ResourceSnapshot (simulates what start_resource_monitor_task does).
+        {
+            let entry = orc.agents.get(&id).unwrap();
+            let mut guard = entry.resource_snapshot.write().unwrap();
+            *guard = Some(ResourceSnapshot {
+                memory_kb: 4096,
+                cpu_percent: 12.5,
+                sampled_at_ms: 1_000_000,
+            });
+        }
+
+        // to_resource_usage() must now reflect the injected snapshot.
+        let info = orc.agent_info(&id).unwrap();
+        let usage = info.resource_usage.expect("resource_usage must be Some after snapshot");
+        assert_eq!(usage.memory_bytes, Some(4096 * 1024));
+
+        // health_check() must also reflect the snapshot values.
+        let health = orc.health_check(&id).await.unwrap();
+        assert_eq!(health.memory_usage_kb, Some(4096));
+        assert!((health.cpu_usage_percent.unwrap() - 12.5).abs() < f32::EPSILON);
     }
 }
