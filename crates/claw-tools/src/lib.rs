@@ -61,12 +61,15 @@ pub mod registry;
 pub mod traits;
 pub mod types;
 
-pub use audit::{AuditEvent, AuditLogConfig, AuditLogWriter, AuditLogWriterHandle};
+pub use audit::{
+    AuditEvent, AuditLogConfig, AuditLogWriter, AuditLogWriterHandle, AuditStore,
+    SecurityAuditEventRepr, ToolsAuditSink,
+};
 pub use error::{RegistryError, ValidationError};
-pub use registry::ToolRegistry;
+pub use registry::{PowerKeyVerify, ToolRegistry};
 pub use traits::{NoopToolEventPublisher, ScriptToolCompiler, Tool, ToolEventPublisher};
 pub use types::{
     FsPermissions, HotLoadingConfig, LoadedToolMeta, LoadError, LogEntry, NetworkPermissions,
-    PermissionSet, ScriptLanguage, SubprocessPolicy, ToolContext, ToolError, ToolErrorCode, ToolMeta,
-    ToolResult, ToolSchema, ToolSource, WatchError,
+    PermissionSet, RegistryExecutionMode, ScriptLanguage, SubprocessPolicy, ToolContext, ToolError,
+    ToolErrorCode, ToolMeta, ToolResult, ToolSchema, ToolSource, WatchError,
 };

@@ -29,10 +29,11 @@ zeroize = { version = "1.7", features = ["derive"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libseccomp = { workspace = true, optional = true }
+landlock = { workspace = true, optional = true }
 nix = { workspace = true, features = ["resource"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.27.1", features = ["process", "sched", "signal"] }
+nix = { version = "0.27.1", features = ["process", "resource", "sched", "signal"] }
 
 [target.'cfg(windows)'.dependencies]
 tokio = { workspace = true, features = ["net"] }
@@ -44,7 +45,7 @@ windows-sys = { version = "0.52", features = [
 
 [features]
 default = []
-sandbox-tests = ["libseccomp"]
+sandbox-tests = ["libseccomp", "landlock"]
 strict-security = []
 
 [dev-dependencies]

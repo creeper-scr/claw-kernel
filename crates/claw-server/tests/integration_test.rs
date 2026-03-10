@@ -40,7 +40,7 @@ impl LLMProvider for MockProvider {
     fn provider_id(&self) -> &str { "mock" }
     fn model_id(&self) -> &str { "mock-v1" }
 
-    async fn complete(
+    async fn complete_inner(
         &self,
         _messages: Vec<Message>,
         _opts: Options,
@@ -113,12 +113,13 @@ async fn read_notification(stream: &mut UnixStream) -> Value {
 
 // ── Server fixture ────────────────────────────────────────────────────────────
 
-/// Binds a KernelServer on a temp socket and returns (socket_path, server_handle).
-async fn start_server(socket_path: &str) -> tokio::task::JoinHandle<()> {
+/// Binds a KernelServer on a temp socket and returns (server_handle, auth_token).
+async fn start_server(socket_path: &str) -> (tokio::task::JoinHandle<()>, String) {
     let path = socket_path.to_string();
     let config = ServerConfig {
         socket_path: path,
         max_sessions: 10,
+        webhook_port: None,
         provider_config: ProviderConfig::Dynamic, // will be overridden by AgentLoop
     };
 
@@ -126,11 +127,25 @@ async fn start_server(socket_path: &str) -> tokio::task::JoinHandle<()> {
     // a server backed by Ollama and rely on `ProviderConfig::Dynamic` fallback.
     // For tests that don't invoke the LLM, this works fine.
     // For sendMessage tests, we test via the session manager directly.
-    tokio::spawn(async move {
-        let server = KernelServer::new(config);
+    let server = KernelServer::new(config);
+    let token = server.auth_token.as_ref().clone();
+    let handle = tokio::spawn(async move {
         // Run for a limited time — tests must complete before this timeout.
         let _ = timeout(Duration::from_secs(30), server.run()).await;
-    })
+    });
+    (handle, token)
+}
+
+/// Authenticate a client connection using the given token.
+async fn authenticate(stream: &mut tokio::net::UnixStream, token: &str) {
+    let resp = rpc(
+        stream,
+        "kernel.auth",
+        Some(json!({ "token": token })),
+        0,
+    )
+    .await;
+    assert!(resp["error"].is_null(), "kernel.auth failed: {:?}", resp);
 }
 
 // ── Test: 4-byte frame round-trip (no server needed) ─────────────────────────
@@ -155,10 +170,11 @@ async fn test_create_session_returns_id() {
     let socket_path = dir.path().join("test_create.sock");
     let path_str = socket_path.to_str().unwrap().to_string();
 
-    let _server = start_server(&path_str).await;
+    let (_server, token) = start_server(&path_str).await;
     tokio::time::sleep(Duration::from_millis(50)).await; // let server bind
 
     let mut client = UnixStream::connect(&path_str).await.unwrap();
+    authenticate(&mut client, &token).await;
 
     let resp = rpc(&mut client, "createSession", None, 1).await;
 
@@ -176,10 +192,11 @@ async fn test_create_session_with_config() {
     let socket_path = dir.path().join("test_create_cfg.sock");
     let path_str = socket_path.to_str().unwrap().to_string();
 
-    let _server = start_server(&path_str).await;
+    let (_server, token) = start_server(&path_str).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut client = UnixStream::connect(&path_str).await.unwrap();
+    authenticate(&mut client, &token).await;
 
     let resp = rpc(
         &mut client,
@@ -206,10 +223,11 @@ async fn test_send_message_unknown_session() {
     let socket_path = dir.path().join("test_unknown.sock");
     let path_str = socket_path.to_str().unwrap().to_string();
 
-    let _server = start_server(&path_str).await;
+    let (_server, token) = start_server(&path_str).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut client = UnixStream::connect(&path_str).await.unwrap();
+    authenticate(&mut client, &token).await;
 
     let resp = rpc(
         &mut client,
@@ -235,10 +253,11 @@ async fn test_destroy_session() {
     let socket_path = dir.path().join("test_destroy.sock");
     let path_str = socket_path.to_str().unwrap().to_string();
 
-    let _server = start_server(&path_str).await;
+    let (_server, token) = start_server(&path_str).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut client = UnixStream::connect(&path_str).await.unwrap();
+    authenticate(&mut client, &token).await;
 
     // Create session
     let resp = rpc(&mut client, "createSession", None, 1).await;
@@ -275,10 +294,11 @@ async fn test_unknown_method() {
     let socket_path = dir.path().join("test_unknown_method.sock");
     let path_str = socket_path.to_str().unwrap().to_string();
 
-    let _server = start_server(&path_str).await;
+    let (_server, token) = start_server(&path_str).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut client = UnixStream::connect(&path_str).await.unwrap();
+    authenticate(&mut client, &token).await;
 
     let resp = rpc(&mut client, "nonExistentMethod", None, 1).await;
 
@@ -294,7 +314,7 @@ async fn test_invalid_json_parse_error() {
     let socket_path = dir.path().join("test_invalid_json.sock");
     let path_str = socket_path.to_str().unwrap().to_string();
 
-    let _server = start_server(&path_str).await;
+    let (_server, _token) = start_server(&path_str).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut client = UnixStream::connect(&path_str).await.unwrap();
@@ -394,9 +414,11 @@ async fn test_external_tool_bridge_notification() {
         "get_weather",
         "Get weather",
         json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+        PermissionSet::minimal(),
         "session-abc",
         notify_tx,
         Arc::clone(&pending),
+        claw_tools::audit::AuditLogWriterHandle::noop(),
     );
 
     assert_eq!(bridge.name(), "get_weather");
@@ -443,10 +465,11 @@ async fn test_kernel_ping() {
     let socket_path = dir.path().join("test_ping.sock");
     let path_str = socket_path.to_str().unwrap().to_string();
 
-    let _server = start_server(&path_str).await;
+    let (_server, token) = start_server(&path_str).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut client = UnixStream::connect(&path_str).await.unwrap();
+    authenticate(&mut client, &token).await;
 
     let resp = rpc(&mut client, "kernel.ping", None, 1).await;
 
@@ -464,17 +487,18 @@ async fn test_kernel_info() {
     let socket_path = dir.path().join("test_info.sock");
     let path_str = socket_path.to_str().unwrap().to_string();
 
-    let _server = start_server(&path_str).await;
+    let (_server, token) = start_server(&path_str).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut client = UnixStream::connect(&path_str).await.unwrap();
+    authenticate(&mut client, &token).await;
 
     let resp = rpc(&mut client, "kernel.info", None, 2).await;
 
     assert!(resp["error"].is_null(), "kernel.info failed: {:?}", resp);
     let result = &resp["result"];
     assert!(result["version"].is_string(), "version should be string");
-    assert_eq!(result["protocol_version"], 1);
+    assert_eq!(result["protocol_version"], 2);
     assert!(result["providers"].is_array(), "providers should be array");
 }
 
@@ -487,10 +511,11 @@ async fn test_session_create_and_close() {
     let socket_path = dir.path().join("test_session_rpc.sock");
     let path_str = socket_path.to_str().unwrap().to_string();
 
-    let _server = start_server(&path_str).await;
+    let (_server, token) = start_server(&path_str).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut client = UnixStream::connect(&path_str).await.unwrap();
+    authenticate(&mut client, &token).await;
 
     // Create session via new method name
     let resp = rpc(
@@ -529,10 +554,11 @@ async fn test_provider_list() {
     let socket_path = dir.path().join("test_providers.sock");
     let path_str = socket_path.to_str().unwrap().to_string();
 
-    let _server = start_server(&path_str).await;
+    let (_server, token) = start_server(&path_str).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
     let mut client = UnixStream::connect(&path_str).await.unwrap();
+    authenticate(&mut client, &token).await;
 
     let resp = rpc(&mut client, "provider.list", None, 5).await;
 

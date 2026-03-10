@@ -51,3 +51,4 @@ serde_json = { workspace = true }
 figment = { version = "0.10.19", features = ["toml", "env"] }
 toml = { version = "0.8.0", default-features = false, features = ["parse", "display"] }
 rustc_version_runtime = "0.3.0"
+zeroize = "1.8"

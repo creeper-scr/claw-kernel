@@ -60,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
             let config = ServerConfig {
                 socket_path: cli.socket_path,
                 max_sessions: cli.max_sessions,
+                webhook_port: None,
                 provider_config,
             };
 
@@ -109,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
             let config = ServerConfig {
                 socket_path: cli.socket_path,
                 max_sessions: cli.max_sessions,
+                webhook_port: None,
                 provider_config,
             };
             let server = KernelServer::new(config);

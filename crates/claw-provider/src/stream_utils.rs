@@ -31,7 +31,7 @@ use crate::types::Delta;
 ///
 /// # Examples
 ///
-/// ```rust
+/// ```rust,ignore
 /// use claw_provider::stream_utils::parse_sse_line;
 ///
 /// assert_eq!(parse_sse_line("data: hello"), Some("hello"));

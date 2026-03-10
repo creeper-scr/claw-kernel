@@ -341,6 +341,7 @@ impl KernelServer {
     /// let config = ServerConfig {
     ///     socket_path: "/tmp/claw-kernel.sock".to_string(),
     ///     max_sessions: 100,
+    ///     webhook_port: None,
     ///     provider_config: ProviderConfig::Anthropic {
     ///         api_key: "your-api-key".to_string(),
     ///         default_model: "claude-3-opus".to_string(),
@@ -906,8 +907,8 @@ mod tests {
         assert!(matches!(config.provider_config, ProviderConfig::Dynamic));
     }
 
-    #[test]
-    fn test_kernel_server_new() {
+    #[tokio::test]
+    async fn test_kernel_server_new() {
         let config = ServerConfig::default();
         let server = KernelServer::new(config);
         assert_eq!(server.config().max_sessions, 100);

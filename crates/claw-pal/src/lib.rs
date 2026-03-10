@@ -89,7 +89,7 @@ pub use manager::TokioProcessManager;
 pub use security::{ModeTransitionGuard, PowerKey, PowerKeyHash, PowerKeyManager, PowerKeyValidator, PowerModeGuard, SecurityError};
 
 // Audit sink (used by PowerModeGuard)
-pub use audit::{AuditSink, AuditSinkHandle, NoopAuditSink, SecurityAuditEvent};
+pub use audit::{AuditSink, AuditSinkHandle, ChannelAuditSink, NoopAuditSink, SecurityAuditEvent, SecurityEventReceiver};
 
 // Daemon lock file
 pub use lockfile::{DaemonLock, LockError};

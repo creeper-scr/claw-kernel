@@ -20,6 +20,7 @@ tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["io-std"] }
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 regex = { workspace = true }
 dashmap = { workspace = true }
 toml = "0.8"

@@ -500,7 +500,7 @@ impl AgentLoop {
     /// use tokio::sync::mpsc;
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let provider = std::sync::Arc::new(claw_provider::providers::provider_from_env()?);
+    /// # let provider = claw_provider::providers::provider_from_env()?;
     /// let mut agent = AgentLoopBuilder::new()
     ///     .with_provider(provider)
     ///     .build()?;
@@ -903,7 +903,7 @@ mod tests {
             "mock-v1"
         }
 
-        async fn complete(
+        async fn complete_inner(
             &self,
             messages: Vec<Message>,
             _opts: Options,
@@ -952,7 +952,7 @@ mod tests {
             "mock-tool-v1"
         }
 
-        async fn complete(
+        async fn complete_inner(
             &self,
             _messages: Vec<Message>,
             _opts: Options,

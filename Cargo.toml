@@ -93,6 +93,7 @@ dirs = "5.0.1"
 
 # Linux 沙箱
 libseccomp = "0.3.0"
+landlock = "0.4"
 nix = { version = "0.27.1", features = ["process", "sched"] }
 
 # 安全 (Security)

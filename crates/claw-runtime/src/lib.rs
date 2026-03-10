@@ -47,8 +47,10 @@
 pub mod a2a;
 pub mod agent_handle;
 pub mod agent_types;
+pub mod cron_scheduler;
 pub mod discovery;
 pub mod error;
+pub mod event_trigger;
 pub mod event_bus;
 pub mod events;
 pub mod extension;
@@ -61,9 +63,18 @@ pub mod schedule;
 pub mod traits;
 pub mod trigger_dispatcher;
 pub mod trigger_event;
+pub mod trigger_store;
 
 #[cfg(feature = "webhook")]
 pub mod webhook;
+
+/// Webhook 触发服务器（内核级 F6 触发基础设施，GAP-F6-03）。
+///
+/// 提供统一的 `/hooks/{trigger_id}` 多路复用路由，
+/// 将外部 HTTP 回调转换为 [`TriggerEvent::Webhook`] 发布到 [`EventBus`]。
+/// 与应用层 `WebhookChannel`（claw-channel）是不同层次的概念。
+#[cfg(feature = "webhook")]
+pub mod webhook_server;
 
 pub use a2a::{
     A2AMessage, A2AMessagePayload, A2AMessageType, AgentCapability, MessagePriority,
@@ -106,8 +117,17 @@ pub use schedule::{
 // Trigger event exports (GAP-F6-01)
 pub use trigger_event::{TriggerEvent, TriggerType};
 
+// TriggerStore exports (GAP-F6-02)
+pub use trigger_store::{TriggerRecord, TriggerStore, TriggerStoreError};
+
+// CronScheduler exports (GAP-F6-01)
+pub use cron_scheduler::{CronError, CronJob, CronScheduler};
+
 // TriggerDispatcher export (GAP-F6-03)
 pub use trigger_dispatcher::TriggerDispatcher;
+
+// EventTriggerRegistry exports (GAP-F6-06)
+pub use event_trigger::{EventTriggerRegistry, EventTriggerRule};
 
 #[cfg(feature = "webhook")]
 pub use webhook::{
@@ -121,3 +141,7 @@ pub use webhook::verification::{verify_hmac_sha256, HmacSha256Verifier, NoopVeri
 
 #[cfg(feature = "webhook")]
 pub use webhook::AxumWebhookServer;
+
+// WebhookTriggerServer exports (GAP-F6-03)
+#[cfg(feature = "webhook")]
+pub use webhook_server::{WebhookServerError, WebhookTriggerConfig, WebhookTriggerServer};

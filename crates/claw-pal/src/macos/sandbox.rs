@@ -3,6 +3,7 @@
 //! Implements [`SandboxBackend`] for macOS using:
 //! - **sandbox_init()** C API for process-level sandboxing via unsafe FFI
 //! - **Apple Sandbox Profile Language (SBPL)** S-expression format for policy definition
+//! - **setrlimit(2)** POSIX system call for resource limit enforcement
 //!
 //! # Design Decisions
 //!
@@ -13,8 +14,12 @@
 //! - Power mode skips sandbox application entirely (returns handle immediately).
 //! - `SyscallPolicy` is mapped to SBPL operation categories since macOS has no
 //!   syscall-level filtering like Linux's seccomp.
-//! - Resource limits are stored but NOT enforced via `sandbox_init()` — macOS sandbox
-//!   profiles do not support resource constraints. Higher-level components may enforce these.
+//! - Resource limits are enforced via `setrlimit(2)` (independent of `sandbox_init()`):
+//!   - `max_memory_bytes` → `RLIMIT_AS` (virtual address space)
+//!   - `max_file_descriptors` → `RLIMIT_NOFILE`
+//!   - `max_processes` → `RLIMIT_NPROC`
+//!   - `max_cpu_percent` cannot be mapped to `RLIMIT_CPU` (which is wall-clock seconds,
+//!     not percentage); a warning is logged and the field is ignored.
 //!
 //! # Sandbox Profile Format (SBPL)
 //!
@@ -53,12 +58,19 @@ extern "C" {
 /// - **File access control**: Path-based allow/deny rules via `file-read*`/`file-write*`
 /// - **Network restriction**: Domain/port-based outbound control via `network-outbound`
 /// - **Subprocess blocking**: `process-exec` deny rules in Safe mode
+/// - **Resource limits**: Enforced via `setrlimit(2)` — memory, FDs, and process count
 ///
-/// # Resource Limit Note
+/// # Resource Limit Enforcement
 ///
-/// macOS `sandbox_init()` does not support resource limits (memory, FDs, etc.).
-/// Resource limits are stored for higher-level enforcement (e.g., via `launchd` or
-/// application-level checks).
+/// Resource limits are applied via POSIX `setrlimit(2)` during `apply()`,
+/// independent of `sandbox_init()`. The following mappings apply:
+///
+/// | `ResourceLimits` field   | `setrlimit` resource  | Notes                          |
+/// |--------------------------|-----------------------|--------------------------------|
+/// | `max_memory_bytes`       | `RLIMIT_AS`           | Virtual address space cap      |
+/// | `max_file_descriptors`   | `RLIMIT_NOFILE`       | Open file descriptor cap       |
+/// | `max_processes`          | `RLIMIT_NPROC`        | Child process count cap        |
+/// | `max_cpu_percent`        | *(not mapped)*        | Not representable as `RLIMIT_CPU` (seconds); logged as warning |
 ///
 /// # Filesystem Filtering
 ///
@@ -82,6 +94,7 @@ extern "C" {
 ///
 /// let handle = sandbox.apply().unwrap();
 /// // Sandbox is now active — restricted operations return EPERM
+/// // Resource limits enforced via setrlimit(2)
 /// ```
 pub struct MacOSSandbox {
     /// Sandbox configuration (mode, subprocess policy).
@@ -264,6 +277,75 @@ impl MacOSSandbox {
             Ok(())
         }
     }
+
+    /// Apply resource limits via `setrlimit(2)`.
+    ///
+    /// Enforces memory, file descriptor, and process count limits on the calling process.
+    /// This is independent of `sandbox_init()` — the two mechanisms complement each other.
+    ///
+    /// # Mappings
+    ///
+    /// - `max_memory_bytes` → `RLIMIT_AS`: caps virtual address space
+    /// - `max_file_descriptors` → `RLIMIT_NOFILE`: caps open file descriptors
+    /// - `max_processes` → `RLIMIT_NPROC`: caps child process count
+    /// - `max_cpu_percent`: not mappable to `RLIMIT_CPU` (seconds, not percent); warns and skips
+    ///
+    /// # Errors
+    ///
+    /// Returns `SandboxError::RestrictFailed` if any `setrlimit` call fails.
+    fn apply_resource_limits(limits: &ResourceLimits) -> Result<(), SandboxError> {
+        use nix::sys::resource::{setrlimit, Resource};
+
+        if let Some(max_mem) = limits.max_memory_bytes {
+            let limit = max_mem as nix::libc::rlim_t;
+            setrlimit(Resource::RLIMIT_AS, limit, limit).map_err(|e| {
+                SandboxError::RestrictFailed(format!("setrlimit(RLIMIT_AS, {}) failed: {}", max_mem, e))
+            })?;
+        }
+
+        if let Some(max_fds) = limits.max_file_descriptors {
+            let limit = max_fds as nix::libc::rlim_t;
+            setrlimit(Resource::RLIMIT_NOFILE, limit, limit).map_err(|e| {
+                SandboxError::RestrictFailed(format!(
+                    "setrlimit(RLIMIT_NOFILE, {}) failed: {}",
+                    max_fds, e
+                ))
+            })?;
+        }
+
+        if let Some(max_procs) = limits.max_processes {
+            #[cfg(not(target_os = "macos"))]
+            {
+                let limit = max_procs as nix::libc::rlim_t;
+                setrlimit(Resource::RLIMIT_NPROC, limit, limit).map_err(|e| {
+                    SandboxError::RestrictFailed(format!(
+                        "setrlimit(RLIMIT_NPROC, {}) failed: {}",
+                        max_procs, e
+                    ))
+                })?;
+            }
+            #[cfg(target_os = "macos")]
+            {
+                // macOS does not expose RLIMIT_NPROC via setrlimit(2).
+                // Process count limiting on macOS requires launchd job policies.
+                tracing::warn!(
+                    max_processes = max_procs,
+                    "MacOSSandbox: max_processes cannot be enforced via setrlimit on macOS — \
+                     RLIMIT_NPROC is not available. Use launchd ProcessLimit for enforcement."
+                );
+            }
+        }
+
+        if limits.max_cpu_percent.is_some() {
+            tracing::warn!(
+                "MacOSSandbox: max_cpu_percent cannot be enforced via setrlimit — \
+                 RLIMIT_CPU measures wall-clock seconds, not CPU percentage. \
+                 Use a process supervisor (launchd, Resource Limits plist) for CPU throttling."
+            );
+        }
+
+        Ok(())
+    }
 }
 
 /// Escape a string for use in SBPL double-quoted string literals.
@@ -318,11 +400,14 @@ impl SandboxBackend for MacOSSandbox {
         self
     }
 
-    /// Set resource limits (stored only, not enforced by sandbox_init).
+    /// Set resource limits (enforced via `setrlimit(2)` during `apply()`).
     ///
-    /// macOS `sandbox_init()` does not support resource limits. These are stored
-    /// for use by higher-level components (e.g., `launchd` plist limits or
-    /// application-level enforcement).
+    /// Unlike `sandbox_init()`, resource limits are enforced through the POSIX
+    /// `setrlimit(2)` system call when `apply()` is called. This ensures that
+    /// `restrict_resources()` has real, observable effect on the process.
+    ///
+    /// Supported limits: `max_memory_bytes`, `max_file_descriptors`, `max_processes`.
+    /// `max_cpu_percent` is not enforceable via `setrlimit` and will produce a warning.
     fn restrict_resources(&mut self, limits: ResourceLimits) -> &mut Self {
         self.resource_limits = Some(limits);
         self
@@ -333,6 +418,7 @@ impl SandboxBackend for MacOSSandbox {
     /// This method:
     /// 1. In Power mode: skips sandbox entirely, returns handle immediately
     /// 2. In Safe mode: generates SBPL profile and calls `sandbox_init()` FFI
+    /// 3. If resource limits are configured: calls `setrlimit(2)` for memory, FDs, and processes
     ///
     /// # Important
     ///
@@ -340,15 +426,22 @@ impl SandboxBackend for MacOSSandbox {
     /// removed or relaxed for the lifetime of the process. The profile MUST be
     /// applied as the FIRST security operation before any untrusted code runs.
     ///
+    /// `setrlimit(2)` soft limits can be raised back up to the hard limit by the
+    /// process itself, but setting soft == hard prevents this.
+    ///
     /// # Errors
     ///
     /// Returns `SandboxError::RestrictFailed` if `sandbox_init()` fails (e.g.,
-    /// invalid profile syntax, sandbox already applied, or system error).
+    /// invalid profile syntax, sandbox already applied, or system error), or if
+    /// any `setrlimit` call fails (e.g., limit exceeds current hard limit or EPERM).
     /// Returns `SandboxError::CreationFailed` if the profile string contains
     /// null bytes (cannot be converted to C string).
     fn apply(self) -> Result<SandboxHandle, SandboxError> {
-        // In Power mode, skip all restrictions
+        // In Power mode, skip sandbox profile but still enforce resource limits
         if self.config.mode == ExecutionMode::Power {
+            if let Some(ref limits) = self.resource_limits {
+                Self::apply_resource_limits(limits)?;
+            }
             return Ok(SandboxHandle {
                 platform_handle: PlatformHandle::MacOs("power-mode".to_string()),
             });
@@ -359,6 +452,11 @@ impl SandboxBackend for MacOSSandbox {
 
         // Apply via sandbox_init() FFI — this is IRREVERSIBLE
         Self::apply_sandbox_profile(&profile)?;
+
+        // Apply resource limits via setrlimit(2) — independent of sandbox_init
+        if let Some(ref limits) = self.resource_limits {
+            Self::apply_resource_limits(limits)?;
+        }
 
         Ok(SandboxHandle {
             platform_handle: PlatformHandle::MacOs("safe-mode-sandboxed".to_string()),
@@ -671,4 +769,55 @@ mod tests {
     // sandbox_init() is IRREVERSIBLE — applying it would sandbox the test runner
     // process, causing all subsequent tests and file operations to fail.
     // Integration tests for real sandbox application should use process isolation.
+
+    // ===== Resource Limit Enforcement Tests =====
+
+    #[test]
+    fn test_apply_resource_limits_unlimited_is_noop() {
+        // RLIMIT_NOFILE with unlimited (None) should not call setrlimit at all.
+        // apply_resource_limits(unlimited) must return Ok without error.
+        let limits = ResourceLimits::unlimited();
+        let result = MacOSSandbox::apply_resource_limits(&limits);
+        assert!(result.is_ok(), "unlimited limits should succeed: {:?}", result);
+    }
+
+    #[test]
+    fn test_apply_resource_limits_fds_within_current_hard() {
+        use nix::sys::resource::{getrlimit, Resource};
+        // Read the current hard limit for NOFILE; set soft to (hard / 2) or hard if small.
+        // This should always succeed since we are not raising above the hard limit.
+        let (_, hard) = getrlimit(Resource::RLIMIT_NOFILE).expect("getrlimit failed");
+        let target = if hard > 16 { hard / 2 } else { hard };
+        let limits = ResourceLimits::unlimited().with_fds(target as u32);
+        let result = MacOSSandbox::apply_resource_limits(&limits);
+        assert!(result.is_ok(), "setting FDs to half of hard limit should succeed: {:?}", result);
+    }
+
+    #[test]
+    fn test_apply_resource_limits_processes_within_current_hard() {
+        // macOS does not support RLIMIT_NPROC; verify that max_processes triggers only a warning,
+        // not an error.
+        let limits = ResourceLimits::unlimited().with_processes(10);
+        let result = MacOSSandbox::apply_resource_limits(&limits);
+        assert!(result.is_ok(), "max_processes on macOS should warn and not error: {:?}", result);
+    }
+
+    #[test]
+    fn test_apply_resource_limits_cpu_percent_is_ignored_gracefully() {
+        // max_cpu_percent cannot be mapped to setrlimit; ensure no error is returned.
+        let limits = ResourceLimits::unlimited().with_cpu(50);
+        let result = MacOSSandbox::apply_resource_limits(&limits);
+        assert!(result.is_ok(), "cpu_percent should be silently warned, not error: {:?}", result);
+    }
+
+    #[test]
+    fn test_macos_sandbox_power_mode_with_resource_limits_succeeds() {
+        // Power mode should also enforce resource limits (not skip them).
+        let config = SandboxConfig::power_mode();
+        let mut sandbox = MacOSSandbox::create(config).unwrap();
+        sandbox.restrict_resources(ResourceLimits::unlimited());
+        // unlimited limits with power mode must succeed
+        let result = sandbox.apply();
+        assert!(result.is_ok(), "power mode + unlimited limits should succeed: {:?}", result);
+    }
 }

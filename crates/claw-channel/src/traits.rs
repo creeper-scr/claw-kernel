@@ -3,6 +3,7 @@ use crate::{
     types::{ChannelId, ChannelMessage, Platform},
 };
 use async_trait::async_trait;
+use futures_util::stream::{self, Stream};
 use std::sync::Arc;
 
 /// Channel event published by [`ChannelEventPublisher::publish`].
@@ -48,6 +49,40 @@ pub trait Channel: Send + Sync {
     /// Receive the next incoming message (blocking until one arrives).
     async fn recv(&self) -> Result<ChannelMessage, ChannelError>;
 
+    /// Return an infinite [`Stream`] of inbound messages.
+    ///
+    /// Each item is a `ChannelMessage`; the stream ends when `recv()` returns
+    /// an error (e.g. the channel is closed or disconnected), at which point
+    /// the stream terminates silently.
+    ///
+    /// This default implementation wraps repeated `recv()` calls via
+    /// [`futures_util::stream::unfold`].  Implementors may override this
+    /// method to provide a more efficient stream if the underlying transport
+    /// already produces one (e.g. a `tokio::sync::mpsc::Receiver`).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use futures_util::StreamExt;
+    ///
+    /// channel.connect().await?;
+    /// let mut stream = channel.into_stream();
+    /// while let Some(msg) = stream.next().await {
+    ///     println!("received: {}", msg.content);
+    /// }
+    /// ```
+    fn into_stream(&self) -> impl Stream<Item = ChannelMessage> + '_
+    where
+        Self: Sized,
+    {
+        stream::unfold(self, |ch| async move {
+            match ch.recv().await {
+                Ok(msg) => Some((msg, ch)),
+                Err(_) => None,
+            }
+        })
+    }
+
     /// Connect to the external platform and start receiving messages.
     ///
     /// # Semantics
@@ -63,6 +98,35 @@ pub trait Channel: Send + Sync {
     /// disconnection.  Calling `send()` after disconnection returns
     /// `Err(ChannelError::NotConnected)`.
     async fn disconnect(&self) -> Result<(), ChannelError>;
+}
+
+/// Create a [`Stream`] of inbound messages from any `Arc<dyn Channel>`.
+///
+/// This free function is the escape hatch for object-safe contexts (e.g. when
+/// the channel is stored as `Arc<dyn Channel>`), where the `into_stream()`
+/// method is not callable due to the `where Self: Sized` constraint.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use futures_util::StreamExt;
+/// use std::sync::Arc;
+///
+/// let ch: Arc<dyn Channel> = Arc::new(my_channel);
+/// let mut stream = claw_channel::channel_into_stream(ch);
+/// while let Some(msg) = stream.next().await {
+///     println!("received: {}", msg.content);
+/// }
+/// ```
+pub fn channel_into_stream(
+    channel: Arc<dyn Channel>,
+) -> impl Stream<Item = ChannelMessage> {
+    stream::unfold(channel, |ch| async move {
+        match ch.recv().await {
+            Ok(msg) => Some((msg, ch)),
+            Err(_) => None,
+        }
+    })
 }
 
 /// Event publisher for channel-related events.
@@ -122,9 +186,24 @@ impl NoopChannelEventPublisher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::StreamExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct MockChannel {
         id: ChannelId,
+        /// Number of messages to return before returning an error.
+        limit: usize,
+        count: AtomicUsize,
+    }
+
+    impl MockChannel {
+        fn new(id: &str, limit: usize) -> Self {
+            Self {
+                id: ChannelId::new(id),
+                limit,
+                count: AtomicUsize::new(0),
+            }
+        }
     }
 
     #[async_trait::async_trait]
@@ -139,11 +218,16 @@ mod tests {
             Ok(())
         }
         async fn recv(&self) -> Result<ChannelMessage, ChannelError> {
-            Ok(ChannelMessage::inbound(
-                self.id.clone(),
-                crate::types::Platform::Stdin,
-                "mock",
-            ))
+            let n = self.count.fetch_add(1, Ordering::SeqCst);
+            if n < self.limit {
+                Ok(ChannelMessage::inbound(
+                    self.id.clone(),
+                    crate::types::Platform::Stdin,
+                    "mock",
+                ))
+            } else {
+                Err(ChannelError::ReceiveFailed("closed".to_string()))
+            }
         }
         async fn connect(&self) -> Result<(), ChannelError> {
             Ok(())
@@ -155,9 +239,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_channel_trait_send() {
-        let ch = MockChannel {
-            id: ChannelId::new("m"),
-        };
+        let ch = MockChannel::new("m", 1);
         let msg =
             ChannelMessage::outbound(ChannelId::new("m"), crate::types::Platform::Stdin, "hi");
         ch.send(msg).await.unwrap();
@@ -165,11 +247,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_channel_trait_connect_disconnect() {
-        let ch = MockChannel {
-            id: ChannelId::new("m"),
-        };
+        let ch = MockChannel::new("m", 0);
         ch.connect().await.unwrap();
         ch.disconnect().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_into_stream_yields_messages_then_terminates() {
+        let ch = MockChannel::new("stream-test", 3);
+        let msgs: Vec<_> = ch.into_stream().collect().await;
+        assert_eq!(msgs.len(), 3, "stream should yield exactly 3 messages");
+        for msg in &msgs {
+            assert_eq!(msg.content, "mock");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_channel_into_stream_arc_dyn() {
+        let ch: Arc<dyn Channel> = Arc::new(MockChannel::new("arc-stream", 2));
+        let msgs: Vec<_> = channel_into_stream(ch).collect().await;
+        assert_eq!(msgs.len(), 2, "arc stream should yield 2 messages");
+    }
+
+    #[tokio::test]
+    async fn test_into_stream_empty_channel() {
+        // A channel that immediately errors → stream should yield nothing.
+        let ch = MockChannel::new("empty", 0);
+        let msgs: Vec<_> = ch.into_stream().collect().await;
+        assert!(msgs.is_empty());
     }
 
     #[tokio::test]

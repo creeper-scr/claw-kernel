@@ -15,7 +15,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 mod writer;
 
@@ -150,6 +150,25 @@ pub enum AuditEvent {
         pattern: String,
         matches: usize,
     },
+    /// Agent entered Power Mode (from claw-pal security layer).
+    ///
+    /// Bridges the PAL-layer `SecurityAuditEvent` (Safe→Power transition) into
+    /// the unified audit stream so all security events are queryable in one place.
+    SecurityModeEntered {
+        timestamp_ms: u64,
+        agent_id: String,
+        /// Hex-encoded first 8 bytes of the Argon2 hash (never the plaintext key).
+        power_key_hash_prefix: String,
+    },
+    /// Agent exited Power Mode (from claw-pal security layer).
+    ///
+    /// Written when [`claw_pal::security::PowerModeGuard`] is dropped.
+    SecurityModeExited {
+        timestamp_ms: u64,
+        agent_id: String,
+        /// How long the agent was in Power Mode, in milliseconds.
+        duration_ms: u64,
+    },
 }
 
 impl AuditEvent {
@@ -164,6 +183,8 @@ impl AuditEvent {
             AuditEvent::ScriptFsRead { .. } => "SCRIPT_FS_READ",
             AuditEvent::ScriptFsWrite { .. } => "SCRIPT_FS_WRITE",
             AuditEvent::ScriptFsGlob { .. } => "SCRIPT_FS_GLOB",
+            AuditEvent::SecurityModeEntered { .. } => "SECURITY_MODE_ENTERED",
+            AuditEvent::SecurityModeExited { .. } => "SECURITY_MODE_EXITED",
         }
     }
 
@@ -178,6 +199,8 @@ impl AuditEvent {
             AuditEvent::ScriptFsRead { timestamp_ms, .. } => *timestamp_ms,
             AuditEvent::ScriptFsWrite { timestamp_ms, .. } => *timestamp_ms,
             AuditEvent::ScriptFsGlob { timestamp_ms, .. } => *timestamp_ms,
+            AuditEvent::SecurityModeEntered { timestamp_ms, .. } => *timestamp_ms,
+            AuditEvent::SecurityModeExited { timestamp_ms, .. } => *timestamp_ms,
         }
     }
 
@@ -192,6 +215,8 @@ impl AuditEvent {
             AuditEvent::ScriptFsRead { agent_id, .. } => agent_id,
             AuditEvent::ScriptFsWrite { agent_id, .. } => agent_id,
             AuditEvent::ScriptFsGlob { agent_id, .. } => agent_id,
+            AuditEvent::SecurityModeEntered { agent_id, .. } => agent_id,
+            AuditEvent::SecurityModeExited { agent_id, .. } => agent_id,
         }
     }
 }
@@ -275,6 +300,119 @@ impl AuditLogConfig {
     }
 }
 
+// ─── ToolsAuditSink — bridges claw-pal security events into AuditStore ───────
+
+/// An [`claw_pal::audit::AuditSink`]-compatible sink that forwards
+/// PAL-layer security events (`SecurityAuditEvent`) into a `claw-tools`
+/// [`AuditStore`].
+///
+/// # Why this exists
+///
+/// `claw-pal` defines `AuditSink` and `SecurityAuditEvent` without depending on
+/// `claw-tools` (to avoid a circular dependency).  `ToolsAuditSink` lives in
+/// `claw-tools` and wraps an `Arc<AuditStore>`, acting as the bridge between the
+/// two layers.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// use std::sync::Arc;
+/// use claw_tools::audit::{AuditStore, ToolsAuditSink};
+/// use claw_pal::audit::AuditSinkHandle;
+///
+/// let store = Arc::new(AuditStore::new(1000));
+/// let sink: AuditSinkHandle = ToolsAuditSink::new_handle(Arc::clone(&store));
+///
+/// // Pass `sink` to PowerModeGuard::enter(...)
+/// ```
+pub struct ToolsAuditSink {
+    store: Arc<AuditStore>,
+}
+
+impl ToolsAuditSink {
+    /// Create a new sink wrapping the given store.
+    pub fn new(store: Arc<AuditStore>) -> Self {
+        Self { store }
+    }
+
+    /// Translate a PAL `SecurityAuditEvent` into an `AuditEvent` and push it.
+    ///
+    /// Mapping rules:
+    /// - `from_mode == "safe"` → `AuditEvent::SecurityModeEntered`
+    ///   (the `reason` field is used as `power_key_hash_prefix` for correlation)
+    /// - `from_mode == "power"` → `AuditEvent::SecurityModeExited`
+    ///   (the `reason` field encodes `session_ended_after_NNNms`; we parse `NNN`)
+    /// - Other transitions → `AuditEvent::ModeSwitch` (forward as-is)
+    pub fn push_security_event(&self, event: &SecurityAuditEventRepr) {
+        let audit_event = if event.from_mode == "safe" && event.to_mode == "power" {
+            AuditEvent::SecurityModeEntered {
+                timestamp_ms: event.timestamp_ms,
+                agent_id: event.agent_id.clone(),
+                // Use first 8 chars of reason as a correlation handle.
+                // For PowerModeGuard the reason is "power_key_verified".
+                power_key_hash_prefix: event.reason.chars().take(8).collect(),
+            }
+        } else if event.from_mode == "power" && event.to_mode == "safe" {
+            // reason format: "session_ended_after_NNNms"
+            let duration_ms = event
+                .reason
+                .trim_start_matches("session_ended_after_")
+                .trim_end_matches("ms")
+                .parse::<u64>()
+                .unwrap_or(0);
+            AuditEvent::SecurityModeExited {
+                timestamp_ms: event.timestamp_ms,
+                agent_id: event.agent_id.clone(),
+                duration_ms,
+            }
+        } else {
+            AuditEvent::ModeSwitch {
+                timestamp_ms: event.timestamp_ms,
+                agent_id: event.agent_id.clone(),
+                from_mode: event.from_mode.clone(),
+                to_mode: event.to_mode.clone(),
+                reason: event.reason.clone(),
+            }
+        };
+        self.store.push(audit_event);
+    }
+}
+
+/// Minimal representation of a PAL security audit event.
+///
+/// This struct mirrors `claw_pal::audit::SecurityAuditEvent` without depending on
+/// the `claw-pal` crate.  When integrating `ToolsAuditSink` with `claw-pal`,
+/// implement `claw_pal::audit::AuditSink` for a newtype that converts
+/// `SecurityAuditEvent` into this repr and calls `push_security_event`.
+///
+/// See the `examples/` directory for a complete integration example.
+#[derive(Debug, Clone)]
+pub struct SecurityAuditEventRepr {
+    pub timestamp_ms: u64,
+    pub agent_id: String,
+    pub from_mode: String,
+    pub to_mode: String,
+    pub reason: String,
+}
+
+impl SecurityAuditEventRepr {
+    pub fn new(
+        timestamp_ms: u64,
+        agent_id: impl Into<String>,
+        from_mode: impl Into<String>,
+        to_mode: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            timestamp_ms,
+            agent_id: agent_id.into(),
+            from_mode: from_mode.into(),
+            to_mode: to_mode.into(),
+            reason: reason.into(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,6 +464,109 @@ mod tests {
         assert_eq!(spawned.event_type(), "AGENT_SPAWNED");
         assert_eq!(spawned.agent_id(), "a2");
         assert_eq!(spawned.timestamp_ms(), 5);
+
+        let entered = AuditEvent::SecurityModeEntered {
+            timestamp_ms: 6,
+            agent_id: "a3".to_string(),
+            power_key_hash_prefix: "abcdef01".to_string(),
+        };
+        assert_eq!(entered.event_type(), "SECURITY_MODE_ENTERED");
+        assert_eq!(entered.agent_id(), "a3");
+        assert_eq!(entered.timestamp_ms(), 6);
+
+        let exited = AuditEvent::SecurityModeExited {
+            timestamp_ms: 7,
+            agent_id: "a3".to_string(),
+            duration_ms: 5000,
+        };
+        assert_eq!(exited.event_type(), "SECURITY_MODE_EXITED");
+        assert_eq!(exited.agent_id(), "a3");
+        assert_eq!(exited.timestamp_ms(), 7);
+    }
+
+    #[test]
+    fn test_tools_audit_sink_safe_to_power() {
+        let store = Arc::new(AuditStore::new(10));
+        let sink = ToolsAuditSink::new(Arc::clone(&store));
+
+        let repr = SecurityAuditEventRepr::new(
+            1_000,
+            "agent-x",
+            "safe",
+            "power",
+            "power_key_verified",
+        );
+        sink.push_security_event(&repr);
+
+        let entries = store.list(10, Some("agent-x"), None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].event_type(), "SECURITY_MODE_ENTERED");
+        assert_eq!(entries[0].timestamp_ms(), 1_000);
+        if let AuditEvent::SecurityModeEntered { power_key_hash_prefix, .. } = &entries[0] {
+            assert_eq!(power_key_hash_prefix, "power_ke");
+        } else {
+            panic!("expected SecurityModeEntered");
+        }
+    }
+
+    #[test]
+    fn test_tools_audit_sink_power_to_safe() {
+        let store = Arc::new(AuditStore::new(10));
+        let sink = ToolsAuditSink::new(Arc::clone(&store));
+
+        let repr = SecurityAuditEventRepr::new(
+            2_000,
+            "agent-y",
+            "power",
+            "safe",
+            "session_ended_after_3500ms",
+        );
+        sink.push_security_event(&repr);
+
+        let entries = store.list(10, Some("agent-y"), None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].event_type(), "SECURITY_MODE_EXITED");
+        if let AuditEvent::SecurityModeExited { duration_ms, .. } = &entries[0] {
+            assert_eq!(*duration_ms, 3500);
+        } else {
+            panic!("expected SecurityModeExited");
+        }
+    }
+
+    #[test]
+    fn test_tools_audit_sink_other_transition_maps_to_mode_switch() {
+        let store = Arc::new(AuditStore::new(10));
+        let sink = ToolsAuditSink::new(Arc::clone(&store));
+
+        let repr = SecurityAuditEventRepr::new(3_000, "agent-z", "debug", "safe", "manual");
+        sink.push_security_event(&repr);
+
+        let entries = store.list(10, Some("agent-z"), None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].event_type(), "MODE_SWITCH");
+    }
+
+    #[test]
+    fn test_audit_store_filters_by_agent() {
+        let store = AuditStore::new(20);
+        store.push(AuditEvent::SecurityModeEntered {
+            timestamp_ms: 1,
+            agent_id: "alpha".to_string(),
+            power_key_hash_prefix: "00000000".to_string(),
+        });
+        store.push(AuditEvent::SecurityModeExited {
+            timestamp_ms: 2,
+            agent_id: "beta".to_string(),
+            duration_ms: 100,
+        });
+
+        let alpha = store.list(10, Some("alpha"), None);
+        assert_eq!(alpha.len(), 1);
+        assert_eq!(alpha[0].event_type(), "SECURITY_MODE_ENTERED");
+
+        let beta = store.list(10, Some("beta"), None);
+        assert_eq!(beta.len(), 1);
+        assert_eq!(beta[0].event_type(), "SECURITY_MODE_EXITED");
     }
 
     #[test]

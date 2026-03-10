@@ -10,8 +10,24 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     error::RegistryError,
     traits::{Tool, ToolEventPublisher},
-    types::{LogEntry, SubprocessPolicy, ToolContext, ToolError, ToolMeta, ToolResult, LoadedToolMeta},
+    types::{LogEntry, RegistryExecutionMode, SubprocessPolicy, ToolContext, ToolError, ToolMeta, ToolResult, LoadedToolMeta},
 };
+
+/// Abstraction over a stored power-key hash that can verify a plaintext key.
+///
+/// This trait lets `ToolRegistry::enter_power_mode()` accept any hash type
+/// (e.g. `claw_pal::security::PowerKeyHash`) without creating a hard
+/// dependency on `claw-pal`, which would introduce a circular dependency.
+///
+/// # Safety contract
+///
+/// Implementations MUST use a constant-time comparison to prevent timing
+/// attacks.  `claw_pal::security::PowerKeyHash` uses Argon2id which
+/// satisfies this requirement.
+pub trait PowerKeyVerify: Send + Sync {
+    /// Return `true` iff `candidate` matches the stored hash.
+    fn verify(&self, candidate: &str) -> bool;
+}
 
 /// Thread-safe tool registry with permission checking and timeout execution.
 pub struct ToolRegistry {
@@ -28,6 +44,13 @@ pub struct ToolRegistry {
     script_tools: DashMap<String, LoadedToolMeta>,
     /// Optional event publisher for tool lifecycle events (TASK-28)
     event_publisher: Option<Arc<dyn ToolEventPublisher>>,
+    /// Global execution mode — cannot be overridden by per-call ToolContext.
+    ///
+    /// When `Safe` (default), all permission checks are enforced regardless of
+    /// what `ToolContext::execution_mode` the caller specifies.  The only way to
+    /// switch to `Power` mode is via `ToolRegistry::enter_power_mode()`, which
+    /// requires a verified power-key hash.
+    global_mode: Arc<std::sync::RwLock<RegistryExecutionMode>>,
 }
 
 impl ToolRegistry {
@@ -41,6 +64,7 @@ impl ToolRegistry {
             hot_reload: tokio::sync::RwLock::new(None),
             script_tools: DashMap::new(),
             event_publisher: None,
+            global_mode: Arc::new(std::sync::RwLock::new(RegistryExecutionMode::Safe)),
         }
     }
 
@@ -168,6 +192,41 @@ impl ToolRegistry {
         self.tools.len()
     }
 
+    /// Return the current global execution mode.
+    pub fn global_mode(&self) -> RegistryExecutionMode {
+        *self.global_mode.read().expect("global_mode lock poisoned")
+    }
+
+    /// Enter Power Mode by verifying a power-key against a pre-computed Argon2 hash.
+    ///
+    /// # Security
+    ///
+    /// The `stored_hash` should have been produced by `claw_pal::security::PowerKeyHash::new()`
+    /// (Argon2id, random salt).  Verification is performed by calling `stored_hash.verify()`.
+    ///
+    /// Once Power Mode is entered the registry bypasses all permission checks.  To return
+    /// to Safe Mode the registry must be dropped and a new one created (process-restart
+    /// semantics per ADR-003).
+    ///
+    /// # Errors
+    ///
+    /// Returns `RegistryError::ExecutionFailed` if the key does not match.
+    pub fn enter_power_mode<H>(&self, power_key: &str, stored_hash: &H) -> Result<(), RegistryError>
+    where
+        H: PowerKeyVerify,
+    {
+        if !stored_hash.verify(power_key) {
+            return Err(RegistryError::ExecutionFailed(
+                "invalid power key: cannot enter Power Mode".to_string(),
+            ));
+        }
+        *self.global_mode.write().expect("global_mode lock poisoned") = RegistryExecutionMode::Power;
+        tracing::warn!(
+            "ToolRegistry: global mode switched to POWER — permission checks bypassed"
+        );
+        Ok(())
+    }
+
     /// Execute a tool with permission checking, timeout, and audit logging.
     ///
     /// This is the main entry point for tool execution. It performs the following steps:
@@ -239,57 +298,82 @@ impl ToolRegistry {
             .map(|e| Arc::clone(&*e))
             .ok_or_else(|| RegistryError::ToolNotFound(name.to_string()))?;
 
-        // 2. Permission check: subprocess policy
-        // TODO(v1.1.0): implement glob pattern matching for permission strings
-        // (e.g., "tool.*", "memory.*"); currently uses exact string match only
-        if tool.permissions().subprocess == SubprocessPolicy::Allowed
-            && ctx.permissions.subprocess == SubprocessPolicy::Denied
-        {
-            return Err(RegistryError::PermissionDenied {
-                tool: name.to_string(),
-                permission: "subprocess".to_string(),
-            });
-        }
+        // 2. Resolve effective execution mode.
+        //
+        // Security invariant: the *global* Safe mode cannot be overridden by
+        // a caller that sets ctx.execution_mode = Power.  Only a verified
+        // `enter_power_mode()` call can promote the registry to Power mode.
+        //
+        // Effective mode = max(global_mode, ctx.execution_mode)
+        // where Safe < Power.
+        let global = self.global_mode();
+        let effective_mode = if global == RegistryExecutionMode::Power {
+            RegistryExecutionMode::Power
+        } else {
+            // Global is Safe: ctx Power is silently clamped to Safe.
+            if ctx.execution_mode == RegistryExecutionMode::Power {
+                tracing::warn!(
+                    tool = %name,
+                    agent = %ctx.agent_id,
+                    "caller requested Power mode but registry is globally locked to Safe — \
+                     request ignored"
+                );
+            }
+            RegistryExecutionMode::Safe
+        };
 
-        // 2b. Filesystem permission check (glob-aware, GAP-F4-03)
-        {
-            let tool_fs = &tool.permissions().filesystem;
-            let ctx_fs = &ctx.permissions.filesystem;
-            if !tool_fs.read_paths.is_empty()
-                && !tool_fs
-                    .read_paths
-                    .iter()
-                    .all(|p| fs_path_covered(p, &ctx_fs.read_paths))
+        // Skip all permission checks when in Power mode.
+        if effective_mode == RegistryExecutionMode::Safe {
+            // 2a. Subprocess policy
+            if tool.permissions().subprocess == SubprocessPolicy::Allowed
+                && ctx.permissions.subprocess == SubprocessPolicy::Denied
             {
                 return Err(RegistryError::PermissionDenied {
                     tool: name.to_string(),
-                    permission: "filesystem:read".to_string(),
+                    permission: "subprocess".to_string(),
                 });
             }
-            if !tool_fs.write_paths.is_empty()
-                && !tool_fs
-                    .write_paths
-                    .iter()
-                    .all(|p| fs_path_covered(p, &ctx_fs.write_paths))
-            {
-                return Err(RegistryError::PermissionDenied {
-                    tool: name.to_string(),
-                    permission: "filesystem:write".to_string(),
-                });
-            }
-        }
 
-        // 2c. Network permission check
-        {
-            let tool_net = &tool.permissions().network;
-            let ctx_net = &ctx.permissions.network;
-            if !tool_net.allowed_domains.is_empty()
-                && !tool_net.allowed_domains.is_subset(&ctx_net.allowed_domains)
+            // 2b. Filesystem permission check (glob-aware, GAP-F4-01)
             {
-                return Err(RegistryError::PermissionDenied {
-                    tool: name.to_string(),
-                    permission: "network".to_string(),
-                });
+                let tool_fs = &tool.permissions().filesystem;
+                let ctx_fs = &ctx.permissions.filesystem;
+                if !tool_fs.read_paths.is_empty()
+                    && !tool_fs
+                        .read_paths
+                        .iter()
+                        .all(|p| fs_path_covered(p, &ctx_fs.read_paths))
+                {
+                    return Err(RegistryError::PermissionDenied {
+                        tool: name.to_string(),
+                        permission: "filesystem:read".to_string(),
+                    });
+                }
+                if !tool_fs.write_paths.is_empty()
+                    && !tool_fs
+                        .write_paths
+                        .iter()
+                        .all(|p| fs_path_covered(p, &ctx_fs.write_paths))
+                {
+                    return Err(RegistryError::PermissionDenied {
+                        tool: name.to_string(),
+                        permission: "filesystem:write".to_string(),
+                    });
+                }
+            }
+
+            // 2c. Network permission check
+            {
+                let tool_net = &tool.permissions().network;
+                let ctx_net = &ctx.permissions.network;
+                if !tool_net.allowed_domains.is_empty()
+                    && !tool_net.allowed_domains.is_subset(&ctx_net.allowed_domains)
+                {
+                    return Err(RegistryError::PermissionDenied {
+                        tool: name.to_string(),
+                        permission: "network".to_string(),
+                    });
+                }
             }
         }
 
@@ -1184,5 +1268,134 @@ mod tests {
         // 验证审计日志记录了所有调用
         let log = reg.recent_log(10).await;
         assert_eq!(log.len(), 5, "审计日志应该记录5条记录");
+    }
+
+    // ── GAP-F4-02: Global execution mode tests ────────────────────────────────
+
+    /// 新建 ToolRegistry 默认应处于 Safe 模式
+    #[test]
+    fn test_registry_default_mode_is_safe() {
+        let reg = ToolRegistry::new();
+        assert_eq!(reg.global_mode(), RegistryExecutionMode::Safe);
+    }
+
+    /// 正确 power_key 可以进入 Power 模式
+    #[test]
+    fn test_enter_power_mode_with_valid_key() {
+        struct AlwaysOkHash;
+        impl PowerKeyVerify for AlwaysOkHash {
+            fn verify(&self, _candidate: &str) -> bool { true }
+        }
+
+        let reg = ToolRegistry::new();
+        assert_eq!(reg.global_mode(), RegistryExecutionMode::Safe);
+        reg.enter_power_mode("any-key", &AlwaysOkHash).expect("valid key should succeed");
+        assert_eq!(reg.global_mode(), RegistryExecutionMode::Power);
+    }
+
+    /// 错误 power_key 被拒绝，模式保持 Safe
+    #[test]
+    fn test_enter_power_mode_with_invalid_key_stays_safe() {
+        struct AlwaysFailHash;
+        impl PowerKeyVerify for AlwaysFailHash {
+            fn verify(&self, _candidate: &str) -> bool { false }
+        }
+
+        let reg = ToolRegistry::new();
+        let result = reg.enter_power_mode("wrong-key", &AlwaysFailHash);
+        assert!(result.is_err(), "invalid key should be rejected");
+        assert_eq!(reg.global_mode(), RegistryExecutionMode::Safe, "mode must remain Safe");
+    }
+
+    /// 全局 Safe 模式时，ctx.execution_mode = Power 的调用者不能绕过权限检查
+    #[tokio::test]
+    async fn test_global_safe_blocks_ctx_power_override() {
+        use crate::types::{FsPermissions, SubprocessPolicy};
+
+        // Tool requires subprocess
+        struct SubprocTool {
+            schema: ToolSchema,
+            perms: PermissionSet,
+        }
+
+        #[async_trait]
+        impl Tool for SubprocTool {
+            fn name(&self) -> &str { "subproc" }
+            fn description(&self) -> &str { "needs subprocess" }
+            fn schema(&self) -> &ToolSchema { &self.schema }
+            fn permissions(&self) -> &PermissionSet { &self.perms }
+            async fn execute(&self, _: serde_json::Value, _: &ToolContext) -> ToolResult {
+                ToolResult::ok(serde_json::json!("ok"), 0)
+            }
+        }
+
+        let reg = ToolRegistry::new();
+        reg.register(Box::new(SubprocTool {
+            schema: ToolSchema::new("subproc", "subprocess test", serde_json::json!({})),
+            perms: PermissionSet {
+                filesystem: FsPermissions::none(),
+                network: NetworkPermissions::none(),
+                subprocess: SubprocessPolicy::Allowed,
+            },
+        })).unwrap();
+
+        // ctx says Power, but global registry is Safe
+        let ctx = ToolContext::with_mode(
+            "attacker",
+            PermissionSet::minimal(), // minimal = subprocess Denied
+            RegistryExecutionMode::Power,
+        );
+
+        let result = reg.execute("subproc", serde_json::json!({}), ctx).await;
+        assert!(
+            matches!(result, Err(RegistryError::PermissionDenied { .. })),
+            "Global Safe must block ctx Power override; got {:?}", result
+        );
+    }
+
+    /// 全局 Power 模式时，subprocess 权限检查被跳过
+    #[tokio::test]
+    async fn test_global_power_mode_bypasses_permission_checks() {
+        use crate::types::SubprocessPolicy;
+
+        struct SubprocTool2 {
+            schema: ToolSchema,
+            perms: PermissionSet,
+        }
+
+        #[async_trait]
+        impl Tool for SubprocTool2 {
+            fn name(&self) -> &str { "subproc2" }
+            fn description(&self) -> &str { "subprocess test" }
+            fn schema(&self) -> &ToolSchema { &self.schema }
+            fn permissions(&self) -> &PermissionSet { &self.perms }
+            async fn execute(&self, _: serde_json::Value, _: &ToolContext) -> ToolResult {
+                ToolResult::ok(serde_json::json!("ok"), 0)
+            }
+        }
+
+        struct AlwaysOk;
+        impl PowerKeyVerify for AlwaysOk {
+            fn verify(&self, _: &str) -> bool { true }
+        }
+
+        let reg = ToolRegistry::new();
+        reg.register(Box::new(SubprocTool2 {
+            schema: ToolSchema::new("subproc2", "subprocess test", serde_json::json!({})),
+            perms: PermissionSet {
+                filesystem: FsPermissions::none(),
+                network: NetworkPermissions::none(),
+                subprocess: SubprocessPolicy::Allowed,
+            },
+        })).unwrap();
+
+        // Switch registry to Power mode
+        reg.enter_power_mode("valid-key", &AlwaysOk).unwrap();
+
+        // ctx with minimal (subprocess Denied) — should succeed because global=Power
+        let ctx = ToolContext::new("agent", PermissionSet::minimal());
+        let result = reg.execute("subproc2", serde_json::json!({}), ctx).await;
+        assert!(result.is_ok(), "Power mode should bypass checks; got {:?}", result);
+        assert!(result.unwrap().success);
     }
 }

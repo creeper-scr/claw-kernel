@@ -144,6 +144,9 @@ mod tests {
     use super::*;
     use crate::traits::LLMProvider;
 
+    // Env-var mutation tests must run serially to avoid races.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_azure_provider_model_id() {
         let p = azure_openai_provider("my-resource", "gpt-4o-deploy", "2024-02-01", "key");
@@ -160,6 +163,7 @@ mod tests {
 
     #[test]
     fn test_azure_provider_from_env_missing_key() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("AZURE_OPENAI_API_KEY");
         let result = azure_openai_provider_from_env();
         assert!(result.is_err());
@@ -172,6 +176,7 @@ mod tests {
 
     #[test]
     fn test_azure_provider_from_env_missing_resource() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("AZURE_OPENAI_API_KEY", "fake-key");
         std::env::remove_var("AZURE_OPENAI_RESOURCE");
         let result = azure_openai_provider_from_env();

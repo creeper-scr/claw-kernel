@@ -4,8 +4,13 @@
 //! 通过 reqwest 将出站消息 POST 到配置的目标 URL。
 
 use std::{
+    collections::HashMap,
     net::SocketAddr,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex as StdMutex,
+    },
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -24,6 +29,107 @@ use crate::{
     traits::{Channel, ChannelEvent, ChannelEventPublisher},
     types::{ChannelId, ChannelMessage, Platform},
 };
+
+// ── Per-trigger token-bucket rate limiter ─────────────────────────────────────
+
+/// 令牌桶速率限制器，用于 per-channel 限流。
+///
+/// 默认配置：容量 100 个令牌，补充速率 100/60 ≈ 1.667 token/s（即 100 req/min）。
+pub(crate) struct TokenBucket {
+    capacity: f64,
+    tokens: f64,
+    last_refill: Instant,
+    refill_rate: f64, // tokens/sec
+}
+
+impl TokenBucket {
+    /// 创建令牌桶。`capacity` 为最大令牌数，`per` 为补充周期。
+    ///
+    /// 例：`TokenBucket::new(100, Duration::from_secs(60))` → 100 req/min。
+    pub fn new(capacity: u32, per: Duration) -> Self {
+        let cap = capacity as f64;
+        let rate = cap / per.as_secs_f64();
+        Self {
+            capacity: cap,
+            tokens: cap,
+            last_refill: Instant::now(),
+            refill_rate: rate,
+        }
+    }
+
+    /// 尝试消耗 1 个令牌。返回 `true` 表示允许，`false` 表示触发限流（429）。
+    pub fn try_consume(&mut self) -> bool {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.capacity);
+        self.last_refill = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Default for TokenBucket {
+    fn default() -> Self {
+        Self::new(100, Duration::from_secs(60))
+    }
+}
+
+// ── Request deduplication ─────────────────────────────────────────────────────
+
+const DEDUP_TTL: Duration = Duration::from_secs(60);
+const DEDUP_GC_INTERVAL: usize = 64;
+
+/// HTTP 请求去重缓存。
+///
+/// 以 `X-Request-Id` 或 `X-Idempotency-Key` 为 key，60s 内相同 ID 的请求只处理一次。
+/// 过期条目采用惰性 GC：每隔 `gc_interval` 次检查一次，清理所有已超过 TTL 的条目。
+struct RequestDeduplicator {
+    seen: StdMutex<HashMap<String, Instant>>,
+    ttl: Duration,
+    call_count: AtomicUsize,
+    gc_interval: usize,
+}
+
+impl RequestDeduplicator {
+    fn new() -> Self {
+        Self {
+            seen: StdMutex::new(HashMap::new()),
+            ttl: DEDUP_TTL,
+            call_count: AtomicUsize::new(0),
+            gc_interval: DEDUP_GC_INTERVAL,
+        }
+    }
+
+    /// 检查 `request_id` 是否为重复请求，并将其记录到缓存中。
+    ///
+    /// - 返回 `true`：新请求，允许处理。
+    /// - 返回 `false`：重复请求，应丢弃（返回 HTTP 200 静默 ACK，避免提供方重试）。
+    fn check_and_insert(&self, request_id: &str) -> bool {
+        let now = Instant::now();
+        let prev = self.call_count.fetch_add(1, Ordering::Relaxed);
+
+        let mut map = self.seen.lock().unwrap();
+
+        // 惰性 GC：定期清理过期条目
+        if prev % self.gc_interval == 0 {
+            let ttl = self.ttl;
+            map.retain(|_, t| now.duration_since(*t) < ttl);
+        }
+
+        if let Some(t) = map.get(request_id) {
+            if now.duration_since(*t) < self.ttl {
+                return false; // 重复请求
+            }
+        }
+
+        map.insert(request_id.to_string(), now);
+        true // 新请求
+    }
+}
 
 // ── HMAC-SHA256 signature verification ───────────────────────────────────────
 
@@ -81,6 +187,10 @@ pub struct WebhookChannel {
     started: AtomicBool,
     /// Optional EventBus publisher — wires the channel into the runtime event system.
     event_publisher: Option<Arc<dyn ChannelEventPublisher>>,
+    /// Request-ID based deduplication cache (X-Request-Id / X-Idempotency-Key).
+    deduplicator: Arc<RequestDeduplicator>,
+    /// Per-channel inbound rate limiter (token bucket). Default: 100 req/min.
+    rate_bucket: Arc<StdMutex<TokenBucket>>,
 }
 
 impl WebhookChannel {
@@ -89,6 +199,8 @@ impl WebhookChannel {
     /// - `id`：通道唯一标识。
     /// - `bind_addr`：axum 服务器监听地址（可使用端口 0 让系统自动分配）。
     /// - `outbound_url`：出站消息目标 URL；为 `None` 时调用 `send()` 会返回错误。
+    ///
+    /// 默认限流：100 req/min（令牌桶容量 100，补充速率 100/60 token/s）。
     pub fn new(id: ChannelId, bind_addr: SocketAddr, outbound_url: Option<String>) -> Self {
         let (tx, rx) = mpsc::channel(256);
         Self {
@@ -105,6 +217,8 @@ impl WebhookChannel {
             local_addr: Mutex::new(None),
             started: AtomicBool::new(false),
             event_publisher: None,
+            deduplicator: Arc::new(RequestDeduplicator::new()),
+            rate_bucket: Arc::new(StdMutex::new(TokenBucket::default())),
         }
     }
 
@@ -137,6 +251,18 @@ impl WebhookChannel {
     /// at 30 s.  Useful in tests to set sub-millisecond delays.
     pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
         self.retry_config = config;
+        self
+    }
+
+    /// 覆盖入站限流速率。
+    ///
+    /// - `capacity`：令牌桶容量（突发上限）。
+    /// - `per`：补充 `capacity` 个令牌所需时长（即窗口大小）。
+    ///
+    /// 例：`with_rate_limit(100, Duration::from_secs(60))` → 100 req/min（默认值）。
+    /// 例：`with_rate_limit(10, Duration::from_secs(1))` → 10 req/s。
+    pub fn with_rate_limit(mut self, capacity: u32, per: Duration) -> Self {
+        self.rate_bucket = Arc::new(StdMutex::new(TokenBucket::new(capacity, per)));
         self
     }
 
@@ -204,12 +330,23 @@ impl Channel for WebhookChannel {
         *self.local_addr.lock().await = Some(addr);
 
         let secret = self.secret.clone();
+        let deduplicator = Arc::clone(&self.deduplicator);
+        let rate_bucket = Arc::clone(&self.rate_bucket);
+
         let router = Router::new().route(
             "/webhook",
             post(move |headers: HeaderMap, body: Bytes| {
                 let tx = tx.clone();
                 let secret = secret.clone();
+                let deduplicator = Arc::clone(&deduplicator);
+                let rate_bucket = Arc::clone(&rate_bucket);
                 async move {
+                    // GAP-F6-05: per-channel token-bucket rate limiting (100 req/min default).
+                    if !rate_bucket.lock().unwrap().try_consume() {
+                        return (StatusCode::TOO_MANY_REQUESTS, "Too Many Requests")
+                            .into_response();
+                    }
+
                     // FIX-01: verify HMAC-SHA256 when a shared secret is configured.
                     if let Some(ref s) = secret {
                         let sig = headers
@@ -221,6 +358,19 @@ impl Channel for WebhookChannel {
                                 .into_response();
                         }
                     }
+
+                    // Request deduplication via X-Request-Id / X-Idempotency-Key.
+                    let request_id = headers
+                        .get("x-request-id")
+                        .or_else(|| headers.get("x-idempotency-key"))
+                        .and_then(|v| v.to_str().ok());
+                    if let Some(rid) = request_id {
+                        if !deduplicator.check_and_insert(rid) {
+                            // Duplicate — silent ACK so provider doesn't retry.
+                            return StatusCode::OK.into_response();
+                        }
+                    }
+
                     // Parse JSON and enqueue message.
                     match serde_json::from_slice::<ChannelMessage>(&body) {
                         Ok(msg) => {
@@ -398,7 +548,98 @@ mod tests {
         assert_eq!(ch.platform(), "webhook");
     }
 
-    #[tokio::test]
+    // ── TokenBucket unit tests ────────────────────────────────────────────────
+
+    #[test]
+    fn test_token_bucket_allows_within_capacity() {
+        let mut bucket = TokenBucket::new(3, Duration::from_secs(60));
+        assert!(bucket.try_consume(), "1st request should be allowed");
+        assert!(bucket.try_consume(), "2nd request should be allowed");
+        assert!(bucket.try_consume(), "3rd request should be allowed");
+    }
+
+    #[test]
+    fn test_token_bucket_rejects_when_exhausted() {
+        let mut bucket = TokenBucket::new(2, Duration::from_secs(60));
+        assert!(bucket.try_consume());
+        assert!(bucket.try_consume());
+        assert!(!bucket.try_consume(), "3rd request should be rejected (429)");
+    }
+
+    #[test]
+    fn test_token_bucket_refills_over_time() {
+        // 极短窗口：1 token / 1ms → 高补充速率，易于测试
+        let mut bucket = TokenBucket::new(1, Duration::from_millis(1));
+        assert!(bucket.try_consume(), "initial token consumed");
+        assert!(!bucket.try_consume(), "no tokens left");
+
+        // 等待超过 1ms，令牌应已补充
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(bucket.try_consume(), "token refilled after sleep");
+    }
+
+    // ── Rate limiting HTTP integration test ──────────────────────────────────
+
+    /// 验证超出速率限制的请求返回 HTTP 429。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_webhook_rate_limit_returns_429() {
+        // 容量 2，窗口 60s → 只允许 2 次请求
+        let ch = WebhookChannel::new(
+            ChannelId::new("wh-rl"),
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+        )
+        .with_rate_limit(2, Duration::from_secs(60));
+
+        ch.connect().await.expect("connect");
+        let addr = ch.local_addr().await.expect("local_addr");
+        let url = format!("http://{addr}/webhook");
+
+        let msg = ChannelMessage {
+            id: "rl-test".to_string(),
+            channel_id: ChannelId::new("wh-rl"),
+            direction: MessageDirection::Inbound,
+            platform: Platform::Webhook,
+            content: "rate limit test".to_string(),
+            sender_id: None,
+            thread_id: None,
+            metadata: serde_json::Value::Null,
+            timestamp_ms: 0,
+        };
+
+        let client = reqwest::Client::new();
+        // 第 1 次：200
+        let r1 = client.post(&url).json(&msg).send().await.unwrap();
+        assert_eq!(r1.status(), 200, "1st request should succeed");
+        // 第 2 次：200
+        let r2 = client.post(&url).json(&msg).send().await.unwrap();
+        assert_eq!(r2.status(), 200, "2nd request should succeed");
+        // 第 3 次：429
+        let r3 = client.post(&url).json(&msg).send().await.unwrap();
+        assert_eq!(r3.status(), 429, "3rd request should be rate-limited");
+
+        ch.disconnect().await.expect("disconnect");
+    }
+
+    /// 验证 with_rate_limit() 可正确覆盖默认配置。
+    #[test]
+    fn test_with_rate_limit_overrides_default() {
+        let ch = WebhookChannel::new(
+            ChannelId::new("wh-cfg"),
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+        )
+        .with_rate_limit(5, Duration::from_secs(1));
+
+        // 验证令牌桶初始容量为 5
+        let mut bucket = ch.rate_bucket.lock().unwrap();
+        for _ in 0..5 {
+            assert!(bucket.try_consume(), "should allow 5 req/s");
+        }
+        assert!(!bucket.try_consume(), "6th should be rejected");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_webhook_channel_connect_and_send_receive() {
         let ch = WebhookChannel::new(ChannelId::new("wh-1"), "127.0.0.1:0".parse().unwrap(), None);
         ch.connect().await.expect("connect");
@@ -455,7 +696,6 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_send_retries_on_transient_5xx() {
         use std::sync::atomic::{AtomicU32, Ordering as AO};
-        use std::sync::Arc;
         use std::time::Duration;
 
         let call_count = Arc::new(AtomicU32::new(0));
@@ -502,7 +742,6 @@ mod tests {
     #[tokio::test]
     async fn test_webhook_send_no_retry_on_4xx() {
         use std::sync::atomic::{AtomicU32, Ordering as AO};
-        use std::sync::Arc;
         use std::time::Duration;
 
         let call_count = Arc::new(AtomicU32::new(0));
@@ -540,6 +779,228 @@ mod tests {
         assert_eq!(call_count.load(AO::SeqCst), 1);
     }
 
+    // ── RequestDeduplicator unit tests ───────────────────────────────────────
+
+    #[test]
+    fn test_deduplicator_allows_new_request() {
+        let dedup = RequestDeduplicator::new();
+        assert!(dedup.check_and_insert("req-1"), "首次请求应被允许");
+    }
+
+    #[test]
+    fn test_deduplicator_rejects_duplicate_within_ttl() {
+        let dedup = RequestDeduplicator::new();
+        assert!(dedup.check_and_insert("req-dup"), "首次请求应被允许");
+        assert!(!dedup.check_and_insert("req-dup"), "TTL 内重复请求应被拒绝");
+    }
+
+    #[test]
+    fn test_deduplicator_allows_different_ids() {
+        let dedup = RequestDeduplicator::new();
+        assert!(dedup.check_and_insert("req-a"));
+        assert!(dedup.check_and_insert("req-b"), "不同 ID 应都被允许");
+    }
+
+    #[test]
+    fn test_deduplicator_allows_after_ttl_expired() {
+        let dedup = RequestDeduplicator {
+            seen: StdMutex::new(HashMap::new()),
+            ttl: Duration::from_nanos(1),
+            call_count: AtomicUsize::new(0),
+            gc_interval: DEDUP_GC_INTERVAL,
+        };
+        assert!(dedup.check_and_insert("req-exp"), "首次请求允许");
+        std::thread::sleep(Duration::from_millis(1));
+        assert!(dedup.check_and_insert("req-exp"), "TTL 过期后应重新放行");
+    }
+
+    #[test]
+    fn test_deduplicator_lazy_gc_removes_expired() {
+        // gc_interval = 1 → 每次 check 都触发 GC
+        let dedup = RequestDeduplicator {
+            seen: StdMutex::new(HashMap::new()),
+            ttl: Duration::from_nanos(1),
+            call_count: AtomicUsize::new(0),
+            gc_interval: 1,
+        };
+        dedup.check_and_insert("gc-a");
+        dedup.check_and_insert("gc-b");
+        std::thread::sleep(Duration::from_millis(1));
+        // 触发 GC：清理过期条目后插入 gc-c
+        dedup.check_and_insert("gc-c");
+        // 过期条目已被清理，seen 中只有 gc-c
+        assert_eq!(dedup.seen.lock().unwrap().len(), 1);
+    }
+
+    // ── HTTP 去重集成测试 ─────────────────────────────────────────────────────
+
+    /// 相同 X-Request-Id 在 60s TTL 内只处理一次，第二次返回静默 200。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_webhook_dedup_x_request_id() {
+        let ch = WebhookChannel::new(
+            ChannelId::new("wh-dedup-rid"),
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+        );
+        ch.connect().await.expect("connect");
+        let addr = ch.local_addr().await.expect("local_addr");
+        let url = format!("http://{addr}/webhook");
+
+        let msg = ChannelMessage {
+            id: "dedup-1".to_string(),
+            channel_id: ChannelId::new("wh-dedup-rid"),
+            direction: MessageDirection::Inbound,
+            platform: Platform::Webhook,
+            content: "dedup test".to_string(),
+            sender_id: None,
+            thread_id: None,
+            metadata: serde_json::Value::Null,
+            timestamp_ms: 0,
+        };
+
+        let client = reqwest::Client::new();
+        // 第 1 次：200，消息入队
+        let r1 = client
+            .post(&url)
+            .header("x-request-id", "unique-req-001")
+            .json(&msg)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), 200, "首次请求应成功");
+
+        // 接收第 1 条消息
+        let received = tokio::time::timeout(
+            tokio::time::Duration::from_secs(3),
+            ch.recv(),
+        )
+        .await
+        .expect("recv timeout")
+        .expect("recv ok");
+        assert_eq!(received.content, "dedup test");
+
+        // 第 2 次：相同 X-Request-Id → 静默 200，但不入队
+        let r2 = client
+            .post(&url)
+            .header("x-request-id", "unique-req-001")
+            .json(&msg)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r2.status(), 200, "重复请求应返回静默 200");
+
+        // 队列中不应有第 2 条消息
+        let no_msg = tokio::time::timeout(
+            tokio::time::Duration::from_millis(100),
+            ch.recv(),
+        )
+        .await;
+        assert!(no_msg.is_err(), "重复请求不应入队");
+
+        ch.disconnect().await.expect("disconnect");
+    }
+
+    /// X-Idempotency-Key 同样触发去重。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_webhook_dedup_x_idempotency_key() {
+        let ch = WebhookChannel::new(
+            ChannelId::new("wh-dedup-ik"),
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+        );
+        ch.connect().await.expect("connect");
+        let addr = ch.local_addr().await.expect("local_addr");
+        let url = format!("http://{addr}/webhook");
+
+        let msg = ChannelMessage {
+            id: "dedup-ik".to_string(),
+            channel_id: ChannelId::new("wh-dedup-ik"),
+            direction: MessageDirection::Inbound,
+            platform: Platform::Webhook,
+            content: "idempotency test".to_string(),
+            sender_id: None,
+            thread_id: None,
+            metadata: serde_json::Value::Null,
+            timestamp_ms: 0,
+        };
+
+        let client = reqwest::Client::new();
+        // 第 1 次（新 key）→ 入队
+        let r1 = client
+            .post(&url)
+            .header("x-idempotency-key", "idem-key-abc")
+            .json(&msg)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r1.status(), 200);
+
+        tokio::time::timeout(tokio::time::Duration::from_secs(3), ch.recv())
+            .await
+            .expect("recv timeout")
+            .expect("recv ok");
+
+        // 第 2 次（相同 key）→ 静默 ACK，不入队
+        let r2 = client
+            .post(&url)
+            .header("x-idempotency-key", "idem-key-abc")
+            .json(&msg)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r2.status(), 200, "重复 idempotency key 应静默 ACK");
+
+        let no_msg = tokio::time::timeout(
+            tokio::time::Duration::from_millis(100),
+            ch.recv(),
+        )
+        .await;
+        assert!(no_msg.is_err(), "重复 idempotency key 不应入队");
+
+        ch.disconnect().await.expect("disconnect");
+    }
+
+    /// 无 X-Request-Id / X-Idempotency-Key 时不做去重，请求正常处理。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_webhook_no_dedup_when_no_id_header() {
+        let ch = WebhookChannel::new(
+            ChannelId::new("wh-no-id"),
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+        );
+        ch.connect().await.expect("connect");
+        let addr = ch.local_addr().await.expect("local_addr");
+        let url = format!("http://{addr}/webhook");
+
+        let make_msg = |content: &str| ChannelMessage {
+            id: content.to_string(),
+            channel_id: ChannelId::new("wh-no-id"),
+            direction: MessageDirection::Inbound,
+            platform: Platform::Webhook,
+            content: content.to_string(),
+            sender_id: None,
+            thread_id: None,
+            metadata: serde_json::Value::Null,
+            timestamp_ms: 0,
+        };
+
+        let client = reqwest::Client::new();
+        // 无 ID header 的两条请求都应正常入队
+        client.post(&url).json(&make_msg("msg-a")).send().await.unwrap();
+        client.post(&url).json(&make_msg("msg-b")).send().await.unwrap();
+
+        let m1 = tokio::time::timeout(tokio::time::Duration::from_secs(3), ch.recv())
+            .await.expect("recv1 timeout").expect("recv1 ok");
+        let m2 = tokio::time::timeout(tokio::time::Duration::from_secs(3), ch.recv())
+            .await.expect("recv2 timeout").expect("recv2 ok");
+
+        let contents: std::collections::HashSet<_> = [m1.content, m2.content].into_iter().collect();
+        assert!(contents.contains("msg-a"));
+        assert!(contents.contains("msg-b"));
+
+        ch.disconnect().await.expect("disconnect");
+    }
+
     // ── event publisher tests ────────────────────────────────────────────────
 
     use std::sync::Mutex as StdMutex;
@@ -565,7 +1026,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn test_webhook_recv_publishes_message_received() {
         let (publisher, captured) = CapturingPublisher::new();
         let ch = WebhookChannel::new(

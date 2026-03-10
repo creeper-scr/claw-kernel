@@ -413,7 +413,7 @@ mod tests {
             "mock-v1"
         }
 
-        async fn complete(
+        async fn complete_inner(
             &self,
             _messages: Vec<Message>,
             _opts: Options,

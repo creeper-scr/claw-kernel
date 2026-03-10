@@ -36,6 +36,7 @@
 //!     let config = ServerConfig {
 //!         socket_path: "/tmp/claw-kernel.sock".to_string(),
 //!         max_sessions: 100,
+//!         webhook_port: None,
 //!         provider_config: ProviderConfig::Anthropic {
 //!             api_key: "your-api-key".to_string(),
 //!             default_model: "claude-3-opus".to_string(),

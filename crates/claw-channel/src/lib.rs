@@ -50,7 +50,7 @@ pub use error::ChannelError;
 pub use retry::RetryableChannel;
 pub use router::{AgentId as RouterAgentId, ChannelRouter, ChannelRouterBuilder, DeduplicatingRouter, RouterError, RoutingRule};
 pub use stdin::StdinChannel;
-pub use traits::{Channel, ChannelEvent, ChannelEventPublisher, NoopChannelEventPublisher};
+pub use traits::{Channel, ChannelEvent, ChannelEventPublisher, NoopChannelEventPublisher, channel_into_stream};
 pub use types::{ChannelId, ChannelMessage, MessageDirection, Platform};
 
 #[cfg(feature = "webhook")]

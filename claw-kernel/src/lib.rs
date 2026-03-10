@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_memory_reexport_accessible() {
-        let _ = std::any::type_name::<crate::memory::traits::MemoryStore>();
+        let _ = std::any::type_name::<dyn crate::memory::traits::MemoryStore>();
     }
 
     #[test]

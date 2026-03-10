@@ -337,6 +337,27 @@ pub struct ToolMeta {
     pub source: ToolSource,
 }
 
+// ─── Execution mode ─────────────────────────────────────────────────────────
+
+/// Registry-level execution mode (mirrors `claw_pal::ExecutionMode`).
+///
+/// Defined locally to avoid a circular dependency between `claw-tools` and
+/// `claw-pal`.  The two types have identical semantics:
+/// - `Safe` (default) — permission checks are enforced.
+/// - `Power` — all permission checks are bypassed.
+///
+/// Only the *global* mode stored inside `ToolRegistry` has security meaning.
+/// A `ToolContext::execution_mode` submitted by a caller **cannot** override a
+/// globally-locked Safe registry (see `ToolRegistry::execute`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RegistryExecutionMode {
+    /// Restricted access — permission checks enforced.
+    #[default]
+    Safe,
+    /// Full access — permission checks bypassed.
+    Power,
+}
+
 // ─── Execution context ──────────────────────────────────────────────────────
 
 /// Context passed to tool::execute().
@@ -346,6 +367,19 @@ pub struct ToolContext {
     pub agent_id: String,
     /// Permissions granted for this execution.
     pub permissions: PermissionSet,
+    /// Caller-requested execution mode.
+    ///
+    /// **Security note**: this field is advisory only.  The *effective* mode
+    /// inside `ToolRegistry::execute()` is computed as:
+    ///
+    /// ```text
+    /// effective = max(global_registry_mode, ctx.execution_mode)
+    /// ```
+    ///
+    /// A globally-locked `Safe` registry cannot be elevated to `Power` by
+    /// setting this field.  Elevation requires a valid power-key via
+    /// `ToolRegistry::enter_power_mode()`.
+    pub execution_mode: RegistryExecutionMode,
 }
 
 impl ToolContext {
@@ -353,6 +387,20 @@ impl ToolContext {
         Self {
             agent_id: agent_id.into(),
             permissions,
+            execution_mode: RegistryExecutionMode::Safe,
+        }
+    }
+
+    /// Convenience constructor that explicitly sets the execution mode.
+    pub fn with_mode(
+        agent_id: impl Into<String>,
+        permissions: PermissionSet,
+        mode: RegistryExecutionMode,
+    ) -> Self {
+        Self {
+            agent_id: agent_id.into(),
+            permissions,
+            execution_mode: mode,
         }
     }
 }
