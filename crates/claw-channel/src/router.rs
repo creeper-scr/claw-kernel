@@ -29,9 +29,10 @@
 //! ```
 
 use std::path::Path;
+use std::sync::Arc;
 
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, warn};
 
@@ -167,11 +168,26 @@ struct TomlDefault {
 
 // ─── ChannelRouter ────────────────────────────────────────────────────────
 
+/// Serializable representation of a routing rule (for IPC).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingRuleSpec {
+    /// Rule type: "channel" | "sender" | "pattern" | "default"
+    pub rule_type: String,
+    /// Channel ID (for "channel" rules).
+    pub channel_id: Option<String>,
+    /// Sender ID (for "sender" rules).
+    pub sender_id: Option<String>,
+    /// Regex pattern string (for "pattern" rules).
+    pub pattern: Option<String>,
+    /// Target agent ID.
+    pub agent_id: String,
+}
+
 /// Routes [`ChannelMessage`]s to the appropriate agent.
 ///
 /// Constructed via [`ChannelRouterBuilder`].
 pub struct ChannelRouter {
-    rules: Vec<RoutingRule>,
+    rules: Arc<std::sync::RwLock<Vec<RoutingRule>>>,
 }
 
 impl ChannelRouter {
@@ -185,14 +201,21 @@ impl ChannelRouter {
     /// Rules are tested in insertion order.  The first non-Default rule that
     /// matches is returned.  If no non-Default rule matches, the Default rule
     /// (if any) is returned.  Returns `None` if nothing matched.
-    pub fn route(&self, msg: &ChannelMessage) -> Option<&AgentId> {
-        let mut default_agent: Option<&AgentId> = None;
+    ///
+    /// Returns `Option<String>` (owned) to avoid lifetime issues with the
+    /// internal `RwLock`.
+    pub fn route(&self, msg: &ChannelMessage) -> Option<String> {
+        let rules = match self.rules.read() {
+            Ok(r) => r,
+            Err(_) => return None,
+        };
+        let mut default_agent: Option<String> = None;
 
-        for rule in &self.rules {
+        for rule in rules.iter() {
             match rule {
                 RoutingRule::Default { agent_id } => {
                     // Remember the default but keep evaluating other rules.
-                    default_agent = Some(agent_id);
+                    default_agent = Some(agent_id.clone());
                 }
                 other => {
                     if let Some(agent_id) = other.matches(msg) {
@@ -201,7 +224,7 @@ impl ChannelRouter {
                             agent  = %agent_id,
                             "Message routed by explicit rule"
                         );
-                        return Some(agent_id);
+                        return Some(agent_id.clone());
                     }
                 }
             }
@@ -225,7 +248,70 @@ impl ChannelRouter {
 
     /// Return the number of routing rules (including any Default rule).
     pub fn rule_count(&self) -> usize {
-        self.rules.len()
+        self.rules.read().map(|r| r.len()).unwrap_or(0)
+    }
+
+    /// Add a routing rule dynamically at runtime.
+    pub fn add_rule(&self, rule: RoutingRule) {
+        if let Ok(mut rules) = self.rules.write() {
+            rules.push(rule);
+        }
+    }
+
+    /// Remove all routing rules targeting a specific agent.
+    ///
+    /// Returns the number of rules removed.
+    pub fn remove_rules_for_agent(&self, agent_id: &str) -> usize {
+        if let Ok(mut rules) = self.rules.write() {
+            let before = rules.len();
+            rules.retain(|r| match r {
+                RoutingRule::ByChannelId { agent_id: a, .. } => a != agent_id,
+                RoutingRule::BySenderId { agent_id: a, .. } => a != agent_id,
+                RoutingRule::ByPattern { agent_id: a, .. } => a != agent_id,
+                RoutingRule::Default { agent_id: a } => a != agent_id,
+            });
+            before - rules.len()
+        } else {
+            0
+        }
+    }
+
+    /// Return a snapshot of current rules as serializable specs.
+    pub fn list_rules(&self) -> Vec<RoutingRuleSpec> {
+        let rules = match self.rules.read() {
+            Ok(r) => r,
+            Err(_) => return vec![],
+        };
+        rules.iter().map(|r| match r {
+            RoutingRule::ByChannelId { channel_id, agent_id } => RoutingRuleSpec {
+                rule_type: "channel".to_string(),
+                channel_id: Some(channel_id.clone()),
+                sender_id: None,
+                pattern: None,
+                agent_id: agent_id.clone(),
+            },
+            RoutingRule::BySenderId { sender_id, agent_id } => RoutingRuleSpec {
+                rule_type: "sender".to_string(),
+                channel_id: None,
+                sender_id: Some(sender_id.clone()),
+                pattern: None,
+                agent_id: agent_id.clone(),
+            },
+            RoutingRule::ByPattern { pattern, agent_id } => RoutingRuleSpec {
+                rule_type: "pattern".to_string(),
+                channel_id: None,
+                sender_id: None,
+                pattern: Some(pattern.as_str().to_string()),
+                agent_id: agent_id.clone(),
+            },
+            RoutingRule::Default { agent_id } => RoutingRuleSpec {
+                rule_type: "default".to_string(),
+                channel_id: None,
+                sender_id: None,
+                pattern: None,
+                agent_id: agent_id.clone(),
+            },
+        }).collect()
     }
 }
 
@@ -362,7 +448,7 @@ impl ChannelRouterBuilder {
 
     /// Consume the builder and produce a [`ChannelRouter`].
     pub fn build(self) -> ChannelRouter {
-        ChannelRouter { rules: self.rules }
+        ChannelRouter { rules: Arc::new(std::sync::RwLock::new(self.rules)) }
     }
 }
 
@@ -398,7 +484,7 @@ mod tests {
             .build();
 
         let msg = make_msg("ch-discord", "hello");
-        assert_eq!(router.route(&msg).map(String::as_str), Some("agent-discord"));
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-discord"));
     }
 
     #[test]
@@ -420,7 +506,7 @@ mod tests {
             .build();
 
         let msg = make_msg_with_sender("ch-1", "ping", "user-42");
-        assert_eq!(router.route(&msg).map(String::as_str), Some("agent-vip"));
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-vip"));
     }
 
     #[test]
@@ -444,7 +530,7 @@ mod tests {
             .build();
 
         let msg = make_msg("ch-1", "!admin kick user");
-        assert_eq!(router.route(&msg).map(String::as_str), Some("agent-admin"));
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-admin"));
     }
 
     #[test]
@@ -477,7 +563,7 @@ mod tests {
 
         // No explicit rule matches "ch-other"
         let msg = make_msg("ch-other", "hello");
-        assert_eq!(router.route(&msg).map(String::as_str), Some("agent-fallback"));
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-fallback"));
     }
 
     #[test]
@@ -488,7 +574,7 @@ mod tests {
             .build();
 
         let msg = make_msg("ch-discord", "hello");
-        assert_eq!(router.route(&msg).map(String::as_str), Some("agent-discord"));
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-discord"));
     }
 
     #[test]
@@ -525,7 +611,7 @@ mod tests {
             .build();
 
         let msg = make_msg("ch-1", "hello");
-        assert_eq!(router.route(&msg).map(String::as_str), Some("agent-first"));
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-first"));
     }
 
     // ── TOML loading ──────────────────────────────────────────────────────
@@ -545,10 +631,10 @@ agent_id = "agent-catch"
         assert_eq!(router.rule_count(), 2); // 1 channel rule + 1 default
 
         let msg = make_msg("ch-webhook", "event");
-        assert_eq!(router.route(&msg).map(String::as_str), Some("agent-wh"));
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-wh"));
 
         let other = make_msg("ch-other", "event");
-        assert_eq!(router.route(&other).map(String::as_str), Some("agent-catch"));
+        assert_eq!(router.route(&other).as_deref(), Some("agent-catch"));
     }
 
     #[test]
@@ -562,7 +648,7 @@ agent_id  = "agent-bot"
         let router = ChannelRouterBuilder::from_toml_str(toml).unwrap().build();
 
         let msg = make_msg_with_sender("ch-1", "hi", "bot-123");
-        assert_eq!(router.route(&msg).map(String::as_str), Some("agent-bot"));
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-bot"));
     }
 
     #[test]
@@ -576,7 +662,7 @@ agent_id = "agent-alert"
         let router = ChannelRouterBuilder::from_toml_str(toml).unwrap().build();
 
         let msg = make_msg("ch-1", "ALERT: disk full");
-        assert_eq!(router.route(&msg).map(String::as_str), Some("agent-alert"));
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-alert"));
     }
 
     #[test]
@@ -592,7 +678,7 @@ agent_id = "agent-default"
         // Should parse without error, unknown rule is skipped
         let router = ChannelRouterBuilder::from_toml_str(toml).unwrap().build();
         let msg = make_msg("ch-1", "anything");
-        assert_eq!(router.route(&msg).map(String::as_str), Some("agent-default"));
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-default"));
     }
 
     #[test]

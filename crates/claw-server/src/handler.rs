@@ -29,6 +29,8 @@ use crate::protocol::{
     ToolRegisterParams, ToolUnregisterParams,
     // B6
     SkillLoadDirParams, SkillGetFullParams,
+    // Phase 3
+    ChannelRouteAddParams, ChannelRouteRemoveParams,
 };
 use crate::channel_registry::ChannelRegistry;
 use crate::session::{Session, SessionManager};
@@ -97,6 +99,10 @@ pub async fn handle_connection(
     auth_token: Arc<String>,
     tool_registry: Arc<crate::global_tool_registry::GlobalToolRegistry>,
     skill_registry: Arc<crate::global_skill_registry::GlobalSkillRegistry>,
+    scheduler: Arc<claw_runtime::TokioScheduler>,
+    webhook_server: Option<Arc<claw_runtime::webhook::AxumWebhookServer>>,
+    trigger_store: Option<Arc<crate::trigger_store::TriggerStore>>,
+    channel_router: Arc<claw_channel::router::ChannelRouter>,
 ) -> Result<(), ServerError> {
     info!("New client connection established");
 
@@ -108,7 +114,6 @@ pub async fn handle_connection(
     let (notify_tx, mut notify_rx) = mpsc::channel::<Vec<u8>>(100);
     let (mut reader, writer_raw) = stream.into_split();
     let writer = Arc::new(Mutex::new(writer_raw));
-    let scheduler = Arc::new(claw_runtime::TokioScheduler::new());
 
     loop {
         tokio::select! {
@@ -130,6 +135,9 @@ pub async fn handle_connection(
                             &auth_token,
                             &tool_registry,
                             &skill_registry,
+                            &webhook_server,
+                            &trigger_store,
+                            &channel_router,
                         )
                         .await
                         {
@@ -176,6 +184,9 @@ async fn handle_message(
     auth_token: &str,
     tool_registry: &Arc<crate::global_tool_registry::GlobalToolRegistry>,
     skill_registry: &Arc<crate::global_skill_registry::GlobalSkillRegistry>,
+    webhook_server: &Option<Arc<claw_runtime::webhook::AxumWebhookServer>>,
+    trigger_store: &Option<Arc<crate::trigger_store::TriggerStore>>,
+    channel_router: &Arc<claw_channel::router::ChannelRouter>,
 ) -> Result<(), ServerError> {
     // Parse the request
     let request: Request = match serde_json::from_slice(data) {
@@ -345,24 +356,38 @@ async fn handle_message(
             handle_channel_unregister(params, channel_registry).await
         }
         "channel.list" => handle_channel_list(channel_registry).await,
+        // ─── Phase 3: Channel routing ────────────────────────────────────────
+        "channel.route_add" => {
+            let params: ChannelRouteAddParams =
+                serde_json::from_value(request.params.unwrap_or(serde_json::Value::Null))
+                    .map_err(|e| ServerError::Serialization(format!("invalid params: {}", e)))?;
+            handle_channel_route_add(params, channel_router).await
+        }
+        "channel.route_remove" => {
+            let params: ChannelRouteRemoveParams =
+                serde_json::from_value(request.params.unwrap_or(serde_json::Value::Null))
+                    .map_err(|e| ServerError::Serialization(format!("invalid params: {}", e)))?;
+            handle_channel_route_remove(params, channel_router).await
+        }
+        "channel.route_list" => handle_channel_route_list(channel_router).await,
         // ─── B2: Trigger methods ──────────────────────────────────────────────
         "trigger.add_cron" => {
             let params: TriggerAddCronParams =
                 serde_json::from_value(request.params.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| ServerError::Serialization(format!("invalid params: {}", e)))?;
-            handle_trigger_add_cron(params, scheduler, orchestrator).await
+            handle_trigger_add_cron(params, scheduler, orchestrator, trigger_store).await
         }
         "trigger.add_webhook" => {
             let params: TriggerAddWebhookParams =
                 serde_json::from_value(request.params.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| ServerError::Serialization(format!("invalid params: {}", e)))?;
-            handle_trigger_add_webhook(params, scheduler, channel_registry).await
+            handle_trigger_add_webhook(params, scheduler, channel_registry, orchestrator, webhook_server, trigger_store).await
         }
         "trigger.remove" => {
             let params: TriggerRemoveParams =
                 serde_json::from_value(request.params.unwrap_or(serde_json::Value::Null))
                     .map_err(|e| ServerError::Serialization(format!("invalid params: {}", e)))?;
-            handle_trigger_remove(params, scheduler).await
+            handle_trigger_remove(params, scheduler, trigger_store).await
         }
         "trigger.list" => handle_trigger_list(scheduler).await,
         // ─── B3: Agent lifecycle ──────────────────────────────────────────────
@@ -1114,6 +1139,7 @@ async fn handle_trigger_add_cron(
     params: TriggerAddCronParams,
     scheduler: &Arc<claw_runtime::TokioScheduler>,
     orchestrator: &Arc<AgentOrchestrator>,
+    trigger_store: &Option<Arc<crate::trigger_store::TriggerStore>>,
 ) -> Result<serde_json::Value, ServerError> {
     use claw_runtime::{Scheduler, TaskConfig, TaskTrigger};
 
@@ -1152,6 +1178,18 @@ async fn handle_trigger_add_cron(
         .await
         .map_err(|e| ServerError::Agent(format!("Failed to schedule cron trigger: {}", e)))?;
 
+    // Persist the trigger for restart recovery.
+    if let Some(ts) = trigger_store {
+        if let Err(e) = ts.save_cron(
+            &trigger_id,
+            &cron_expr,
+            &params.target_agent,
+            params.message.as_deref(),
+        ) {
+            tracing::warn!("Failed to persist cron trigger {}: {}", trigger_id, e);
+        }
+    }
+
     Ok(serde_json::json!({
         "trigger_id": trigger_id,
         "cron_expr": cron_expr,
@@ -1165,31 +1203,84 @@ async fn handle_trigger_add_webhook(
     params: TriggerAddWebhookParams,
     _scheduler: &Arc<claw_runtime::TokioScheduler>,
     channel_registry: &Arc<ChannelRegistry>,
+    orchestrator: &Arc<AgentOrchestrator>,
+    webhook_server: &Option<Arc<claw_runtime::webhook::AxumWebhookServer>>,
+    trigger_store: &Option<Arc<crate::trigger_store::TriggerStore>>,
 ) -> Result<serde_json::Value, ServerError> {
-    let endpoint = format!("/hooks/{}", params.trigger_id);
-    // Store the webhook trigger mapping in the channel registry so it can be discovered.
-    let config = serde_json::json!({
-        "endpoint": endpoint,
-        "target_agent": params.target_agent,
-        "hmac_secret": params.hmac_secret,
-    });
-    channel_registry.register(
-        "webhook_trigger".to_string(),
-        format!("trigger:{}", params.trigger_id),
-        config,
-    ).unwrap_or_else(|e| tracing::warn!("trigger.add_webhook: registry conflict: {}", e));
+    use claw_runtime::webhook::{EndpointConfig, WebhookError, WebhookServer};
+    use claw_runtime::agent_types::AgentId;
+    use claw_runtime::orchestrator::SteerCommand;
 
-    tracing::info!(
-        "trigger.add_webhook: id={}, agent={}, endpoint={}",
-        params.trigger_id,
-        params.target_agent,
-        endpoint,
-    );
+    let endpoint = format!("/hooks/{}", params.trigger_id);
+
+    if let Some(server) = webhook_server {
+        let orch = Arc::clone(orchestrator);
+        let target = params.target_agent.clone();
+        let trigger_id_str = params.trigger_id.clone();
+
+        let ep_config = EndpointConfig::new(
+            endpoint.clone(),
+            move |req: claw_runtime::webhook::WebhookRequest| {
+                let orch = Arc::clone(&orch);
+                let target = target.clone();
+                let tid = trigger_id_str.clone();
+                async move {
+                    let body = String::from_utf8_lossy(&req.body).to_string();
+                    let agent_id = AgentId::new(target.clone());
+                    if let Err(e) = orch.steer(&agent_id, SteerCommand::Custom {
+                        command: "webhook".to_string(),
+                        payload: Some(body),
+                    }).await {
+                        tracing::warn!("webhook trigger {}: steer failed: {}", tid, e);
+                    }
+                    Ok::<claw_runtime::webhook::WebhookResponse, WebhookError>(
+                        claw_runtime::webhook::WebhookResponse::ok()
+                    )
+                }
+            },
+        );
+
+        server.register(ep_config).await
+            .map_err(|e| ServerError::Agent(format!("Failed to register webhook endpoint: {}", e)))?;
+
+        // Persist the webhook trigger.
+        if let Some(ts) = trigger_store {
+            if let Err(e) = ts.save_webhook(
+                &params.trigger_id,
+                &params.target_agent,
+                &endpoint,
+            ) {
+                tracing::warn!("Failed to persist webhook trigger {}: {}", params.trigger_id, e);
+            }
+        }
+
+        tracing::info!(
+            "trigger.add_webhook: id={}, agent={}, endpoint={}",
+            params.trigger_id, params.target_agent, endpoint,
+        );
+    } else {
+        // Fallback: just store in channel registry (no HTTP endpoint)
+        let config = serde_json::json!({
+            "endpoint": endpoint,
+            "target_agent": params.target_agent,
+        });
+        channel_registry.register(
+            "webhook_trigger".to_string(),
+            format!("trigger:{}", params.trigger_id),
+            config,
+        ).unwrap_or_else(|e| tracing::warn!("trigger.add_webhook: registry conflict: {}", e));
+
+        tracing::warn!(
+            "trigger.add_webhook: webhook server not configured (set webhook_port in ServerConfig); \
+             stored as channel registry entry only"
+        );
+    }
+
     Ok(serde_json::json!({
         "trigger_id": params.trigger_id,
         "endpoint": endpoint,
         "target_agent": params.target_agent,
-        "status": "registered",
+        "status": if webhook_server.is_some() { "registered" } else { "stored_only" },
     }))
 }
 
@@ -1197,6 +1288,7 @@ async fn handle_trigger_add_webhook(
 async fn handle_trigger_remove(
     params: TriggerRemoveParams,
     scheduler: &Arc<claw_runtime::TokioScheduler>,
+    trigger_store: &Option<Arc<crate::trigger_store::TriggerStore>>,
 ) -> Result<serde_json::Value, ServerError> {
     use claw_runtime::{Scheduler, TaskId};
 
@@ -1204,6 +1296,13 @@ async fn handle_trigger_remove(
         .cancel(&TaskId::new(params.trigger_id.clone()))
         .await
         .map_err(|e| ServerError::Agent(format!("Failed to remove trigger: {}", e)))?;
+
+    // Remove from persistent store.
+    if let Some(ts) = trigger_store {
+        if let Err(e) = ts.remove(&params.trigger_id) {
+            tracing::warn!("Failed to remove persisted trigger {}: {}", params.trigger_id, e);
+        }
+    }
 
     Ok(serde_json::json!({
         "trigger_id": params.trigger_id,
@@ -1421,6 +1520,67 @@ async fn handle_skill_get_full(
         "name": params.name,
         "content": content,
     }))
+}
+
+// ─── Phase 3: Channel routing ──────────────────────────────────────────────────
+
+/// Handles `channel.route_add` method (Phase 3).
+async fn handle_channel_route_add(
+    params: ChannelRouteAddParams,
+    channel_router: &Arc<claw_channel::router::ChannelRouter>,
+) -> Result<serde_json::Value, ServerError> {
+    use claw_channel::router::RoutingRule;
+
+    let rule = match params.rule_type.as_str() {
+        "channel" => {
+            let channel_id = params.channel_id
+                .ok_or_else(|| ServerError::Serialization("channel_id required for 'channel' rule".to_string()))?;
+            RoutingRule::ByChannelId { channel_id, agent_id: params.agent_id.clone() }
+        }
+        "sender" => {
+            let sender_id = params.sender_id
+                .ok_or_else(|| ServerError::Serialization("sender_id required for 'sender' rule".to_string()))?;
+            RoutingRule::BySenderId { sender_id, agent_id: params.agent_id.clone() }
+        }
+        "pattern" => {
+            let pattern_str = params.pattern
+                .ok_or_else(|| ServerError::Serialization("pattern required for 'pattern' rule".to_string()))?;
+            let regex = regex::Regex::new(&pattern_str)
+                .map_err(|e| ServerError::Serialization(format!("invalid regex: {}", e)))?;
+            RoutingRule::ByPattern { pattern: regex, agent_id: params.agent_id.clone() }
+        }
+        "default" => RoutingRule::Default { agent_id: params.agent_id.clone() },
+        other => return Err(ServerError::Serialization(format!("Unknown rule type: {}", other))),
+    };
+
+    channel_router.add_rule(rule);
+    tracing::info!("channel.route_add: type={}, agent={}", params.rule_type, params.agent_id);
+    Ok(serde_json::json!({
+        "ok": true,
+        "rule_type": params.rule_type,
+        "agent_id": params.agent_id,
+    }))
+}
+
+/// Handles `channel.route_remove` method (Phase 3).
+async fn handle_channel_route_remove(
+    params: ChannelRouteRemoveParams,
+    channel_router: &Arc<claw_channel::router::ChannelRouter>,
+) -> Result<serde_json::Value, ServerError> {
+    let removed = channel_router.remove_rules_for_agent(&params.agent_id);
+    Ok(serde_json::json!({
+        "ok": true,
+        "agent_id": params.agent_id,
+        "removed": removed,
+    }))
+}
+
+/// Handles `channel.route_list` method (Phase 3).
+async fn handle_channel_route_list(
+    channel_router: &Arc<claw_channel::router::ChannelRouter>,
+) -> Result<serde_json::Value, ServerError> {
+    let rules = channel_router.list_rules();
+    Ok(serde_json::json!(rules))
 }
 
 #[cfg(test)]

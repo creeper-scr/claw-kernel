@@ -710,6 +710,8 @@ dependencies = [
  "claw-tools",
  "dashmap",
  "futures",
+ "regex",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

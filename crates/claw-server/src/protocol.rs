@@ -544,6 +544,33 @@ pub struct ProviderRegisterParams {
     pub model: Option<String>,
 }
 
+// ─── Phase 3: Channel routing API ─────────────────────────────────────────────
+
+/// Parameters for `channel.route_add` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelRouteAddParams {
+    /// Rule type: "channel" | "sender" | "pattern" | "default"
+    pub rule_type: String,
+    /// Channel ID (for "channel" rules).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_id: Option<String>,
+    /// Sender ID (for "sender" rules).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sender_id: Option<String>,
+    /// Regex pattern (for "pattern" rules).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    /// Target agent ID.
+    pub agent_id: String,
+}
+
+/// Parameters for `channel.route_remove` method.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelRouteRemoveParams {
+    /// Remove all rules targeting this agent.
+    pub agent_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

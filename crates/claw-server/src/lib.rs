@@ -60,6 +60,7 @@ pub mod protocol;
 pub mod server;
 pub mod session;
 pub mod tool_bridge;
+pub mod trigger_store;
 
 pub use channel_registry::ChannelRegistry;
 pub use error::ServerError;

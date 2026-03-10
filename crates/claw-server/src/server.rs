@@ -268,6 +268,9 @@ pub struct ServerConfig {
     pub max_sessions: usize,
     /// LLM provider configuration.
     pub provider_config: ProviderConfig,
+    /// Optional port for the built-in HTTP webhook server.
+    /// Set to Some(port) to enable; None disables the webhook server.
+    pub webhook_port: Option<u16>,
 }
 
 impl Default for ServerConfig {
@@ -276,6 +279,7 @@ impl Default for ServerConfig {
             socket_path: claw_pal::dirs::KernelDirs::socket_path().to_string_lossy().into_owned(),
             max_sessions: 100,
             provider_config: ProviderConfig::Dynamic,
+            webhook_port: None,
         }
     }
 }
@@ -302,6 +306,14 @@ pub struct KernelServer {
     tool_registry: Arc<GlobalToolRegistry>,
     /// Global server-level skill registry.
     skill_registry: Arc<GlobalSkillRegistry>,
+    /// Built-in HTTP webhook server (Some if webhook_port was configured).
+    webhook_server: Option<Arc<claw_runtime::webhook::AxumWebhookServer>>,
+    /// Persistent trigger storage.
+    trigger_store: Option<Arc<crate::trigger_store::TriggerStore>>,
+    /// Server-level scheduler (shared across all connections).
+    scheduler: Arc<claw_runtime::TokioScheduler>,
+    /// Shared channel router (for dynamic IPC-configurable routing rules).
+    channel_router: Arc<claw_channel::router::ChannelRouter>,
 }
 
 impl KernelServer {
@@ -353,6 +365,35 @@ impl KernelServer {
             Arc::new(claw_pal::TokioProcessManager::new()),
         ));
         orchestrator.start();
+
+        // Build optional built-in webhook server.
+        let webhook_server: Option<Arc<claw_runtime::webhook::AxumWebhookServer>> =
+            if let Some(port) = config.webhook_port {
+                use claw_runtime::webhook::{AxumWebhookServer, WebhookConfig};
+                let wh_config = WebhookConfig::new("0.0.0.0", port);
+                Some(Arc::new(AxumWebhookServer::new(wh_config)))
+            } else {
+                None
+            };
+
+        // Build trigger store (SQLite).
+        let trigger_store = match claw_pal::dirs::KernelDirs::data_dir() {
+            Ok(data_dir) => {
+                let db_path = data_dir.join("triggers.db");
+                match crate::trigger_store::TriggerStore::open(&db_path) {
+                    Ok(store) => {
+                        tracing::info!("Trigger store opened at {:?}", db_path);
+                        Some(Arc::new(store))
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to open trigger store: {}; triggers will not persist", e);
+                        None
+                    }
+                }
+            }
+            Err(_) => None,
+        };
+
         Self {
             config,
             session_manager,
@@ -364,6 +405,10 @@ impl KernelServer {
             auth_token: Arc::new(token),
             tool_registry: Arc::new(GlobalToolRegistry::new()),
             skill_registry: Arc::new(GlobalSkillRegistry::new()),
+            webhook_server,
+            trigger_store,
+            scheduler: Arc::new(claw_runtime::TokioScheduler::new()),
+            channel_router: Arc::new(claw_channel::router::ChannelRouterBuilder::new().build()),
         }
     }
 
@@ -375,6 +420,68 @@ impl KernelServer {
         if std::path::Path::new(&self.config.socket_path).exists() {
             std::fs::remove_file(&self.config.socket_path)
                 .map_err(|_| ServerError::Ipc(claw_pal::error::IpcError::PermissionDenied))?;
+        }
+
+        // Start webhook server if configured
+        if let Some(ref wh_server) = self.webhook_server {
+            use claw_runtime::webhook::WebhookServer;
+            if let Err(e) = wh_server.start().await {
+                tracing::warn!("Failed to start webhook server: {}", e);
+            } else {
+                info!("Webhook server started on port {}", self.config.webhook_port.unwrap_or(0));
+            }
+        }
+
+        // Restore persisted triggers
+        if let Some(ref ts) = self.trigger_store {
+            match ts.load_all() {
+                Ok(triggers) => {
+                    for t in triggers {
+                        use claw_runtime::{Scheduler, TaskConfig, TaskTrigger};
+                        match t.kind {
+                            crate::trigger_store::TriggerKind::Cron => {
+                                if let Some(ref cron_expr) = t.cron_expr {
+                                    let orch = Arc::clone(&self.orchestrator);
+                                    let agent = t.target_agent.clone();
+                                    let msg = t.message.clone();
+                                    let tid = t.trigger_id.clone();
+                                    let config = TaskConfig::new(
+                                        tid.clone(),
+                                        TaskTrigger::Cron(cron_expr.clone()),
+                                        move || {
+                                            let orch = Arc::clone(&orch);
+                                            let agent = agent.clone();
+                                            let msg = msg.clone();
+                                            let tid = tid.clone();
+                                            Box::pin(async move {
+                                                use claw_runtime::agent_types::AgentId;
+                                                use claw_runtime::orchestrator::SteerCommand;
+                                                let aid = AgentId::new(agent.clone());
+                                                if let Err(e) = orch.steer(&aid, SteerCommand::Custom {
+                                                    command: "inject".to_string(),
+                                                    payload: msg,
+                                                }).await {
+                                                    tracing::warn!("Restored cron trigger {}: steer failed: {}", tid, e);
+                                                }
+                                            })
+                                        },
+                                    );
+                                    if let Err(e) = self.scheduler.schedule(config).await {
+                                        tracing::warn!("Failed to restore cron trigger {}: {}", t.trigger_id, e);
+                                    }
+                                }
+                            }
+                            crate::trigger_store::TriggerKind::Webhook => {
+                                tracing::debug!(
+                                    "Webhook trigger {} will be re-registered on next trigger.add_webhook",
+                                    t.trigger_id
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!("Failed to load persisted triggers: {}", e),
+            }
         }
 
         let listener = UnixListener::bind(&self.config.socket_path)
@@ -396,6 +503,8 @@ impl KernelServer {
         let auth_token = Arc::clone(&self.auth_token);
         let tool_registry = Arc::clone(&self.tool_registry);
         let skill_registry = Arc::clone(&self.skill_registry);
+        let scheduler = Arc::clone(&self.scheduler);
+        let channel_router = Arc::clone(&self.channel_router);
 
         loop {
             // Check for shutdown
@@ -419,6 +528,10 @@ impl KernelServer {
                     let auth_token_clone = Arc::clone(&auth_token);
                     let tool_registry_clone = Arc::clone(&tool_registry);
                     let skill_registry_clone = Arc::clone(&skill_registry);
+                    let scheduler_clone = Arc::clone(&scheduler);
+                    let channel_router_clone = Arc::clone(&channel_router);
+                    let webhook_server_clone = self.webhook_server.as_ref().map(Arc::clone);
+                    let trigger_store_clone = self.trigger_store.as_ref().map(Arc::clone);
                     tokio::spawn(async move {
                         if let Err(e) = crate::handler::handle_connection(
                             stream,
@@ -431,6 +544,10 @@ impl KernelServer {
                             auth_token_clone,
                             tool_registry_clone,
                             skill_registry_clone,
+                            scheduler_clone,
+                            webhook_server_clone,
+                            trigger_store_clone,
+                            channel_router_clone,
                         )
                         .await
                         {
@@ -508,6 +625,21 @@ impl KernelServer {
     /// Returns the global skill registry.
     pub fn skill_registry(&self) -> &Arc<GlobalSkillRegistry> {
         &self.skill_registry
+    }
+
+    /// Returns the webhook server if configured.
+    pub fn webhook_server(&self) -> Option<&Arc<claw_runtime::webhook::AxumWebhookServer>> {
+        self.webhook_server.as_ref()
+    }
+
+    /// Returns the server-level scheduler.
+    pub fn scheduler(&self) -> &Arc<claw_runtime::TokioScheduler> {
+        &self.scheduler
+    }
+
+    /// Returns the channel router.
+    pub fn channel_router(&self) -> &Arc<claw_channel::router::ChannelRouter> {
+        &self.channel_router
     }
 }
 
