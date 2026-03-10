@@ -7,6 +7,26 @@ last_updated: "2026-03-10"
 language: en
 ---
 
+> **⚠️ Critical Security Warning / 重要安全警告**
+> 
+> Windows sandbox is a **degraded implementation** with significant limitations:
+> - ✅ Resource limits enforced via Job Objects
+> - ✅ Subprocess blocking via ActiveProcessLimit
+> - ❌ **Filesystem restrictions NOT enforced**
+> - ❌ **Network restrictions NOT enforced**
+> 
+> This is **not a complete security solution**. For security-sensitive deployments:
+> - Use WSL2 to run the Linux version for full sandboxing
+> - Deploy in Windows containers or VMs
+> - Apply additional OS-level security controls
+>
+> **We urgently need contributions for:**
+> - AppContainer sandbox implementation (target: v1.5.0)
+> - Windows Filtering Platform (WFP) integration for network rules
+> - Security testing and audit of Job Object implementation
+> 
+> If you have Windows security expertise, please consider contributing!
+> See [CONTRIBUTING.md](../../CONTRIBUTING.md) and [SECURITY.md](../../SECURITY.md).
 
 # Windows Platform Guide
 

@@ -7,6 +7,18 @@ last_updated: "2026-03-08"
 language: en
 ---
 
+> **⚠️ Security Notice**
+> 
+> Linux provides the **strongest sandbox implementation** in claw-kernel, but it is still
+> **not professionally audited**. The seccomp-bpf filters and namespace isolation are
+> implemented following best practices, but may contain vulnerabilities.
+>
+> **Security contributions welcome:**
+> - Security audit of seccomp filter rules
+> - Namespace isolation escape testing
+> - Penetration testing of sandbox boundaries
+> 
+> Please report any sandbox escape vulnerabilities privately per [SECURITY.md](../../SECURITY.md).
 
 # Linux Platform Guide
 

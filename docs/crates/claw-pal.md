@@ -7,7 +7,22 @@ last_updated: "2026-03-09"
 language: en
 ---
 
-
+> **⚠️ Security Warning / 安全警告**
+> 
+> Platform sandbox implementations are **incomplete and vary by platform**:
+> - ✅ Linux: Full seccomp-bpf + namespaces (strongest isolation)
+> - ✅ macOS: sandbox(7) profiles (good isolation, limited syscall filtering)
+> - ⚠️ Windows: Job Objects only — **filesystem and network restrictions not enforced**
+> 
+> The Windows sandbox is currently a **degraded implementation**. For security-sensitive
+> deployments on Windows, use WSL2 to run the Linux version, or deploy in containers/VMs.
+>
+> **We actively seek contributions for:**
+> - Windows AppContainer sandbox implementation (target: v1.5.0)
+> - Security audit of existing sandbox implementations
+> - Platform security hardening
+> 
+> See [CONTRIBUTING.md](../../CONTRIBUTING.md) and [SECURITY.md](../../SECURITY.md).
 
 Platform Abstraction Layer — Cross-platform sandbox, IPC, and process management.
 

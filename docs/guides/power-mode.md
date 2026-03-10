@@ -7,7 +7,16 @@ last_updated: "2026-03-08"
 language: en
 ---
 
-
+> **⚠️ Security Warning**
+> 
+> Power Mode **removes most security restrictions** by design. Use with extreme caution:
+> - Agents have full filesystem, network, and process access
+> - Power key protection is implemented but not audited by security professionals
+> - Unauthorized mode escalation is a valid security concern — please report any bypasses
+>
+> **We welcome security contributions!** If you discover vulnerabilities in the Power Mode
+> authentication system or mode transition guards, please report them privately per
+> [SECURITY.md](../../SECURITY.md).
 
 # Power Mode Guide
 

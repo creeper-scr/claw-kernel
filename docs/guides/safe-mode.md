@@ -7,7 +7,19 @@ last_updated: "2026-03-08"
 language: en
 ---
 
-
+> **⚠️ Security Warning / 安全警告**
+> 
+> The Safe Mode sandbox implementation is **incomplete and platform-dependent**:
+> - ✅ Linux: Full seccomp-bpf + namespaces implementation
+> - ✅ macOS: sandbox profile implementation (limited syscall filtering)
+> - ⚠️ Windows: Job Objects only — filesystem and network restrictions **not enforced** until v1.5.0
+>
+> **Contributions welcome!** We actively seek contributions for:
+> - Windows AppContainer sandbox implementation
+> - Security audit and penetration testing
+> - Sandbox escape vulnerability reports
+> 
+> See [CONTRIBUTING.md](../../CONTRIBUTING.md) and [SECURITY.md](../../SECURITY.md) for details.
 
 # Safe Mode Guide
 

@@ -1,5 +1,14 @@
 # Known Issues — claw-kernel v1.0.0
 
+> **⚠️ Security Notice**
+> 
+> This document lists known security limitations. **Contributions welcome!**
+> - Windows AppContainer sandbox implementation
+> - Security audit of all sandbox implementations
+> - Penetration testing and vulnerability research
+> 
+> See [SECURITY.md](../SECURITY.md) for vulnerability reporting guidelines.
+
 ## KI-001: Windows sandbox is stub implementation
 
 **Severity**: Medium

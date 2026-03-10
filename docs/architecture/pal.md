@@ -7,6 +7,21 @@ last_updated: "2026-03-09"
 language: en
 ---
 
+> **⚠️ Security Warning**
+> 
+> PAL provides **platform-specific sandboxing implementations** with varying completeness:
+> - Linux: Full implementation but not professionally audited
+> - macOS: Full implementation with known limitations (no seccomp equivalent)
+> - Windows: **Partial implementation** — filesystem and network restrictions not enforced
+>
+> **We actively seek security contributions:**
+> - Sandbox implementation review and hardening
+> - Windows AppContainer development
+> - Security audit and penetration testing
+> - Vulnerability research on sandbox escape techniques
+> 
+> See [SECURITY.md](../../SECURITY.md) and [CONTRIBUTING.md](../../CONTRIBUTING.md).
+
 # Platform Abstraction Layer (PAL)
 
 The Platform Abstraction Layer (`claw-pal`) isolates all platform-specific code, enabling claw-kernel to run on Linux, macOS, and Windows with minimal platform-specific logic in the upper layers.

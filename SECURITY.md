@@ -7,6 +7,19 @@ last_updated: "2026-02-28"
 language: bilingual
 ---
 
+> **⚠️ Security Warning / 安全警告**
+> 
+> The current sandbox and security implementations are **incomplete and not fully audited**. 
+> 当前的沙箱和安全实现**尚不完善，未经充分审计**。
+>
+> - Windows sandbox is partially implemented (Job Objects only, AppContainer pending v1.5.0)
+> - macOS sandbox has limited syscall filtering capabilities
+> - Some security boundaries may not be fully enforced
+>
+> **We welcome security contributions!** If you have expertise in sandboxing, secure coding, or 
+> platform security, please consider contributing. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+> **欢迎安全方面的贡献！**如果您在沙箱技术、安全编码或平台安全方面有专业知识，请考虑贡献。
+
 > **Project Status**: Active. v1.0.0 released. Security model is implemented with known limitations (see KNOWN-ISSUES.md).
 
 [English](#english) | [中文](#chinese)

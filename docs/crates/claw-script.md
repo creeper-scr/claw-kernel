@@ -7,7 +7,20 @@ last_updated: "2026-03-10"
 language: en
 ---
 
-
+> **⚠️ Security Warning**
+> 
+> Script engine sandboxing has **known limitations**:
+> - Lua engine relies on runtime permission checks; scripts may potentially crash the host process
+> - V8 engine provides stronger isolation via isolates, but is not penetration tested
+> - The bridge APIs have not undergone comprehensive security auditing
+>
+> **For production use with untrusted code**, we recommend:
+> - Using Safe Mode OS-level sandbox (Linux/macOS)
+> - Running agents in containers or VMs
+> - Applying defense-in-depth strategies
+>
+> **Security contributions welcome!** See [SECURITY.md](../../SECURITY.md) for reporting
+> vulnerabilities and [CONTRIBUTING.md](../../CONTRIBUTING.md) for contributing improvements.
 
 Embedded script engines (Lua, V8/TypeScript) with unified RustBridge API.
 

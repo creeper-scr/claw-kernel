@@ -7,6 +7,21 @@ last_updated: "2026-03-08"
 language: en
 ---
 
+> **⚠️ Security Notice**
+> 
+> macOS sandbox implementation uses the native `sandbox(7)` (Seatbelt) system. Limitations:
+> - No equivalent to seccomp for syscall filtering
+> - Network filtering is more limited than Linux
+> - File system rules are path-based only
+> 
+> This implementation has **not undergone professional security auditing**.
+>
+> **Contributions welcome:**
+> - Security audit of sandbox profile generation
+> - Testing for sandbox escape vulnerabilities
+> - Code signing and entitlement security improvements
+> 
+> See [SECURITY.md](../../SECURITY.md) for vulnerability reporting.
 
 # macOS Platform Guide
 

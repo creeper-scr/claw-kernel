@@ -8,6 +8,15 @@ last_updated: "2026-03-08"
 language: en
 ---
 
+> **⚠️ Security Warning**
+> 
+> The security model described in this document is **partially implemented**. Current limitations:
+> - Windows sandbox uses Job Objects only (AppContainer planned for v1.5.0)
+> - Some security guarantees are not yet fully enforced across all platforms
+> - The implementation has not undergone comprehensive security auditing
+>
+> **Contributions welcome!** If you're interested in improving sandbox implementations,
+> security hardening, or audit contributions, please see [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 # ADR 003: Dual-Mode Security (Safe/Power)
 

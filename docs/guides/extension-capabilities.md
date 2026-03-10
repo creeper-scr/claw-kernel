@@ -7,7 +7,20 @@ last_updated: "2026-03-01"
 language: en
 ---
 
-
+> **⚠️ Security Notice**
+> 
+> Extension capabilities include **sandboxed execution**, but the sandbox implementations
+> are incomplete (especially on Windows). When using hot-loading and dynamic tool registration:
+> - Only load scripts from trusted sources
+> - Use Safe Mode for untrusted code (Linux/macOS recommended)
+> - Be aware that sandbox escapes may be possible
+>
+> **Security contributions welcome:**
+> - Tool loading security review
+> - Permission system audit
+> - Sandboxed execution hardening
+> 
+> See [SECURITY.md](../../SECURITY.md) and [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
 # Extension Capabilities Guide
 
