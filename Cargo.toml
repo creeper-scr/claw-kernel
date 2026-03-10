@@ -98,6 +98,7 @@ nix = { version = "0.27.1", features = ["process", "sched"] }
 # 安全 (Security)
 rust-argon2 = "0.8"
 sha2 = "0.10"
+hmac = "0.12"
 
 
 

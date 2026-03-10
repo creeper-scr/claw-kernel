@@ -389,6 +389,25 @@ impl ScriptContext {
 /// Output from a script execution — a JSON value.
 pub type ScriptValue = serde_json::Value;
 
+/// An opaque handle to a loaded script module.
+///
+/// `ModuleHandle` is returned by [`ScriptEngine::load_module`] and can be
+/// passed back to the engine for subsequent `call()` invocations that target
+/// functions defined inside that module.
+///
+/// The handle carries the module source as a string so it can be re-loaded
+/// into a fresh engine context on demand (Lua creates a new `Lua` state per
+/// execution for isolation).
+#[derive(Debug, Clone)]
+pub struct ModuleHandle {
+    /// Canonical name / path of the module (used for error messages).
+    pub name: String,
+    /// Raw source of the module.
+    pub source: String,
+    /// Engine that loaded this module.
+    pub engine: EngineType,
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

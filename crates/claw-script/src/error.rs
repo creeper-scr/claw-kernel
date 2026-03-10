@@ -33,6 +33,10 @@ pub enum ScriptError {
     RecursionLimitExceeded(u32),
     #[error("setup error: {0}")]
     Setup(String),
+    #[error("module not found: {0}")]
+    ModuleNotFound(String),
+    #[error("function not found: {0}")]
+    FunctionNotFound(String),
 }
 
 #[cfg(test)]

@@ -191,6 +191,11 @@ pub enum SteerCommand {
     TriggerHeartbeat,
     /// Custom command with string payload.
     Custom { command: String, payload: Option<String> },
+    /// Inject a message into the agent's input queue.
+    ///
+    /// Used by [`TriggerDispatcher`](crate::trigger_dispatcher::TriggerDispatcher) to drive
+    /// Agent behavior when a trigger fires (Cron / Webhook / Event).
+    InjectMessage(String),
 }
 
 // ─── AgentState ───────────────────────────────────────────────────────────────
@@ -234,7 +239,7 @@ pub(crate) struct AgentState {
 }
 
 impl AgentState {
-    fn new(config: AgentConfig, process_handle: Option<claw_pal::ProcessHandle>) -> Self {
+    pub(crate) fn new(config: AgentConfig, process_handle: Option<claw_pal::ProcessHandle>) -> Self {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -256,13 +261,7 @@ impl AgentState {
 
     /// Convert to the public `AgentInfo` view (for backward-compatible API).
     fn to_agent_info(&self) -> AgentInfo {
-        let resource_usage = self.health.as_ref().map(|h| ResourceUsage {
-            // HealthStatus tracks instantaneous cpu_usage_percent, not cumulative
-            // CPU time, so cpu_ms is unavailable at this layer.
-            cpu_ms: None,
-            // memory_usage_kb → bytes (1 KB = 1024 bytes).
-            memory_bytes: h.memory_usage_kb.map(|kb| kb * 1024),
-        });
+        let resource_usage = self.to_resource_usage();
         AgentInfo {
             config: self.config.clone(),
             started_at: self.started_at,
@@ -270,6 +269,20 @@ impl AgentState {
             status: self.status,
             resource_usage,
         }
+    }
+
+    /// Extract the latest [`ResourceUsage`] snapshot from health data.
+    ///
+    /// Returns `None` when no health check has completed yet or when the agent
+    /// shares the kernel process address space (no OS-level memory isolation).
+    pub(crate) fn to_resource_usage(&self) -> Option<ResourceUsage> {
+        self.health.as_ref().map(|h| ResourceUsage {
+            // HealthStatus tracks instantaneous cpu_usage_percent, not cumulative
+            // CPU time, so cpu_ms is unavailable at this layer.
+            cpu_ms: None,
+            // memory_usage_kb → bytes (1 KB = 1024 bytes).
+            memory_bytes: h.memory_usage_kb.map(|kb| kb * 1024),
+        })
     }
 }
 
@@ -367,6 +380,12 @@ pub struct AgentOrchestrator {
     restart_states: Arc<DashMap<AgentId, crate::restart_policy::RestartState>>,
     /// Capability declarations: agent_id → list of capability strings.
     capabilities: Arc<DashMap<AgentId, Vec<String>>>,
+    /// Optional audit log sink — receives `AgentSpawned` events (GAP-F8-02).
+    ///
+    /// When set, `spawn_agent()` writes an `AuditEvent::AgentSpawned` record
+    /// immediately after the agent is registered.  Inject via
+    /// [`with_audit_log`](Self::with_audit_log).
+    audit_log: Option<claw_tools::audit::AuditLogWriterHandle>,
 }
 
 impl AgentOrchestrator {
@@ -395,6 +414,7 @@ impl AgentOrchestrator {
             config: OrchestratorConfig::default(),
             restart_states: Arc::new(DashMap::new()),
             capabilities: Arc::new(DashMap::new()),
+            audit_log: None,
         }
     }
 
@@ -404,6 +424,24 @@ impl AgentOrchestrator {
     pub fn start(&self) {
         self.start_health_check_task();
         self.start_auto_restart_task();
+    }
+
+    /// Attach an audit log writer handle.
+    ///
+    /// When set, lifecycle events (e.g. `AgentSpawned`) are written to the
+    /// persistent audit log in addition to the in-memory ring buffer.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use claw_tools::audit::{AuditLogConfig, AuditLogWriter};
+    ///
+    /// let (handle, _store, _task) = AuditLogWriter::start(AuditLogConfig::default());
+    /// let orchestrator = AgentOrchestrator::new(bus, pm).with_audit_log(handle);
+    /// ```
+    pub fn with_audit_log(mut self, handle: claw_tools::audit::AuditLogWriterHandle) -> Self {
+        self.audit_log = Some(handle);
+        self
     }
 
     /// Create a new orchestrator **without** starting background tasks.
@@ -426,6 +464,7 @@ impl AgentOrchestrator {
             config: OrchestratorConfig::default(),
             restart_states: Arc::new(DashMap::new()),
             capabilities: Arc::new(DashMap::new()),
+            audit_log: None,
         }
     }
 
@@ -615,6 +654,40 @@ impl AgentOrchestrator {
                 });
                 return Ok(());
             }
+            SteerCommand::InjectMessage(message) => {
+                // For IPC in-process agents: deliver directly via the shared mpsc sender.
+                // For out-of-process agents: publish a Custom event so external listeners
+                // (e.g. a remote agent daemon) can pick it up.
+                let ipc_tx = self
+                    .agents
+                    .get(agent_id)
+                    .ok_or_else(|| RuntimeError::AgentNotFound(agent_id.0.clone()))
+                    .map(|e| e.ipc_tx.clone())?;
+
+                if let Some(shared_tx) = ipc_tx {
+                    let guard = shared_tx.lock().await;
+                    if let Some(tx) = guard.as_ref() {
+                        tx.send(crate::agent_handle::AgentMessage::Send { content: message })
+                            .await
+                            .map_err(|_| RuntimeError::AgentNotFound(agent_id.0.clone()))?;
+                    } else {
+                        tracing::warn!(
+                            agent_id = %agent_id.0,
+                            "InjectMessage: agent IPC sender slot is empty (agent restarting?)"
+                        );
+                    }
+                } else {
+                    // Out-of-process agent — broadcast via EventBus.
+                    let _ = self.event_bus.publish(Event::Custom {
+                        event_type: "trigger:inject_message".to_string(),
+                        data: serde_json::json!({
+                            "agent_id": agent_id.0,
+                            "message": message,
+                        }),
+                    });
+                }
+                return Ok(());
+            }
             _ => {}
         }
 
@@ -646,7 +719,7 @@ impl AgentOrchestrator {
             SteerCommand::SetLogLevel(level) => {
                 entry.config.metadata.insert("log_level".to_string(), level);
             }
-            // TriggerHeartbeat and Custom are handled above
+            // TriggerHeartbeat, Custom and InjectMessage are handled above
             SteerCommand::TriggerHeartbeat => {
                 return Err(RuntimeError::UnsupportedCommand(
                     "unsupported steer command: TriggerHeartbeat".to_string(),
@@ -656,6 +729,10 @@ impl AgentOrchestrator {
                 return Err(RuntimeError::UnsupportedCommand(
                     format!("unsupported steer command: {:?}", command),
                 ));
+            }
+            SteerCommand::InjectMessage(_) => {
+                // Already handled in the early-return branch above.
+                unreachable!("InjectMessage is handled before the get_mut block");
             }
         }
 
@@ -1059,6 +1136,14 @@ impl AgentOrchestrator {
         state.ipc_tx = Some(Arc::clone(&shared_tx));
         self.agents.insert(agent_id.clone(), state);
 
+        // GAP-F8-02: write a persistent audit record for every agent spawn.
+        // Read the field before restart_policy is consumed by RestartState::new below.
+        let audit_policy_label = if restart_policy.max_retries == 0 {
+            "never"
+        } else {
+            "on_failure"
+        };
+
         // Store restart state for use by trigger_restart.
         let restart_state = RestartState::new(agent_id.clone(), name.clone(), restart_policy);
         self.restart_states.insert(agent_id.clone(), restart_state);
@@ -1066,6 +1151,20 @@ impl AgentOrchestrator {
         let _ = self.event_bus.publish(Event::AgentStarted {
             agent_id: agent_id.clone(),
         });
+
+        // GAP-F8-02: write a persistent audit record for every agent spawn.
+        if let Some(audit) = &self.audit_log {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            audit.send_blocking(claw_tools::audit::AuditEvent::AgentSpawned {
+                timestamp_ms: now_ms,
+                agent_id: agent_id.0.clone(),
+                agent_name: name.clone(),
+                restart_policy: audit_policy_label.to_string(),
+            });
+        }
 
         // Spawn the message-processing task.  On exit the task sets Error and
         // calls trigger_restart which re-spawns the loop with backoff.
@@ -1077,7 +1176,7 @@ impl AgentOrchestrator {
             Arc::clone(&self.restart_states),
         );
 
-        Ok(IpcAgentHandle { agent_id, shared_tx })
+        Ok(IpcAgentHandle { agent_id, shared_tx, agents: Arc::clone(&self.agents) })
     }
 
     // ── Auto-restart on agent exit (Phase 2.4) ───────────────────────────────

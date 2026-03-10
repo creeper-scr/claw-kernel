@@ -3,9 +3,11 @@
 //! Provides debounced file system events for configured directories.
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+use tokio::time::MissedTickBehavior;
 
 use crate::error::WatchError;
 use crate::types::HotLoadingConfig;
@@ -45,12 +47,14 @@ impl FileWatcher {
         let debounce_ms = config.debounce_ms;
         let extensions = config.extensions.clone();
 
-        // Create the notify watcher
-        let watcher_tx = event_tx.clone();
+        // Raw channel: notify callback → debouncer task
+        let (raw_tx, raw_rx) = mpsc::channel::<WatchEvent>(256);
+
+        // Create the notify watcher; events go to raw_tx, NOT directly to event_tx
         let extensions_clone = extensions.clone();
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
             if let Ok(event) = res {
-                Self::handle_notify_event(event, &extensions_clone, &watcher_tx);
+                Self::handle_notify_event(event, &extensions_clone, &raw_tx);
             }
         })
         .map_err(|e| WatchError::WatchFailed(e.to_string()))?;
@@ -68,10 +72,9 @@ impl FileWatcher {
                 .map_err(|e| WatchError::WatchFailed(format!("watch failed: {e}")))?;
         }
 
-        // Spawn debouncer task
-        let debouncer_tx = event_tx;
+        // Spawn debouncer task: reads from raw_rx, emits to event_tx
         tokio::spawn(async move {
-            Self::run_debouncer(debounce_ms, extensions, debouncer_tx).await;
+            Self::run_debouncer(debounce_ms, event_tx, raw_rx).await;
         });
 
         Ok(Self {
@@ -117,53 +120,60 @@ impl FileWatcher {
     }
 
     /// Run the debouncer task that coalesces rapid events.
+    ///
+    /// Reads raw events from `raw_rx`, accumulates changed/created paths keyed by
+    /// their last-seen `Instant`, and every `debounce_ms` flushes entries that have
+    /// been quiet for at least that long as a single `WatchEvent::Debounced` batch.
+    /// `FileRemoved` events are forwarded immediately (no debounce needed).
     async fn run_debouncer(
         debounce_ms: u64,
-        _extensions: Vec<String>,
         event_tx: mpsc::Sender<WatchEvent>,
+        mut raw_rx: mpsc::Receiver<WatchEvent>,
     ) {
-        let mut buffer: Vec<PathBuf> = Vec::new();
         let debounce_duration = Duration::from_millis(debounce_ms);
+        // path → time of last raw event
+        let mut pending: HashMap<PathBuf, Instant> = HashMap::new();
 
-        // This is a simplified debouncer - in production, you'd want a more
-        // sophisticated implementation with per-file debouncing
-        let (_raw_tx, mut raw_rx) = mpsc::channel::<WatchEvent>(128);
+        // Tick every debounce window to drain stale entries.
+        let mut ticker = tokio::time::interval(debounce_duration);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-        // Forward events to the debouncer
-        tokio::spawn(async move {
-            while let Some(event) = raw_rx.recv().await {
-                match event {
-                    WatchEvent::FileChanged(p) | WatchEvent::FileCreated(p) => {
-                        buffer.push(p);
-                        tokio::time::sleep(debounce_duration).await;
-
-                        // Drain all pending events
-                        while let Ok(e) = raw_rx.try_recv() {
-                            match e {
-                                WatchEvent::FileChanged(p) | WatchEvent::FileCreated(p) => {
-                                    if !buffer.contains(&p) {
-                                        buffer.push(p);
-                                    }
-                                }
-                                WatchEvent::FileRemoved(p) => {
-                                    buffer.retain(|x| x != &p);
-                                }
-                                _ => {}
-                            }
+        loop {
+            tokio::select! {
+                result = raw_rx.recv() => {
+                    match result {
+                        Some(WatchEvent::FileChanged(p) | WatchEvent::FileCreated(p)) => {
+                            // Refresh timestamp on every touch — natural debounce.
+                            pending.insert(p, Instant::now());
                         }
-
-                        if !buffer.is_empty() {
-                            let paths = std::mem::take(&mut buffer);
-                            let _ = event_tx.send(WatchEvent::Debounced(paths)).await;
+                        Some(WatchEvent::FileRemoved(p)) => {
+                            pending.remove(&p);
+                            let _ = event_tx.send(WatchEvent::FileRemoved(p)).await;
                         }
+                        Some(_) => {}
+                        None => break, // all senders dropped — shut down
                     }
-                    WatchEvent::FileRemoved(p) => {
-                        let _ = event_tx.send(WatchEvent::FileRemoved(p)).await;
+                }
+                _ = ticker.tick() => {
+                    if pending.is_empty() {
+                        continue;
                     }
-                    _ => {}
+                    let now = Instant::now();
+                    let mut ready: Vec<PathBuf> = Vec::new();
+                    pending.retain(|path, t| {
+                        if now.duration_since(*t) >= debounce_duration {
+                            ready.push(path.clone());
+                            false // remove from pending
+                        } else {
+                            true
+                        }
+                    });
+                    if !ready.is_empty() {
+                        let _ = event_tx.send(WatchEvent::Debounced(ready)).await;
+                    }
                 }
             }
-        });
+        }
     }
 
     /// Receive the next watch event.
@@ -261,6 +271,68 @@ mod tests {
 
         let debounced = WatchEvent::Debounced(vec![PathBuf::from("/test.lua")]);
         assert!(matches!(debounced, WatchEvent::Debounced(_)));
+    }
+
+    #[tokio::test]
+    async fn test_debouncer_coalesces_events() {
+        let (event_tx, mut event_rx) = mpsc::channel::<WatchEvent>(32);
+        let (raw_tx, raw_rx) = mpsc::channel::<WatchEvent>(64);
+        let debounce_ms = 50u64;
+
+        tokio::spawn(async move {
+            FileWatcher::run_debouncer(debounce_ms, event_tx, raw_rx).await;
+        });
+
+        // Send three rapid changes to the same file
+        let path = PathBuf::from("/test.lua");
+        for _ in 0..3 {
+            raw_tx
+                .send(WatchEvent::FileChanged(path.clone()))
+                .await
+                .unwrap();
+        }
+        // Also send a change for a different file
+        raw_tx
+            .send(WatchEvent::FileChanged(PathBuf::from("/other.lua")))
+            .await
+            .unwrap();
+
+        // Wait for the debounce window to expire
+        tokio::time::sleep(Duration::from_millis(debounce_ms * 3)).await;
+
+        // Should receive exactly one Debounced event containing both paths (deduplicated)
+        let event = event_rx.try_recv().expect("expected a Debounced event");
+        match event {
+            WatchEvent::Debounced(paths) => {
+                assert!(paths.contains(&PathBuf::from("/test.lua")));
+                assert!(paths.contains(&PathBuf::from("/other.lua")));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        // No more events
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_debouncer_forwards_remove_immediately() {
+        let (event_tx, mut event_rx) = mpsc::channel::<WatchEvent>(32);
+        let (raw_tx, raw_rx) = mpsc::channel::<WatchEvent>(64);
+
+        tokio::spawn(async move {
+            FileWatcher::run_debouncer(50, event_tx, raw_rx).await;
+        });
+
+        raw_tx
+            .send(WatchEvent::FileRemoved(PathBuf::from("/gone.lua")))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        match event_rx.try_recv().expect("expected FileRemoved") {
+            WatchEvent::FileRemoved(p) => assert_eq!(p, PathBuf::from("/gone.lua")),
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 
     #[test]

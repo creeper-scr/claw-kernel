@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use async_trait::async_trait;
 use deno_core::v8;
 use serde_json::Value as JsonValue;
@@ -8,7 +10,7 @@ use std::time::Duration;
 use crate::{
     error::{CompileError, ScriptError},
     traits::ScriptEngine,
-    types::{EngineType, Script, ScriptContext, ScriptValue},
+    types::{EngineType, ModuleHandle, Script, ScriptContext, ScriptValue},
 };
 
 use super::bridge::BridgeState;
@@ -392,6 +394,72 @@ impl ScriptEngine for V8Engine {
             .ok_or_else(|| ScriptError::Compile(CompileError::Syntax("Syntax error".into())))?;
 
         Ok(())
+    }
+
+    async fn load_module(&self, path: &Path) -> Result<ModuleHandle, ScriptError> {
+        let path = path.to_path_buf();
+        let source = tokio::fs::read_to_string(&path).await.map_err(|e| {
+            ScriptError::ModuleNotFound(format!("{}: {}", path.display(), e))
+        })?;
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("module")
+            .to_string();
+        let engine_type = if self.options.typescript {
+            EngineType::TypeScript
+        } else {
+            EngineType::JavaScript
+        };
+        // Syntax-validate before returning.
+        let script = Script {
+            name: name.clone(),
+            source: source.clone(),
+            engine: engine_type,
+        };
+        self.validate(&script)?;
+        Ok(ModuleHandle {
+            name,
+            source,
+            engine: engine_type,
+        })
+    }
+
+    async fn call(
+        &self,
+        module: &ModuleHandle,
+        fn_name: &str,
+        args: Vec<serde_json::Value>,
+        ctx: &ScriptContext,
+    ) -> Result<ScriptValue, ScriptError> {
+        let args_json = serde_json::to_string(&args)
+            .map_err(|e| ScriptError::Runtime(format!("args serialization failed: {}", e)))?;
+        let wrapper = format!(
+            r#"
+(function() {{
+  {}
+  var _fn = {};
+  if (typeof _fn !== "function") {{
+    throw new Error("function not found: {}");
+  }}
+  var _args = {};
+  return _fn.apply(null, _args);
+}})()
+"#,
+            module.source, fn_name, fn_name, args_json
+        );
+        let engine_type = module.engine;
+        let script = Script {
+            name: format!("{}::{}", module.name, fn_name),
+            source: wrapper,
+            engine: engine_type,
+        };
+        self.execute(&script, ctx).await.map_err(|e| match e {
+            ScriptError::Runtime(ref msg) if msg.contains("function not found") => {
+                ScriptError::FunctionNotFound(fn_name.to_string())
+            }
+            other => other,
+        })
     }
 }
 

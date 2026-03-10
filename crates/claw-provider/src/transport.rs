@@ -141,6 +141,53 @@ impl DefaultHttpTransport {
             .map_err(|e| ProviderError::Serialization(e.to_string()))?;
         Ok(json)
     }
+
+    /// Internal method to perform the actual GET request.
+    async fn do_get_json(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<serde_json::Value, ProviderError> {
+        let mut req = self.client.get(url);
+
+        // Add default headers
+        for (key, value) in &self.headers {
+            req = req.header(key, value);
+        }
+
+        // Add request-specific headers
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ProviderError::Network(e.to_string()))?;
+        let status = resp.status();
+
+        if status.is_client_error() {
+            let msg = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Http {
+                status: status.as_u16(),
+                message: msg,
+            });
+        }
+        if status.is_server_error() {
+            let msg = resp.text().await.unwrap_or_default();
+            return Err(ProviderError::Network(format!(
+                "server error {}: {}",
+                status.as_u16(),
+                msg
+            )));
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ProviderError::Serialization(e.to_string()))?;
+        Ok(json)
+    }
 }
 
 impl Default for DefaultHttpTransport {
@@ -158,6 +205,14 @@ impl HttpTransport for DefaultHttpTransport {
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, ProviderError> {
         self.post_json_with_retry(url, headers, body).await
+    }
+
+    async fn get_json(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<serde_json::Value, ProviderError> {
+        self.do_get_json(url, headers).await
     }
 
     async fn post_stream(

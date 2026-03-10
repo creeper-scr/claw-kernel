@@ -6,6 +6,8 @@
 use crate::traits::sandbox::ExecutionMode;
 use argon2::Config;
 use std::fmt;
+use std::time::Instant;
+use zeroize::{ZeroizeOnDrop, Zeroizing};
 
 /// Minimum key length for Power Key (2026 security standard).
 pub const MIN_KEY_LENGTH: usize = 12;
@@ -133,7 +135,8 @@ impl PowerKeyValidator {
 /// Argon2 hashed Power Key for secure storage.
 ///
 /// The key is never stored in plaintext — only the Argon2 hash is kept.
-#[derive(Debug, Clone)]
+/// The hash string is zeroed on drop to prevent it from lingering in freed memory pages.
+#[derive(Debug, Clone, ZeroizeOnDrop)]
 pub struct PowerKeyHash(String);
 
 impl PowerKeyHash {
@@ -227,6 +230,81 @@ impl ModeTransitionGuard {
     }
 }
 
+/// RAII guard for Power Mode sessions.
+///
+/// Entering Power Mode via [`PowerModeGuard::enter`] validates the power key and writes
+/// an entry-audit event. When the guard is dropped (normally or on panic/unwind), it
+/// automatically writes an exit-audit event recording the session duration.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// use claw_pal::audit::{AuditSinkHandle, NoopAuditSink};
+///
+/// let guard = PowerModeGuard::enter("my-power-key", &stored_hash, NoopAuditSink::handle(), "agent-1".to_string())?;
+/// // … do privileged work …
+/// drop(guard); // or let it fall off scope — exit audit is written automatically
+/// ```
+///
+/// # Drop behaviour
+///
+/// `Drop` calls [`crate::audit::AuditSink::write_security_event`], which must be
+/// non-blocking. The supplied [`crate::audit::AuditSinkHandle`] is responsible for
+/// ensuring this contract (e.g. via a fire-and-forget channel send).
+pub struct PowerModeGuard {
+    entered_at: Instant,
+    /// Wrapped in `Option` so `drop` can take ownership via `Option::take`.
+    audit_sink: Option<crate::audit::AuditSinkHandle>,
+    agent_id: String,
+}
+
+impl PowerModeGuard {
+    /// Validate the power key and enter Power Mode, writing an entry-audit event.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SecurityError::InvalidPowerKey`] if `power_key` does not match
+    /// `stored_hash`.
+    pub fn enter(
+        power_key: &str,
+        stored_hash: &PowerKeyHash,
+        audit_sink: crate::audit::AuditSinkHandle,
+        agent_id: String,
+    ) -> Result<Self, SecurityError> {
+        if !stored_hash.verify(power_key) {
+            return Err(SecurityError::InvalidPowerKey);
+        }
+
+        audit_sink.write_security_event(crate::audit::SecurityAuditEvent::now(
+            agent_id.clone(),
+            "safe",
+            "power",
+            "power_key_verified".to_string(),
+        ));
+
+        Ok(Self {
+            entered_at: Instant::now(),
+            audit_sink: Some(audit_sink),
+            agent_id,
+        })
+    }
+}
+
+impl Drop for PowerModeGuard {
+    /// Automatically write the Power-Mode-exit audit event when the guard is dropped.
+    fn drop(&mut self) {
+        let duration_ms = self.entered_at.elapsed().as_millis() as u64;
+        if let Some(sink) = self.audit_sink.take() {
+            sink.write_security_event(crate::audit::SecurityAuditEvent::now(
+                self.agent_id.clone(),
+                "power",
+                "safe",
+                format!("session_ended_after_{}ms", duration_ms),
+            ));
+        }
+    }
+}
+
 /// Manages Power Key persistence and retrieval.
 ///
 /// Power Key resolution follows this priority (highest first):
@@ -288,8 +366,9 @@ impl PowerKeyManager {
         let key_path = crate::dirs::power_key_path()
             .ok_or_else(|| SecurityError::HashError("Cannot find config directory".to_string()))?;
 
-        let hash_str =
-            std::fs::read_to_string(&key_path).map_err(|_| SecurityError::InvalidPowerKey)?;
+        let hash_str = Zeroizing::new(
+            std::fs::read_to_string(&key_path).map_err(|_| SecurityError::InvalidPowerKey)?,
+        );
 
         PowerKeyHash::from_string(hash_str.trim())
     }
@@ -310,16 +389,19 @@ impl PowerKeyManager {
     ///
     /// Returns `Some(key)` if found from CLI or env var, `None` if only
     /// a stored hash exists (needs verification via `load_stored_hash`).
-    pub fn resolve_power_key(cli_key: Option<String>) -> Option<String> {
+    ///
+    /// The returned `Zeroizing<String>` automatically zeroes the plaintext key
+    /// when it is dropped, preventing the secret from lingering in freed memory.
+    pub fn resolve_power_key(cli_key: Option<String>) -> Option<Zeroizing<String>> {
         // Priority 1: CLI argument
-        if cli_key.is_some() {
-            return cli_key;
+        if let Some(k) = cli_key {
+            return Some(Zeroizing::new(k));
         }
 
         // Priority 2: Environment variable
         if let Ok(env_key) = std::env::var("CLAW_KERNEL_POWER_KEY") {
             if !env_key.is_empty() {
-                return Some(env_key);
+                return Some(Zeroizing::new(env_key));
             }
         }
 
@@ -343,7 +425,9 @@ impl PowerKeyManager {
 /// - Cases where the key itself is high-entropy (randomly generated)
 ///
 /// For persistent storage, prefer `PowerKeyHash` with Argon2.
-#[derive(Debug, Clone)]
+///
+/// The internal hash bytes are zeroed on drop.
+#[derive(Debug, Clone, ZeroizeOnDrop)]
 pub struct PowerKey {
     verification_hash: [u8; 32],
 }
@@ -710,7 +794,110 @@ mod tests {
         );
     }
 
-    // ===== SecurityError display tests =====
+    // ===== PowerModeGuard (RAII) tests =====
+
+    /// A test sink that records events into a shared Vec for inspection.
+    mod test_sink {
+        use crate::audit::{AuditSink, AuditSinkHandle, SecurityAuditEvent};
+        use std::sync::{Arc, Mutex};
+
+        pub struct RecordingSink(pub Arc<Mutex<Vec<SecurityAuditEvent>>>);
+
+        impl AuditSink for RecordingSink {
+            fn write_security_event(&self, event: SecurityAuditEvent) {
+                self.0.lock().unwrap().push(event);
+            }
+        }
+
+        pub fn make_sink() -> (AuditSinkHandle, Arc<Mutex<Vec<SecurityAuditEvent>>>) {
+            let events: Arc<Mutex<Vec<SecurityAuditEvent>>> = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::new(RecordingSink(Arc::clone(&events)));
+            (sink, events)
+        }
+    }
+
+    #[test]
+    fn test_power_mode_guard_enter_writes_entry_audit() {
+        use test_sink::make_sink;
+
+        let key = "SecureKey123!";
+        let hash = PowerKeyHash::new(key).unwrap();
+        let (sink, events) = make_sink();
+
+        let _guard = PowerModeGuard::enter(key, &hash, sink, "agent-test".to_string())
+            .expect("should enter power mode");
+
+        let ev = events.lock().unwrap();
+        assert_eq!(ev.len(), 1, "one entry event should have been written");
+        assert_eq!(ev[0].from_mode, "safe");
+        assert_eq!(ev[0].to_mode, "power");
+        assert_eq!(ev[0].agent_id, "agent-test");
+        assert_eq!(ev[0].reason, "power_key_verified");
+    }
+
+    #[test]
+    fn test_power_mode_guard_drop_writes_exit_audit() {
+        use test_sink::make_sink;
+
+        let key = "SecureKey123!";
+        let hash = PowerKeyHash::new(key).unwrap();
+        let (sink, events) = make_sink();
+
+        {
+            let _guard = PowerModeGuard::enter(key, &hash, sink, "agent-drop".to_string())
+                .expect("should enter power mode");
+            // guard dropped here
+        }
+
+        let ev = events.lock().unwrap();
+        assert_eq!(ev.len(), 2, "entry + exit events should both be recorded");
+
+        let exit = &ev[1];
+        assert_eq!(exit.from_mode, "power");
+        assert_eq!(exit.to_mode, "safe");
+        assert_eq!(exit.agent_id, "agent-drop");
+        assert!(
+            exit.reason.starts_with("session_ended_after_"),
+            "exit reason should include duration: {}",
+            exit.reason
+        );
+    }
+
+    #[test]
+    fn test_power_mode_guard_wrong_key_rejected() {
+        use test_sink::make_sink;
+
+        let key = "SecureKey123!";
+        let hash = PowerKeyHash::new(key).unwrap();
+        let (sink, events) = make_sink();
+
+        let result = PowerModeGuard::enter("WrongKey1234!", &hash, sink, "agent-x".to_string());
+        assert!(
+            matches!(result, Err(SecurityError::InvalidPowerKey)),
+            "wrong key should be rejected with InvalidPowerKey"
+        );
+
+        // No audit events should have been written for a failed attempt
+        let ev = events.lock().unwrap();
+        assert_eq!(ev.len(), 0, "failed enter should not write any audit event");
+    }
+
+    #[test]
+    fn test_power_mode_guard_noop_sink_does_not_panic() {
+        use crate::audit::NoopAuditSink;
+
+        let key = "SecureKey123!";
+        let hash = PowerKeyHash::new(key).unwrap();
+        let sink = NoopAuditSink::handle();
+
+        {
+            let _guard = PowerModeGuard::enter(key, &hash, sink, "agent-noop".to_string())
+                .expect("enter should succeed with noop sink");
+        }
+        // If we reach here without panic, the test passes.
+    }
+
+
 
     #[test]
     fn test_security_error_display_key_too_short() {

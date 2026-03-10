@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use mlua::{Lua, Value as LuaValue};
 use serde_json::{json, Value as JsonValue};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -12,7 +13,7 @@ use crate::{
     },
     error::{CompileError, ScriptError},
     traits::ScriptEngine,
-    types::{Script, ScriptContext, ScriptValue},
+    types::{EngineType, ModuleHandle, Script, ScriptContext, ScriptValue},
 };
 
 /// Default maximum recursion depth for JSON <-> Lua conversion.
@@ -321,6 +322,71 @@ impl ScriptEngine for LuaEngine {
             .into_function()
             .map(|_| ())
             .map_err(|e| ScriptError::Compile(CompileError::Syntax(e.to_string())))
+    }
+
+    async fn load_module(&self, path: &Path) -> Result<ModuleHandle, ScriptError> {
+        let path = path.to_path_buf();
+        let source = tokio::fs::read_to_string(&path).await.map_err(|e| {
+            ScriptError::ModuleNotFound(format!("{}: {}", path.display(), e))
+        })?;
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("module")
+            .to_string();
+        // Syntax-validate before returning the handle.
+        let script = Script::lua(name.clone(), source.clone());
+        self.validate(&script)?;
+        Ok(ModuleHandle {
+            name,
+            source,
+            engine: EngineType::Lua,
+        })
+    }
+
+    async fn call(
+        &self,
+        module: &ModuleHandle,
+        fn_name: &str,
+        args: Vec<serde_json::Value>,
+        ctx: &ScriptContext,
+    ) -> Result<ScriptValue, ScriptError> {
+        // Build a wrapper that:
+        // 1. Executes the module source (defines functions in scope).
+        // 2. Looks up the requested function.
+        // 3. Calls it with the JSON-injected args array via table.unpack.
+        //
+        // __call_args__ is injected as a Lua table by the globals mechanism.
+        let fn_name_escaped = fn_name.replace('"', "");
+        let wrapper = format!(
+            r#"
+{module_src}
+local __fn = {fn}
+if type(__fn) ~= "function" then
+    error("function not found: {fn}")
+end
+if type(__call_args__) ~= "table" then
+    __call_args__ = {{}}
+end
+return __fn(table.unpack(__call_args__, 1, #__call_args__))
+"#,
+            module_src = module.source,
+            fn = fn_name_escaped,
+        );
+
+        let args_json = serde_json::Value::Array(args);
+        let mut call_ctx = ctx.clone();
+        call_ctx
+            .globals
+            .insert("__call_args__".to_string(), args_json);
+
+        let script = Script::lua(format!("{}::{}", module.name, fn_name), wrapper);
+        self.execute(&script, &call_ctx).await.map_err(|e| match e {
+            ScriptError::Runtime(ref msg) if msg.contains("function not found") => {
+                ScriptError::FunctionNotFound(fn_name.to_string())
+            }
+            other => other,
+        })
     }
 }
 
@@ -713,5 +779,98 @@ mod tests {
             .await;
 
         assert!(result.is_ok(), "深度限制 20 应该足够处理15层嵌套");
+    }
+
+    // ── load_module + call ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_load_module_not_found() {
+        let result = engine()
+            .load_module(std::path::Path::new("/nonexistent/path/mod.lua"))
+            .await;
+        assert!(
+            matches!(result, Err(ScriptError::ModuleNotFound(_))),
+            "expected ModuleNotFound, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_module_syntax_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.lua");
+        std::fs::write(&path, "@@@ invalid syntax!!!").unwrap();
+        let result = engine().load_module(&path).await;
+        assert!(
+            matches!(result, Err(ScriptError::Compile(_))),
+            "expected Compile error, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_load_module_and_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("math_utils.lua");
+        std::fs::write(
+            &path,
+            r#"
+function add(a, b)
+    return a + b
+end
+
+function greet(name)
+    return "Hello, " .. name
+end
+"#,
+        )
+        .unwrap();
+
+        let eng = engine();
+        let module = eng.load_module(&path).await.unwrap();
+        assert_eq!(module.name, "math_utils");
+
+        let ctx = default_ctx();
+        let result = eng
+            .call(&module, "add", vec![json!(3), json!(4)], &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result, json!(7));
+
+        let result = eng
+            .call(&module, "greet", vec![json!("Claw")], &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result, json!("Hello, Claw"));
+    }
+
+    #[tokio::test]
+    async fn test_call_function_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.lua");
+        std::fs::write(&path, "-- empty module\n").unwrap();
+
+        let eng = engine();
+        let module = eng.load_module(&path).await.unwrap();
+        let result = eng
+            .call(&module, "nonexistent_fn", vec![], &default_ctx())
+            .await;
+        assert!(
+            matches!(result, Err(ScriptError::FunctionNotFound(_))),
+            "expected FunctionNotFound, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_call_with_no_args() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("const.lua");
+        std::fs::write(&path, "function get_answer() return 42 end").unwrap();
+
+        let eng = engine();
+        let module = eng.load_module(&path).await.unwrap();
+        let result = eng
+            .call(&module, "get_answer", vec![], &default_ctx())
+            .await
+            .unwrap();
+        assert_eq!(result, json!(42));
     }
 }

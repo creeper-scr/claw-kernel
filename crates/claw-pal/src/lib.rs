@@ -36,7 +36,9 @@
 //! # }
 //! ```
 
+pub mod audit;
 pub mod config;
+pub mod credential_store;
 pub mod dirs;
 pub mod error;
 pub mod lockfile;
@@ -84,10 +86,16 @@ pub use types::{NetRule, PathRule, ResourceLimits};
 pub use manager::TokioProcessManager;
 
 // Security types
-pub use security::{ModeTransitionGuard, PowerKey, PowerKeyHash, PowerKeyManager, PowerKeyValidator, SecurityError};
+pub use security::{ModeTransitionGuard, PowerKey, PowerKeyHash, PowerKeyManager, PowerKeyValidator, PowerModeGuard, SecurityError};
+
+// Audit sink (used by PowerModeGuard)
+pub use audit::{AuditSink, AuditSinkHandle, NoopAuditSink, SecurityAuditEvent};
 
 // Daemon lock file
 pub use lockfile::{DaemonLock, LockError};
 
 // Retry utility
 pub use retry::{with_retry_mapped, RetryConfig};
+
+// Credential store
+pub use credential_store::{CredentialError, CredentialStore, SecretString};

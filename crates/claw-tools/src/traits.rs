@@ -1,8 +1,10 @@
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 
+use crate::error::LoadError;
 use crate::types::{PermissionSet, ToolContext, ToolResult, ToolSchema};
 
 /// Core trait for tool implementations.
@@ -216,6 +218,64 @@ impl NoopToolEventPublisher {
     pub fn new() -> Arc<dyn ToolEventPublisher> {
         Arc::new(NoopToolEventPublisher)
     }
+}
+
+/// Trait for compiling script files into [`Tool`] implementations.
+///
+/// This trait allows script engines (from `claw-script`) to be injected into
+/// [`crate::hot_reload::HotReloadProcessor`] without creating a circular dependency,
+/// since `claw-script` already depends on `claw-tools`.
+///
+/// # Convention — Lua tool scripts
+///
+/// A compilable Lua tool script must `return` a table with the following fields:
+///
+/// ```lua
+/// return {
+///     name        = "my_tool",
+///     description = "Does something useful",
+///     schema      = {
+///         type = "object",
+///         properties = {
+///             input = { type = "string", description = "The input text" }
+///         },
+///         required = {"input"}
+///     },
+///     execute = function(args)
+///         return { result = "processed " .. args.input }
+///     end
+/// }
+/// ```
+///
+/// If `name` is absent the file stem is used. If `schema` is absent an empty
+/// object schema is assumed.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use claw_tools::ScriptToolCompiler;
+/// use claw_script::LuaToolCompiler;
+/// use claw_tools::hot_reload::{HotReloadProcessor, HotLoadingConfig};
+/// use claw_tools::registry::ToolRegistry;
+/// use std::sync::Arc;
+///
+/// let registry = Arc::new(ToolRegistry::new());
+/// let config = HotLoadingConfig::default();
+/// let compiler = LuaToolCompiler::arc();
+///
+/// let processor = HotReloadProcessor::new(registry, config)
+///     .with_compiler(compiler);
+/// ```
+#[async_trait]
+pub trait ScriptToolCompiler: Send + Sync {
+    /// Return `true` if this compiler can handle the given file extension.
+    fn supports_extension(&self, ext: &str) -> bool;
+
+    /// Compile a script file into a [`Tool`] implementation.
+    ///
+    /// `path` is used for error messages and to derive a default tool name.
+    /// `content` is the raw script source text.
+    async fn compile(&self, path: &Path, content: &str) -> Result<Arc<dyn Tool>, LoadError>;
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────

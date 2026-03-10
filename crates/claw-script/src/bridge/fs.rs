@@ -2,7 +2,9 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use claw_tools::audit::{AuditEvent, AuditLogWriterHandle};
 use mlua::{Lua, Result as LuaResult, UserData, UserDataMethods};
 
 /// 脚本可读取的最大文件大小（8 MiB）。
@@ -19,6 +21,10 @@ pub struct FsBridge {
     allowed_paths: HashSet<PathBuf>,
     /// Base directory for resolving relative paths.
     base_dir: PathBuf,
+    /// Optional audit log writer for recording FS operations.
+    audit_handle: Option<AuditLogWriterHandle>,
+    /// Agent ID used in audit events.
+    agent_id: String,
 }
 
 impl FsBridge {
@@ -30,7 +36,16 @@ impl FsBridge {
         Self {
             allowed_paths: allowed_paths.into_iter().collect(),
             base_dir: base_dir.into(),
+            audit_handle: None,
+            agent_id: String::new(),
         }
+    }
+
+    /// Attach an audit log writer and agent ID to this bridge.
+    pub fn with_audit(mut self, handle: AuditLogWriterHandle, agent_id: impl Into<String>) -> Self {
+        self.audit_handle = Some(handle);
+        self.agent_id = agent_id.into();
+        self
     }
 
     /// Create a new FsBridge with no allowed paths (denies all access).
@@ -38,6 +53,23 @@ impl FsBridge {
         Self {
             allowed_paths: HashSet::new(),
             base_dir: PathBuf::from("."),
+            audit_handle: None,
+            agent_id: String::new(),
+        }
+    }
+
+    /// Returns current Unix time in milliseconds.
+    fn now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+
+    /// Fire-and-forget audit event (sync, non-blocking).
+    fn audit(&self, event: AuditEvent) {
+        if let Some(h) = &self.audit_handle {
+            h.send_blocking(event);
         }
     }
 
@@ -140,8 +172,17 @@ impl FsBridge {
             ));
         }
 
-        std::fs::read_to_string(&valid_path)
-            .map_err(|e| format!("读取文件 '{}' 失败: {}", valid_path.display(), e))
+        let content = std::fs::read_to_string(&valid_path)
+            .map_err(|e| format!("读取文件 '{}' 失败: {}", valid_path.display(), e))?;
+
+        self.audit(AuditEvent::ScriptFsRead {
+            timestamp_ms: Self::now_ms(),
+            agent_id: self.agent_id.clone(),
+            path: valid_path.to_string_lossy().into_owned(),
+            bytes: content.len(),
+        });
+
+        Ok(content)
     }
 
     /// Validate that a parent directory is within allowed paths.
@@ -194,7 +235,16 @@ impl FsBridge {
         // For write operations, we validate the parent directory exists and is allowed
         let target_path = self.validate_parent_dir(path)?;
         std::fs::write(&target_path, content)
-            .map_err(|e| format!("Failed to write file '{}': {}", target_path.display(), e))
+            .map_err(|e| format!("Failed to write file '{}': {}", target_path.display(), e))?;
+
+        self.audit(AuditEvent::ScriptFsWrite {
+            timestamp_ms: Self::now_ms(),
+            agent_id: self.agent_id.clone(),
+            path: target_path.to_string_lossy().into_owned(),
+            bytes: content.len(),
+        });
+
+        Ok(())
     }
 
     /// Check if path exists.
@@ -290,6 +340,13 @@ impl FsBridge {
             })
             .map(|p| p.to_string_lossy().to_string())
             .collect();
+
+        self.audit(AuditEvent::ScriptFsGlob {
+            timestamp_ms: Self::now_ms(),
+            agent_id: self.agent_id.clone(),
+            pattern: pattern.to_owned(),
+            matches: matches.len(),
+        });
 
         Ok(matches)
     }
@@ -603,6 +660,115 @@ mod tests {
         let result = bridge.read_file("../denied/secret.txt");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Permission denied"));
+
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_fs_bridge_audit_read_emits_event() {
+        use claw_tools::audit::{AuditLogConfig, AuditLogWriter};
+
+        let temp_dir = create_temp_dir();
+        let test_file = temp_dir.join("hello.txt");
+        std::fs::write(&test_file, "audit test content").unwrap();
+
+        let config = AuditLogConfig::new().with_log_dir(temp_dir.join("logs"));
+        let (handle, store, _task) = AuditLogWriter::start(config);
+
+        let bridge = FsBridge::new(vec![temp_dir.clone()], &temp_dir)
+            .with_audit(handle, "agent-audit-test");
+
+        let content = bridge.read_file("hello.txt").unwrap();
+        assert_eq!(content, "audit test content");
+
+        // Give the audit store time to receive the event via mpsc
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let events = store.list(10, Some("agent-audit-test"), None);
+        assert_eq!(events.len(), 1, "expected exactly one audit event");
+        match &events[0] {
+            claw_tools::audit::AuditEvent::ScriptFsRead { agent_id, bytes, .. } => {
+                assert_eq!(agent_id, "agent-audit-test");
+                assert_eq!(*bytes, "audit test content".len());
+            }
+            other => panic!("unexpected audit event type: {:?}", other),
+        }
+
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_fs_bridge_audit_write_emits_event() {
+        use claw_tools::audit::{AuditLogConfig, AuditLogWriter};
+
+        let temp_dir = create_temp_dir();
+
+        let config = AuditLogConfig::new().with_log_dir(temp_dir.join("logs"));
+        let (handle, store, _task) = AuditLogWriter::start(config);
+
+        let bridge = FsBridge::new(vec![temp_dir.clone()], &temp_dir)
+            .with_audit(handle, "agent-write-test");
+
+        bridge.write_file("out.txt", "hello write").unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let events = store.list(10, Some("agent-write-test"), None);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            claw_tools::audit::AuditEvent::ScriptFsWrite { agent_id, bytes, .. } => {
+                assert_eq!(agent_id, "agent-write-test");
+                assert_eq!(*bytes, "hello write".len());
+            }
+            other => panic!("unexpected audit event type: {:?}", other),
+        }
+
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_fs_bridge_audit_glob_emits_event() {
+        use claw_tools::audit::{AuditLogConfig, AuditLogWriter};
+
+        let temp_dir = create_temp_dir();
+        std::fs::write(temp_dir.join("a.txt"), "a").unwrap();
+        std::fs::write(temp_dir.join("b.txt"), "b").unwrap();
+
+        let config = AuditLogConfig::new().with_log_dir(temp_dir.join("logs"));
+        let (handle, store, _task) = AuditLogWriter::start(config);
+
+        let bridge = FsBridge::new(vec![temp_dir.clone()], &temp_dir)
+            .with_audit(handle, "agent-glob-test");
+
+        let pattern = format!("{}/*.txt", temp_dir.display());
+        let matches = bridge.glob_files(&pattern).unwrap();
+        assert_eq!(matches.len(), 2);
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+
+        let events = store.list(10, Some("agent-glob-test"), None);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            claw_tools::audit::AuditEvent::ScriptFsGlob { agent_id, matches, .. } => {
+                assert_eq!(agent_id, "agent-glob-test");
+                assert_eq!(*matches, 2);
+            }
+            other => panic!("unexpected audit event type: {:?}", other),
+        }
+
+        cleanup_temp_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_fs_bridge_no_audit_when_handle_absent() {
+        // Without with_audit(), operations succeed silently — no panic.
+        let temp_dir = create_temp_dir();
+        let test_file = temp_dir.join("silent.txt");
+        std::fs::write(&test_file, "no audit").unwrap();
+
+        let bridge = FsBridge::new(vec![temp_dir.clone()], &temp_dir);
+        let content = bridge.read_file("silent.txt").unwrap();
+        assert_eq!(content, "no audit");
 
         cleanup_temp_dir(&temp_dir);
     }

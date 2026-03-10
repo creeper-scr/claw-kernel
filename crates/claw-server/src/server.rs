@@ -502,10 +502,92 @@ impl KernelServer {
                                 }
                             }
                             crate::trigger_store::TriggerKind::Webhook => {
-                                tracing::debug!(
-                                    "Webhook trigger {} will be re-registered on next trigger.add_webhook",
-                                    t.trigger_id
-                                );
+                                if let Some(ref wh_server) = self.webhook_server {
+                                    use claw_runtime::webhook::{EndpointConfig, WebhookServer};
+                                    let endpoint = t.endpoint.clone()
+                                        .unwrap_or_else(|| format!("/hooks/{}", t.trigger_id));
+                                    let target = t.target_agent.clone();
+                                    let tid = t.trigger_id.clone();
+                                    let sm = Arc::clone(&self.session_manager);
+                                    let prov = Arc::clone(&self.registry).default_provider();
+                                    let ch_reg = Arc::clone(&self.channel_registry);
+                                    let eb = self.event_bus.clone();
+
+                                    let ep_config = EndpointConfig::new(
+                                        endpoint.clone(),
+                                        move |req: claw_runtime::webhook::WebhookRequest| {
+                                            let target = target.clone();
+                                            let tid = tid.clone();
+                                            let sm = Arc::clone(&sm);
+                                            let prov = Arc::clone(&prov);
+                                            let ch_reg = Arc::clone(&ch_reg);
+                                            let eb = eb.clone();
+                                            async move {
+                                                let body = String::from_utf8_lossy(&req.body).to_string();
+
+                                                // Publish TriggerEvent to EventBus.
+                                                let payload = serde_json::from_str::<serde_json::Value>(&body)
+                                                    .unwrap_or(serde_json::Value::Null);
+                                                let trigger_event = claw_runtime::trigger_event::TriggerEvent::webhook(
+                                                    tid.clone(),
+                                                    payload,
+                                                    Some(claw_runtime::agent_types::AgentId::new(target.clone())),
+                                                );
+                                                let _ = eb.publish(claw_runtime::events::Event::TriggerFired(trigger_event));
+
+                                                // Route through the inbound session pipeline.
+                                                let session = match crate::handler::get_or_create_inbound_session(
+                                                    Some(&target),
+                                                    &sm,
+                                                    &prov,
+                                                    &ch_reg,
+                                                ).await {
+                                                    Ok(s) => s,
+                                                    Err(e) => {
+                                                        tracing::warn!("restored webhook trigger {}: failed to get session: {}", tid, e);
+                                                        return Ok::<_, claw_runtime::webhook::WebhookError>(
+                                                            claw_runtime::webhook::WebhookResponse::error(500, e.to_string()),
+                                                        );
+                                                    }
+                                                };
+
+                                                let (chunk_tx, _chunk_rx) =
+                                                    tokio::sync::mpsc::channel::<claw_loop::StreamChunk>(256);
+                                                let mut loop_guard = session.agent_loop.lock().await;
+                                                match loop_guard.run_streaming(body, chunk_tx).await {
+                                                    Ok(result) => {
+                                                        let resp_body = serde_json::json!({
+                                                            "session_id": session.id,
+                                                            "content": result.content,
+                                                        });
+                                                        Ok(claw_runtime::webhook::WebhookResponse::json(&resp_body)
+                                                            .unwrap_or_else(|_| claw_runtime::webhook::WebhookResponse::ok()))
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!("restored webhook trigger {}: agent loop error: {}", tid, e);
+                                                        Ok(claw_runtime::webhook::WebhookResponse::error(500, e.to_string()))
+                                                    }
+                                                }
+                                            }
+                                        },
+                                    );
+
+                                    match wh_server.register(ep_config).await {
+                                        Ok(()) => tracing::info!(
+                                            "Restored webhook trigger {} at {}",
+                                            t.trigger_id, endpoint
+                                        ),
+                                        Err(e) => tracing::warn!(
+                                            "Failed to restore webhook trigger {}: {}",
+                                            t.trigger_id, e
+                                        ),
+                                    }
+                                } else {
+                                    tracing::debug!(
+                                        "Webhook trigger {} skipped (no webhook_port configured)",
+                                        t.trigger_id
+                                    );
+                                }
                             }
                             crate::trigger_store::TriggerKind::Event => {
                                 if let Some(ref pattern) = t.event_pattern {

@@ -9,6 +9,9 @@ pub struct SkillIndexEntry {
     /// One-line description.
     pub description: String,
 
+    /// Tags for filtering and discovery.
+    pub tags: Vec<String>,
+
     /// Absolute path to the skill directory (for `load_full`).
     pub path: PathBuf,
 }

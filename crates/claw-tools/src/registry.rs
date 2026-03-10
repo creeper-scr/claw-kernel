@@ -251,18 +251,26 @@ impl ToolRegistry {
             });
         }
 
-        // 2b. Filesystem permission check
+        // 2b. Filesystem permission check (glob-aware, GAP-F4-03)
         {
             let tool_fs = &tool.permissions().filesystem;
             let ctx_fs = &ctx.permissions.filesystem;
-            if !tool_fs.read_paths.is_empty() && !tool_fs.read_paths.is_subset(&ctx_fs.read_paths) {
+            if !tool_fs.read_paths.is_empty()
+                && !tool_fs
+                    .read_paths
+                    .iter()
+                    .all(|p| fs_path_covered(p, &ctx_fs.read_paths))
+            {
                 return Err(RegistryError::PermissionDenied {
                     tool: name.to_string(),
                     permission: "filesystem:read".to_string(),
                 });
             }
             if !tool_fs.write_paths.is_empty()
-                && !tool_fs.write_paths.is_subset(&ctx_fs.write_paths)
+                && !tool_fs
+                    .write_paths
+                    .iter()
+                    .all(|p| fs_path_covered(p, &ctx_fs.write_paths))
             {
                 return Err(RegistryError::PermissionDenied {
                     tool: name.to_string(),
@@ -586,6 +594,36 @@ impl ToolRegistry {
         *guard = None;
         tracing::info!("Hot-loading disabled");
     }
+}
+
+// ─── Glob-aware filesystem permission helper ────────────────────────────────
+
+/// Check whether `tool_path` is covered by any entry in `ctx_patterns`.
+///
+/// Matching strategy (first match wins):
+/// 1. Exact string match — preserves backward-compat with existing configs.
+/// 2. Glob match — each `ctx_patterns` entry is compiled as a `glob::Pattern`
+///    and matched against `tool_path` as a literal filesystem path.
+///    `*` does NOT cross path separators; `**` does (Unix glob semantics).
+///    Invalid pattern strings (malformed globs) are silently skipped.
+fn fs_path_covered(tool_path: &str, ctx_patterns: &std::collections::HashSet<String>) -> bool {
+    let path = std::path::Path::new(tool_path);
+    let opts = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: false,
+    };
+    ctx_patterns.iter().any(|pat| {
+        // Fast path: exact string match
+        if pat == tool_path {
+            return true;
+        }
+        // Glob match with Unix path-separator semantics.
+        glob::Pattern::new(pat)
+            .ok()
+            .map(|p| p.matches_path_with(path, opts))
+            .unwrap_or(false)
+    })
 }
 
 impl Default for ToolRegistry {
@@ -932,6 +970,95 @@ mod tests {
             .await
             .expect("should succeed when permissions are granted");
         assert!(result.success);
+    }
+
+    // ── GAP-F4-03: glob path matching ─────────────────────────────────────────
+
+    #[test]
+    fn test_fs_path_covered_exact_match() {
+        let mut patterns = std::collections::HashSet::new();
+        patterns.insert("/tmp/output.txt".to_string());
+        assert!(super::fs_path_covered("/tmp/output.txt", &patterns));
+        assert!(!super::fs_path_covered("/tmp/other.txt", &patterns));
+    }
+
+    #[test]
+    fn test_fs_path_covered_glob_wildcard() {
+        let mut patterns = std::collections::HashSet::new();
+        patterns.insert("/tmp/**".to_string());
+        assert!(super::fs_path_covered("/tmp/foo/bar.txt", &patterns));
+        assert!(super::fs_path_covered("/tmp/baz", &patterns));
+        assert!(!super::fs_path_covered("/var/log/app.log", &patterns));
+    }
+
+    #[test]
+    fn test_fs_path_covered_glob_single_star() {
+        let mut patterns = std::collections::HashSet::new();
+        patterns.insert("/data/*.csv".to_string());
+        assert!(super::fs_path_covered("/data/sales.csv", &patterns));
+        assert!(!super::fs_path_covered("/data/nested/sales.csv", &patterns));
+    }
+
+    #[test]
+    fn test_fs_path_covered_invalid_pattern_skipped() {
+        let mut patterns = std::collections::HashSet::new();
+        patterns.insert("[invalid".to_string()); // malformed glob
+        patterns.insert("/tmp/**".to_string());
+        // Should still match via the valid pattern
+        assert!(super::fs_path_covered("/tmp/file", &patterns));
+    }
+
+    #[tokio::test]
+    async fn test_registry_fs_write_glob_granted() {
+        let reg = ToolRegistry::new();
+        // Tool declares it needs /tmp/output.txt; context grants /tmp/** via glob.
+        reg.register(make_fs_write_tool("/tmp/output.txt")).unwrap();
+        let ctx = ToolContext::new(
+            "agent-1",
+            PermissionSet {
+                filesystem: FsPermissions {
+                    read_paths: std::collections::HashSet::new(),
+                    write_paths: vec!["/tmp/**".to_string()].into_iter().collect(),
+                },
+                network: NetworkPermissions::none(),
+                subprocess: SubprocessPolicy::Denied,
+            },
+        );
+        let result = reg
+            .execute("echo_fs_write", serde_json::json!({}), ctx)
+            .await
+            .expect("glob should grant write permission");
+        assert!(result.success);
+    }
+
+    #[tokio::test]
+    async fn test_registry_fs_write_glob_denied_outside_pattern() {
+        let reg = ToolRegistry::new();
+        // Tool declares /var/log/app.log; context only grants /tmp/**
+        reg.register(make_fs_write_tool("/var/log/app.log")).unwrap();
+        let ctx = ToolContext::new(
+            "agent-1",
+            PermissionSet {
+                filesystem: FsPermissions {
+                    read_paths: std::collections::HashSet::new(),
+                    write_paths: vec!["/tmp/**".to_string()].into_iter().collect(),
+                },
+                network: NetworkPermissions::none(),
+                subprocess: SubprocessPolicy::Denied,
+            },
+        );
+        let err = reg
+            .execute("echo_fs_write", serde_json::json!({}), ctx)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                RegistryError::PermissionDenied { permission, .. }
+                if permission == "filesystem:write"
+            ),
+            "expected PermissionDenied(filesystem:write), got {err:?}"
+        );
     }
 
     // ── 4B: 审计日志上限测试 ──────────────────────────────────────────────────

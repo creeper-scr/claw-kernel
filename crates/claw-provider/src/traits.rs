@@ -7,6 +7,7 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
     error::ProviderError,
+    retry::{with_retry, RetryConfig},
     types::{CompletionResponse, Delta, Embedding, Message, Options},
 };
 
@@ -167,6 +168,14 @@ pub trait MessageFormat: Send + Sync {
 ///         Ok(serde_json::json!({"id": "mock", "content": "test"}))
 ///     }
 ///
+///     async fn get_json(
+///         &self,
+///         _url: &str,
+///         _headers: &[(&str, &str)],
+///     ) -> Result<serde_json::Value, ProviderError> {
+///         Ok(serde_json::json!({"data": []}))
+///     }
+///
 ///     async fn post_stream(
 ///         &self,
 ///         _url: &str,
@@ -186,6 +195,13 @@ pub trait HttpTransport: Send + Sync {
         url: &str,
         headers: &[(&str, &str)],
         body: &serde_json::Value,
+    ) -> Result<serde_json::Value, ProviderError>;
+
+    /// GET JSON and return the full response body.
+    async fn get_json(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
     ) -> Result<serde_json::Value, ProviderError>;
 
     /// POST and return a raw byte stream (for SSE / NDJSON responses).
@@ -454,7 +470,7 @@ pub enum ProviderHealth {
 ///         &self.model
 ///     }
 ///
-///     async fn complete(
+///     async fn complete_inner(
 ///         &self,
 ///         _messages: Vec<Message>,
 ///         _options: Options,
@@ -492,12 +508,38 @@ pub trait LLMProvider: Send + Sync {
     /// Default model ID used by this provider.
     fn model_id(&self) -> &str;
 
-    /// Non-streaming completion.
-    async fn complete(
+    /// Internal completion without retry (implement this in providers).
+    ///
+    /// All provider-specific HTTP logic goes here. The public [`complete`] method
+    /// wraps this with automatic retry via [`retry_config`].
+    async fn complete_inner(
         &self,
         messages: Vec<Message>,
         options: Options,
     ) -> Result<CompletionResponse, ProviderError>;
+
+    /// Retry configuration for this provider.
+    ///
+    /// Returns [`RetryConfig::default`] (max_retries=3, base_delay=500ms) unless
+    /// overridden. Providers that expose a `.with_retry()` builder should override
+    /// this to return their stored configuration.
+    fn retry_config(&self) -> RetryConfig {
+        RetryConfig::default()
+    }
+
+    /// Non-streaming completion with automatic retry.
+    ///
+    /// Wraps [`complete_inner`] with exponential-backoff retry logic derived from
+    /// [`retry_config`]. Network errors, rate-limiting (429), and 5xx responses are
+    /// retried automatically; authentication and serialization errors are not.
+    async fn complete(
+        &self,
+        messages: Vec<Message>,
+        options: Options,
+    ) -> Result<CompletionResponse, ProviderError> {
+        let config = self.retry_config();
+        with_retry(|| self.complete_inner(messages.clone(), options.clone()), &config).await
+    }
 
     /// Streaming completion — returns a stream of deltas.
     async fn complete_stream(
@@ -796,6 +838,14 @@ mod tests {
             unimplemented!()
         }
 
+        async fn get_json(
+            &self,
+            _url: &str,
+            _headers: &[(&str, &str)],
+        ) -> Result<serde_json::Value, ProviderError> {
+            unimplemented!()
+        }
+
         async fn post_stream(
             &self,
             _url: &str,
@@ -836,7 +886,7 @@ mod tests {
             "mock-v1"
         }
 
-        async fn complete(
+        async fn complete_inner(
             &self,
             _messages: Vec<Message>,
             _opts: Options,
@@ -848,6 +898,53 @@ mod tests {
                 finish_reason: FinishReason::Stop,
                 usage: TokenUsage::default(),
             })
+        }
+
+        async fn complete_stream(
+            &self,
+            _messages: Vec<Message>,
+            _opts: Options,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError>
+        {
+            use futures::stream;
+            Ok(Box::pin(stream::empty()))
+        }
+    }
+
+    /// Provider that fails N times then succeeds, for testing retry logic.
+    struct FailNTimesProvider {
+        fail_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        fail_times: usize,
+    }
+
+    #[async_trait]
+    impl LLMProvider for FailNTimesProvider {
+        fn provider_id(&self) -> &str { "fail-n-times" }
+        fn model_id(&self) -> &str { "test" }
+
+        fn retry_config(&self) -> RetryConfig {
+            RetryConfig::new()
+                .with_max_retries(5)
+                .with_base_delay(std::time::Duration::from_millis(1))
+        }
+
+        async fn complete_inner(
+            &self,
+            _messages: Vec<Message>,
+            _opts: Options,
+        ) -> Result<CompletionResponse, ProviderError> {
+            let prev = self.fail_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if prev < self.fail_times {
+                Err(ProviderError::Network("transient error".to_string()))
+            } else {
+                Ok(CompletionResponse {
+                    id: "ok".to_string(),
+                    model: "test".to_string(),
+                    message: Message::assistant("ok"),
+                    finish_reason: FinishReason::Stop,
+                    usage: TokenUsage::default(),
+                })
+            }
         }
 
         async fn complete_stream(
@@ -1016,5 +1113,58 @@ mod tests {
             deltas[1].as_ref().unwrap().content,
             Some("world".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn test_complete_default_retries_on_network_error() {
+        // Fail 2 times, succeed on the 3rd attempt
+        let provider = FailNTimesProvider {
+            fail_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            fail_times: 2,
+        };
+        let messages = vec![Message::user("hello")];
+        let opts = Options::new("test");
+        let resp = provider.complete(messages, opts).await.expect("should succeed after retries");
+        assert_eq!(resp.id, "ok");
+        assert_eq!(provider.fail_count.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_complete_default_no_retry_on_auth_error() {
+        struct AuthFailProvider;
+
+        #[async_trait]
+        impl LLMProvider for AuthFailProvider {
+            fn provider_id(&self) -> &str { "auth-fail" }
+            fn model_id(&self) -> &str { "test" }
+
+            fn retry_config(&self) -> RetryConfig {
+                RetryConfig::new()
+                    .with_max_retries(5)
+                    .with_base_delay(std::time::Duration::from_millis(1))
+            }
+
+            async fn complete_inner(
+                &self,
+                _messages: Vec<Message>,
+                _opts: Options,
+            ) -> Result<CompletionResponse, ProviderError> {
+                Err(ProviderError::Auth("invalid key".to_string()))
+            }
+
+            async fn complete_stream(
+                &self,
+                _messages: Vec<Message>,
+                _opts: Options,
+            ) -> Result<Pin<Box<dyn Stream<Item = Result<Delta, ProviderError>> + Send>>, ProviderError>
+            {
+                use futures::stream;
+                Ok(Box::pin(stream::empty()))
+            }
+        }
+
+        let provider = AuthFailProvider;
+        let result = provider.complete(vec![Message::user("hi")], Options::new("t")).await;
+        assert!(matches!(result, Err(ProviderError::Auth(_))));
     }
 }

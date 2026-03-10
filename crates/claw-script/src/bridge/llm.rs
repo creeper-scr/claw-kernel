@@ -214,7 +214,7 @@ mod tests {
         fn provider_id(&self) -> &str { "mock" }
         fn model_id(&self) -> &str { "mock-v1" }
 
-        async fn complete(
+        async fn complete_inner(
             &self,
             _messages: Vec<Message>,
             _opts: Options,

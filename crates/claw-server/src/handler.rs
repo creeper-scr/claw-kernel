@@ -448,6 +448,7 @@ async fn handle_message(
                 trigger_store,
                 Arc::clone(&session_manager),
                 Arc::clone(provider),
+                event_bus.clone(),
             ).await
         }
         // ─── G-08: EventTrigger ──────────────────────────────────────────────
@@ -1483,6 +1484,7 @@ async fn handle_trigger_add_webhook(
     trigger_store: &Option<Arc<crate::trigger_store::TriggerStore>>,
     session_manager: Arc<SessionManager>,
     provider: Arc<dyn claw_provider::traits::LLMProvider>,
+    event_bus: claw_runtime::EventBus,
 ) -> Result<serde_json::Value, ServerError> {
     use claw_runtime::webhook::{EndpointConfig, WebhookServer};
 
@@ -1494,8 +1496,9 @@ async fn handle_trigger_add_webhook(
         let sm = Arc::clone(&session_manager);
         let prov = Arc::clone(&provider);
         let ch_reg = Arc::clone(channel_registry);
+        let eb = event_bus.clone();
 
-        let ep_config = EndpointConfig::new(
+        let mut ep_config = EndpointConfig::new(
             endpoint.clone(),
             move |req: claw_runtime::webhook::WebhookRequest| {
                 let target = target.clone();
@@ -1503,8 +1506,19 @@ async fn handle_trigger_add_webhook(
                 let sm = Arc::clone(&sm);
                 let prov = Arc::clone(&prov);
                 let ch_reg = Arc::clone(&ch_reg);
+                let eb = eb.clone();
                 async move {
                     let body = String::from_utf8_lossy(&req.body).to_string();
+
+                    // Publish TriggerEvent to EventBus so subscribers (F6-03) can react.
+                    let payload = serde_json::from_str::<serde_json::Value>(&body)
+                        .unwrap_or(serde_json::Value::Null);
+                    let trigger_event = claw_runtime::trigger_event::TriggerEvent::webhook(
+                        tid.clone(),
+                        payload,
+                        Some(claw_runtime::agent_types::AgentId::new(target.clone())),
+                    );
+                    let _ = eb.publish(claw_runtime::events::Event::TriggerFired(trigger_event));
 
                     // Route through the inbound session pipeline.
                     // Use target_agent as the thread_id so repeated webhook
@@ -1559,6 +1573,11 @@ async fn handle_trigger_add_webhook(
                 }
             },
         );
+
+        // Apply HMAC-SHA256 if the caller supplied a secret.
+        if let Some(ref secret) = params.hmac_secret {
+            ep_config = ep_config.with_hmac_sha256(secret.clone(), "X-Hub-Signature-256");
+        }
 
         server
             .register(ep_config)
@@ -2160,7 +2179,7 @@ async fn handle_audit_list(
 /// If `thread_id` is provided and the registry has a live session for it,
 /// that session is reused.  Otherwise a new session is created with a
 /// discard notify channel (responses are delivered via `channel.send`).
-async fn get_or_create_inbound_session(
+pub(crate) async fn get_or_create_inbound_session(
     thread_id: Option<&str>,
     session_manager: &Arc<SessionManager>,
     provider: &Arc<dyn claw_provider::traits::LLMProvider>,

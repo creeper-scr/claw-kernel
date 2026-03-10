@@ -9,7 +9,7 @@ use crate::{
     error::ProviderError,
     openai::format::OpenAIFormat,
     retry::RetryConfig,
-    traits::{HttpTransport, LLMProvider, MessageFormat},
+    traits::{HttpTransport, LLMProvider, MessageFormat, ProviderHealth},
     transport::DefaultHttpTransport,
     types::{CompletionResponse, Delta, Message, Options},
 };
@@ -58,9 +58,6 @@ impl MoonshotProvider {
     /// Set the retry configuration for this provider.
     pub fn with_retry(mut self, config: RetryConfig) -> Self {
         self.retry_config = Some(config);
-        // Recreate transport with retry config
-        let transport = DefaultHttpTransport::new("https://api.moonshot.cn").with_retry(config);
-        self.transport = Arc::new(transport);
         self
     }
 
@@ -94,7 +91,11 @@ impl LLMProvider for MoonshotProvider {
         &self.model
     }
 
-    async fn complete(
+    fn retry_config(&self) -> RetryConfig {
+        self.retry_config.unwrap_or_default()
+    }
+
+    async fn complete_inner(
         &self,
         messages: Vec<Message>,
         options: Options,
@@ -138,6 +139,30 @@ impl LLMProvider for MoonshotProvider {
         let delta_stream = parse_sse_stream::<OpenAIFormat>(byte_stream);
 
         Ok(Box::pin(delta_stream))
+    }
+
+    async fn health_check(&self) -> ProviderHealth {
+        let start = std::time::Instant::now();
+        let url = format!("{}/models", self.base_url());
+        let headers_owned = self.build_headers();
+        let headers: Vec<(&str, &str)> = headers_owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        match self.transport.get_json(&url, &headers).await {
+            Ok(_) => ProviderHealth::Healthy {
+                latency_ms: start.elapsed().as_millis() as u64,
+            },
+            Err(ProviderError::Http { status: 429, .. }) | Err(ProviderError::RateLimited { .. }) => {
+                ProviderHealth::Degraded {
+                    latency_ms: start.elapsed().as_millis() as u64,
+                    reason: "rate limited".into(),
+                }
+            }
+            Err(e) => ProviderHealth::Unavailable {
+                reason: e.to_string(),
+            },
+        }
     }
 }
 

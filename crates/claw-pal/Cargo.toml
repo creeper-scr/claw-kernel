@@ -24,6 +24,8 @@ futures = { workspace = true }
 rand = { workspace = true }
 figment = { version = "0.10.19", features = ["toml", "env"] }
 shellexpand = "3.1.0"
+aes-gcm = "0.10"
+zeroize = { version = "1.7", features = ["derive"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libseccomp = { workspace = true, optional = true }

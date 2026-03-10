@@ -442,6 +442,20 @@ mod tests {
             Ok(serde_json::json!(42))
         }
 
+        async fn call(
+            &self,
+            _module: &crate::types::ModuleHandle,
+            _fn_name: &str,
+            _args: Vec<serde_json::Value>,
+            _ctx: &ScriptContext,
+        ) -> Result<serde_json::Value, ScriptError> {
+            Ok(serde_json::json!(null))
+        }
+
+        async fn load_module(&self, path: &std::path::Path) -> Result<crate::types::ModuleHandle, ScriptError> {
+            Err(ScriptError::ModuleNotFound(path.display().to_string()))
+        }
+
         fn validate(&self, _script: &Script) -> Result<(), ScriptError> {
             Ok(())
         }

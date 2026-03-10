@@ -10,7 +10,7 @@ use crate::{
     error::ProviderError,
     ollama::format::OllamaFormat,
     retry::RetryConfig,
-    traits::{HttpTransport, LLMProvider, MessageFormat},
+    traits::{HttpTransport, LLMProvider, MessageFormat, ProviderHealth},
     transport::DefaultHttpTransport,
     types::{CompletionResponse, Delta, Message, Options},
 };
@@ -50,9 +50,6 @@ impl OllamaProvider {
     /// Set the retry configuration for this provider.
     pub fn with_retry(mut self, config: RetryConfig) -> Self {
         self.retry_config = Some(config);
-        // Recreate transport with retry config
-        let transport = DefaultHttpTransport::new(self.base_url.clone()).with_retry(config);
-        self.transport = Arc::new(transport);
         self
     }
 
@@ -99,7 +96,11 @@ impl LLMProvider for OllamaProvider {
         &self.model
     }
 
-    async fn complete(
+    fn retry_config(&self) -> RetryConfig {
+        self.retry_config.unwrap_or_default()
+    }
+
+    async fn complete_inner(
         &self,
         messages: Vec<Message>,
         options: Options,
@@ -157,6 +158,20 @@ impl LLMProvider for OllamaProvider {
         });
 
         Ok(Box::pin(delta_stream))
+    }
+
+    async fn health_check(&self) -> ProviderHealth {
+        let start = std::time::Instant::now();
+        // Ollama exposes GET /api/tags to list local models — confirms service is running.
+        let url = format!("{}/api/tags", self.base_url);
+        match self.transport.get_json(&url, &[]).await {
+            Ok(_) => ProviderHealth::Healthy {
+                latency_ms: start.elapsed().as_millis() as u64,
+            },
+            Err(e) => ProviderHealth::Unavailable {
+                reason: e.to_string(),
+            },
+        }
     }
 }
 

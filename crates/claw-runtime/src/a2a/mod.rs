@@ -17,4 +17,4 @@ pub use protocol::{
     ResponseStatus, TaskSpec,
 };
 // Re-export types from routing
-pub use routing::{AgentHandle, SimpleRouter};
+pub use routing::{AgentHandle, PriorityReceiver, SimpleRouter};

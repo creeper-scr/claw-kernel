@@ -21,8 +21,8 @@ use tokio::sync::{mpsc, Mutex};
 
 use crate::{
     error::ChannelError,
-    traits::Channel,
-    types::{ChannelId, ChannelMessage},
+    traits::{Channel, ChannelEvent, ChannelEventPublisher},
+    types::{ChannelId, ChannelMessage, Platform},
 };
 
 // ── HMAC-SHA256 signature verification ───────────────────────────────────────
@@ -62,6 +62,8 @@ fn verify_hmac_sha256(secret: &[u8], body: &[u8], signature: &str) -> bool {
 /// - **出站**：若配置了 `outbound_url`，将消息 POST 到该 URL。
 pub struct WebhookChannel {
     id: ChannelId,
+    /// Agent identifier forwarded in published channel events.
+    agent_id: String,
     bind_addr: SocketAddr,
     inbound_tx: mpsc::Sender<ChannelMessage>,
     inbound_rx: Mutex<mpsc::Receiver<ChannelMessage>>,
@@ -77,6 +79,8 @@ pub struct WebhookChannel {
     local_addr: Mutex<Option<SocketAddr>>,
     /// Guards against double-start: true after the first successful connect().
     started: AtomicBool,
+    /// Optional EventBus publisher — wires the channel into the runtime event system.
+    event_publisher: Option<Arc<dyn ChannelEventPublisher>>,
 }
 
 impl WebhookChannel {
@@ -89,6 +93,7 @@ impl WebhookChannel {
         let (tx, rx) = mpsc::channel(256);
         Self {
             id,
+            agent_id: String::new(),
             bind_addr,
             inbound_tx: tx,
             inbound_rx: Mutex::new(rx),
@@ -99,6 +104,7 @@ impl WebhookChannel {
             retry_config: RetryConfig::default(),
             local_addr: Mutex::new(None),
             started: AtomicBool::new(false),
+            event_publisher: None,
         }
     }
 
@@ -131,6 +137,24 @@ impl WebhookChannel {
     /// at 30 s.  Useful in tests to set sub-millisecond delays.
     pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
         self.retry_config = config;
+        self
+    }
+
+    /// Attach a [`ChannelEventPublisher`] to wire this channel into the
+    /// runtime EventBus.
+    ///
+    /// Once set, `send()` publishes [`ChannelEvent::MessageSent`] and
+    /// `recv()` publishes [`ChannelEvent::MessageReceived`] on every
+    /// call.  `connect()` and `disconnect()` publish
+    /// [`ChannelEvent::ConnectionState`].  All publish calls are
+    /// best-effort; failures do not affect the primary send/recv result.
+    pub fn with_event_publisher(
+        mut self,
+        agent_id: impl Into<String>,
+        publisher: Arc<dyn ChannelEventPublisher>,
+    ) -> Self {
+        self.agent_id = agent_id.into();
+        self.event_publisher = Some(publisher);
         self
     }
 }
@@ -215,6 +239,16 @@ impl Channel for WebhookChannel {
         });
 
         *self.server_handle.lock().await = Some(handle);
+
+        if let Some(pub_) = &self.event_publisher {
+            let _ = pub_
+                .publish(ChannelEvent::ConnectionState {
+                    channel: self.id.to_string(),
+                    platform: Platform::Webhook,
+                    connected: true,
+                })
+                .await;
+        }
         Ok(())
     }
 
@@ -274,27 +308,62 @@ impl Channel for WebhookChannel {
         )
         .await;
 
-        match result {
+        let channel_result = match result {
             Ok(()) => Ok(()),
             Err(SendErr::Transient(msg)) => Err(ChannelError::SendFailed(msg)),
             Err(SendErr::Permanent(e)) => Err(e),
+        };
+
+        if let Some(pub_) = &self.event_publisher {
+            let _ = pub_
+                .publish(ChannelEvent::MessageSent {
+                    agent_id: self.agent_id.clone(),
+                    channel: self.id.to_string(),
+                    platform: Platform::Webhook,
+                    success: channel_result.is_ok(),
+                })
+                .await;
         }
+        channel_result
     }
 
     /// 从内部队列取出下一条入站消息（阻塞直到消息到达）。
     async fn recv(&self) -> Result<ChannelMessage, ChannelError> {
-        self.inbound_rx
+        let result = self
+            .inbound_rx
             .lock()
             .await
             .recv()
             .await
-            .ok_or_else(|| ChannelError::ReceiveFailed("channel closed".to_string()))
+            .ok_or_else(|| ChannelError::ReceiveFailed("channel closed".to_string()));
+
+        if let (Ok(msg), Some(pub_)) = (&result, &self.event_publisher) {
+            let _ = pub_
+                .publish(ChannelEvent::MessageReceived {
+                    agent_id: self.agent_id.clone(),
+                    channel: self.id.to_string(),
+                    platform: Platform::Webhook,
+                    content_preview: msg.content.chars().take(64).collect(),
+                })
+                .await;
+        }
+        result
     }
 
     /// 终止后台 axum 服务器任务。
     async fn disconnect(&self) -> Result<(), ChannelError> {
         if let Some(handle) = self.server_handle.lock().await.take() {
             handle.abort();
+        }
+
+        if let Some(pub_) = &self.event_publisher {
+            let _ = pub_
+                .publish(ChannelEvent::ConnectionState {
+                    channel: self.id.to_string(),
+                    platform: Platform::Webhook,
+                    connected: false,
+                })
+                .await;
         }
         Ok(())
     }
@@ -469,5 +538,98 @@ mod tests {
         assert!(err.to_string().contains("HTTP 400"));
         // No retries for permanent 4xx
         assert_eq!(call_count.load(AO::SeqCst), 1);
+    }
+
+    // ── event publisher tests ────────────────────────────────────────────────
+
+    use std::sync::Mutex as StdMutex;
+    use crate::traits::{ChannelEvent, ChannelEventPublisher};
+
+    struct CapturingPublisher {
+        events: Arc<StdMutex<Vec<ChannelEvent>>>,
+    }
+
+    impl CapturingPublisher {
+        fn new() -> (Arc<dyn ChannelEventPublisher>, Arc<StdMutex<Vec<ChannelEvent>>>) {
+            let events = Arc::new(StdMutex::new(Vec::new()));
+            let publisher = Arc::new(Self { events: Arc::clone(&events) });
+            (publisher, events)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChannelEventPublisher for CapturingPublisher {
+        async fn publish(&self, event: ChannelEvent) -> Result<(), ChannelError> {
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_webhook_recv_publishes_message_received() {
+        let (publisher, captured) = CapturingPublisher::new();
+        let ch = WebhookChannel::new(
+            ChannelId::new("wh-ep"),
+            "127.0.0.1:0".parse().unwrap(),
+            None,
+        )
+        .with_event_publisher("agent-99", publisher);
+
+        ch.connect().await.expect("connect");
+
+        // Send an inbound message directly to the HTTP endpoint.
+        let actual_addr = ch.local_addr().await.expect("local_addr");
+        let msg = ChannelMessage {
+            id: "ev-test".to_string(),
+            channel_id: ChannelId::new("wh-ep"),
+            direction: crate::types::MessageDirection::Inbound,
+            platform: Platform::Webhook,
+            content: "event test".to_string(),
+            sender_id: None,
+            thread_id: None,
+            metadata: serde_json::Value::Null,
+            timestamp_ms: 0,
+        };
+        reqwest::Client::new()
+            .post(format!("http://{actual_addr}/webhook"))
+            .json(&msg)
+            .send()
+            .await
+            .expect("POST ok");
+
+        let received = tokio::time::timeout(
+            tokio::time::Duration::from_secs(3),
+            ch.recv(),
+        )
+        .await
+        .expect("recv timeout")
+        .expect("recv ok");
+
+        assert_eq!(received.content, "event test");
+
+        // recv() should have published exactly one MessageReceived event
+        // (plus the ConnectionState from connect()).
+        let events = captured.lock().unwrap();
+        let recv_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, ChannelEvent::MessageReceived { .. }))
+            .collect();
+        assert_eq!(recv_events.len(), 1, "expected one MessageReceived event");
+        match &recv_events[0] {
+            ChannelEvent::MessageReceived {
+                agent_id,
+                channel,
+                platform,
+                content_preview,
+            } => {
+                assert_eq!(agent_id, "agent-99");
+                assert_eq!(channel, "wh-ep");
+                assert_eq!(*platform, Platform::Webhook);
+                assert_eq!(content_preview, "event test");
+            }
+            _ => unreachable!(),
+        }
+
+        ch.disconnect().await.expect("disconnect");
     }
 }

@@ -59,13 +59,15 @@ pub mod restart_policy;
 pub mod runtime;
 pub mod schedule;
 pub mod traits;
+pub mod trigger_dispatcher;
+pub mod trigger_event;
 
 #[cfg(feature = "webhook")]
 pub mod webhook;
 
 pub use a2a::{
     A2AMessage, A2AMessagePayload, A2AMessageType, AgentCapability, MessagePriority,
-    ResponseStatus, SimpleRouter, TaskSpec,
+    PriorityReceiver, ResponseStatus, SimpleRouter, TaskSpec,
 };
 pub use agent_handle::{AgentResponse, FinishReason, IpcAgentHandle, TokenUsage};
 pub use agent_types::{AgentConfig, AgentHandle, AgentId, AgentInfo, AgentStatus};
@@ -100,6 +102,12 @@ pub use schedule::{
     ScheduleError, Scheduler, SchedulerExt, TaskConfig, TaskHandler, TaskId, TaskStats,
     TaskTrigger, TokioScheduler,
 };
+
+// Trigger event exports (GAP-F6-01)
+pub use trigger_event::{TriggerEvent, TriggerType};
+
+// TriggerDispatcher export (GAP-F6-03)
+pub use trigger_dispatcher::TriggerDispatcher;
 
 #[cfg(feature = "webhook")]
 pub use webhook::{

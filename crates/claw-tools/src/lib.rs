@@ -64,7 +64,7 @@ pub mod types;
 pub use audit::{AuditEvent, AuditLogConfig, AuditLogWriter, AuditLogWriterHandle};
 pub use error::{RegistryError, ValidationError};
 pub use registry::ToolRegistry;
-pub use traits::{Tool, ToolEventPublisher, NoopToolEventPublisher};
+pub use traits::{NoopToolEventPublisher, ScriptToolCompiler, Tool, ToolEventPublisher};
 pub use types::{
     FsPermissions, HotLoadingConfig, LoadedToolMeta, LoadError, LogEntry, NetworkPermissions,
     PermissionSet, ScriptLanguage, SubprocessPolicy, ToolContext, ToolError, ToolErrorCode, ToolMeta,

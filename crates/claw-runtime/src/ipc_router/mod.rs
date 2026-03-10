@@ -16,7 +16,7 @@ mod endpoint_registry;
 mod router;
 
 use crate::a2a::protocol::A2AMessage;
-use crate::a2a::routing::{AgentHandle, SimpleRouter};
+use crate::a2a::routing::{AgentHandle, PriorityReceiver, SimpleRouter};
 use crate::agent_types::AgentId;
 use crate::error::RuntimeError;
 use crate::event_bus::EventBus;
@@ -182,8 +182,14 @@ impl IpcRouter {
 
     /// Register a local agent with the router.
     ///
-    /// Returns an `AgentHandle` that can be used to send messages to the agent.
-    pub async fn register_agent(&self, agent_id: AgentId, buffer_size: usize) -> AgentHandle {
+    /// Returns an `(AgentHandle, PriorityReceiver)` pair — the handle can be
+    /// used to send messages to the agent; the receiver is given to the agent
+    /// to consume incoming messages in priority order.
+    pub async fn register_agent(
+        &self,
+        agent_id: AgentId,
+        buffer_size: usize,
+    ) -> (AgentHandle, PriorityReceiver) {
         self.router.register_agent(agent_id, buffer_size).await
     }
 
@@ -343,7 +349,7 @@ mod tests {
         let router = IpcRouter::with_default_transport(Arc::clone(&bus), "/tmp/claw-test.sock");
 
         let agent_id = AgentId::new("local-agent");
-        let _handle = router.register_agent(agent_id.clone(), 100).await;
+        let (_handle, _rx) = router.register_agent(agent_id.clone(), 100).await;
 
         assert!(router.router.is_agent_registered(&agent_id).await);
 
@@ -373,7 +379,7 @@ mod tests {
         let router = IpcRouter::with_default_transport(Arc::clone(&bus), "/tmp/claw-test.sock");
 
         let target_id = AgentId::new("target-agent");
-        let _handle = router.register_agent(target_id.clone(), 100).await;
+        let (_handle, _rx) = router.register_agent(target_id.clone(), 100).await;
 
         let msg = A2AMessage::new(
             "routed-msg",
@@ -424,10 +430,10 @@ mod tests {
         let router = IpcRouter::with_default_transport(Arc::clone(&bus), "/tmp/claw-test.sock");
 
         // Register some agents
-        let _ = router
+        let (_ha, _ra) = router
             .register_agent(AgentId::new("agent-alpha"), 100)
             .await;
-        let _ = router.register_agent(AgentId::new("agent-beta"), 100).await;
+        let (_hb, _rb) = router.register_agent(AgentId::new("agent-beta"), 100).await;
 
         let response = router
             .handle_discovery_request(AgentId::new("requester"), None)
@@ -451,7 +457,7 @@ mod tests {
         let router = IpcRouter::with_default_transport(Arc::clone(&bus), "/tmp/claw-test.sock");
 
         let target_id = AgentId::new("target");
-        let _handle = router.register_agent(target_id.clone(), 100).await;
+        let (_handle, _rx) = router.register_agent(target_id.clone(), 100).await;
 
         let msg = A2AMessage::new(
             "direct-msg",
@@ -480,7 +486,7 @@ mod tests {
 
         // Register a local agent
         let target_id = AgentId::new("target-agent");
-        let _handle = router.register_agent(target_id.clone(), 100).await;
+        let (_handle, _rx) = router.register_agent(target_id.clone(), 100).await;
 
         // Subscribe to A2A events
         let mut rx = bus.subscribe_with_filter(EventFilter::A2A);

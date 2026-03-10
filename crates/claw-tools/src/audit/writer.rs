@@ -1,16 +1,31 @@
-//! Async audit log writer with automatic flush and file rotation.
+//! Async audit log writer with automatic flush, file rotation, and optional
+//! HMAC-SHA256 per-record signatures for tamper detection.
 //!
-//! The writer spawns a background task that receives events via channel,
-//! buffers them, and flushes to disk periodically.
+//! # Format
+//!
+//! Without HMAC key (plain JSON-lines):
+//! ```json
+//! {"event_type":"TOOL_CALL","timestamp_ms":1700000000000,"agent_id":"a1","tool_name":"echo",...}
+//! ```
+//!
+//! With HMAC key (signed JSON-lines):
+//! ```json
+//! {"payload":"{\"event_type\":\"TOOL_CALL\",...}","signature":"deadbeef..."}
+//! ```
+//! The `payload` value is a JSON string of the serialised `AuditEvent`.
+//! The `signature` is hex-encoded HMAC-SHA256(key, payload_bytes).
 
 use super::{AuditEvent, AuditLogConfig, AuditStore};
-use std::io::Write;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// Days in each month (non-leap year)
 const DAYS_IN_MONTH: [u64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
@@ -128,75 +143,68 @@ impl AuditLogWriter {
         }
     }
 
-    /// Format an audit event as a log line.
+    /// Serialise an audit event to a log line and push it into the write buffer.
+    ///
+    /// # Format selection
+    ///
+    /// - **With HMAC key** — emits a JSON object with two fields:
+    ///   - `"payload"`: the JSON-serialised event as a *string*
+    ///   - `"signature"`: hex-encoded HMAC-SHA256(key, payload_bytes)
+    ///   This lets verifiers detect any post-write tampering by recomputing the
+    ///   signature from the payload bytes.
+    ///
+    /// - **Without HMAC key** — emits a flat JSON object of the event with an
+    ///   additional top-level `"event_type"` field for easy grep/jq queries.
     fn format_event(&mut self, event: &AuditEvent) {
-        let timestamp = format_timestamp(event.timestamp_ms());
-        let event_type = event.event_type();
-        let agent_id = event.agent_id();
+        if let Some(key) = &self.config.hmac_key {
+            // Signed JSON-lines mode
+            // 1. Serialise the event to a JSON string (the payload)
+            if let Ok(payload_json) = serde_json::to_string(event) {
+                let payload_bytes = payload_json.as_bytes();
 
-        // Format: TIMESTAMP [EVENT_TYPE] agent_id=AGENT_ID field1=value1 ...
-        let _ = write!(
-            self.buffer,
-            "{} [{}] agent_id={}",
-            timestamp, event_type, agent_id
-        );
+                // 2. Compute HMAC-SHA256 over the payload bytes
+                let mut mac = HmacSha256::new_from_slice(key)
+                    .expect("HMAC accepts any key length");
+                mac.update(payload_bytes);
+                let sig_bytes = mac.finalize().into_bytes();
+                let sig_hex = hex_encode(&sig_bytes);
 
-        match event {
-            AuditEvent::ToolCall {
-                tool_name, args, ..
-            } => {
-                let _ = write!(self.buffer, " tool={}", tool_name);
-                if let Some(args) = args {
-                    let _ = write!(
-                        self.buffer,
-                        " args={}",
-                        serde_json::to_string(args).unwrap_or_default()
+                // 3. Emit: {"payload":"...","signature":"..."}
+                if let Ok(record) = serde_json::to_string(&serde_json::json!({
+                    "payload": payload_json,
+                    "signature": sig_hex,
+                })) {
+                    self.buffer.extend_from_slice(record.as_bytes());
+                    self.buffer.push(b'\n');
+                }
+            }
+        } else {
+            // Plain JSON-lines mode: flat event object + event_type field
+            let timestamp = format_timestamp(event.timestamp_ms());
+            let event_type = event.event_type();
+            let agent_id = event.agent_id();
+
+            // Build a JSON object combining event fields with a human-readable timestamp
+            let mut obj = match serde_json::to_value(event) {
+                Ok(serde_json::Value::Object(m)) => m,
+                _ => {
+                    // Fallback to text format on serialisation failure
+                    let line = format!(
+                        "{} [{}] agent_id={}\n",
+                        timestamp, event_type, agent_id
                     );
+                    self.buffer.extend_from_slice(line.as_bytes());
+                    return;
                 }
-            }
-            AuditEvent::ToolResult {
-                tool_name,
-                success,
-                duration_ms,
-                error_code,
-                ..
-            } => {
-                let _ = write!(
-                    self.buffer,
-                    " tool={} success={} duration_ms={}",
-                    tool_name, success, duration_ms
-                );
-                if let Some(code) = error_code {
-                    let _ = write!(self.buffer, " error_code={}", code);
-                }
-            }
-            AuditEvent::PermissionCheck {
-                tool_name,
-                permission,
-                granted,
-                ..
-            } => {
-                let _ = write!(
-                    self.buffer,
-                    " tool={} permission={} granted={}",
-                    tool_name, permission, granted
-                );
-            }
-            AuditEvent::ModeSwitch {
-                from_mode,
-                to_mode,
-                reason,
-                ..
-            } => {
-                let _ = write!(
-                    self.buffer,
-                    " from={} to={} reason={}",
-                    from_mode, to_mode, reason
-                );
+            };
+            obj.insert("event_type".to_string(), serde_json::Value::String(event_type.to_string()));
+            obj.insert("timestamp_utc".to_string(), serde_json::Value::String(timestamp));
+
+            if let Ok(line) = serde_json::to_string(&serde_json::Value::Object(obj)) {
+                self.buffer.extend_from_slice(line.as_bytes());
+                self.buffer.push(b'\n');
             }
         }
-
-        let _ = writeln!(self.buffer);
     }
 
     /// Open the current log file for appending.
@@ -223,6 +231,13 @@ impl AuditLogWriter {
 
         Ok(())
     }
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+/// Encode a byte slice as a lowercase hex string.
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// Format timestamp as ISO 8601 without milliseconds.
@@ -340,6 +355,87 @@ mod tests {
         assert!(log_content.contains("TOOL_CALL"));
         assert!(log_content.contains("agent-1"));
         assert!(log_content.contains("echo"));
+        // Plain mode: no "signature" field
+        assert!(!log_content.contains("\"signature\""));
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_path).await;
+    }
+
+    #[tokio::test]
+    async fn test_audit_log_writer_signed() {
+        let temp_path = temp_dir();
+        let _ = fs::remove_dir_all(&temp_path).await;
+
+        let key = [0u8; 32];
+        let config = AuditLogConfig::new()
+            .with_log_dir(&temp_path)
+            .with_flush_interval(1)
+            .with_hmac_key(key);
+
+        let (handle, _store, _task) = AuditLogWriter::start(config.clone());
+
+        let event = AuditEvent::ToolCall {
+            timestamp_ms: 1700000000000,
+            agent_id: "agent-1".to_string(),
+            tool_name: "echo".to_string(),
+            args: None,
+        };
+        handle.send(event).await;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        let log_content = fs::read_to_string(config.log_path()).await.unwrap();
+
+        // Signed mode: must have "payload" and "signature" fields
+        assert!(log_content.contains("\"payload\""), "signed record must have payload field");
+        assert!(log_content.contains("\"signature\""), "signed record must have signature field");
+
+        // Parse first line as JSON and verify structure
+        let first_line = log_content.lines().next().unwrap();
+        let record: serde_json::Value = serde_json::from_str(first_line).unwrap();
+        let payload_str = record["payload"].as_str().unwrap();
+        let sig_str = record["signature"].as_str().unwrap();
+
+        // Recompute signature to verify it matches
+        let mut mac = HmacSha256::new_from_slice(&key).unwrap();
+        mac.update(payload_str.as_bytes());
+        let expected_sig = hex_encode(&mac.finalize().into_bytes());
+        assert_eq!(sig_str, expected_sig, "HMAC signature must match");
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_path).await;
+    }
+
+    #[tokio::test]
+    async fn test_audit_log_writer_agent_spawned_event() {
+        let temp_path = temp_dir();
+        let _ = fs::remove_dir_all(&temp_path).await;
+
+        let config = AuditLogConfig::new()
+            .with_log_dir(&temp_path)
+            .with_flush_interval(1);
+
+        let (handle, store, _task) = AuditLogWriter::start(config.clone());
+
+        let event = AuditEvent::AgentSpawned {
+            timestamp_ms: 1700000000000,
+            agent_id: "agent-42".to_string(),
+            agent_name: "worker".to_string(),
+            restart_policy: "on_failure".to_string(),
+        };
+        handle.send(event).await;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+
+        // Check in-memory store
+        let entries = store.list(10, Some("agent-42"), None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].event_type(), "AGENT_SPAWNED");
+
+        // Check log file
+        let log_content = fs::read_to_string(config.log_path()).await.unwrap();
+        assert!(log_content.contains("AGENT_SPAWNED"));
+        assert!(log_content.contains("agent-42"));
+        assert!(log_content.contains("worker"));
 
         // Cleanup
         let _ = fs::remove_dir_all(&temp_path).await;
@@ -376,5 +472,11 @@ mod tests {
         assert!(is_leap_year(2024));
         assert!(!is_leap_year(1900));
         assert!(!is_leap_year(2023));
+    }
+
+    #[test]
+    fn test_hex_encode() {
+        assert_eq!(hex_encode(&[0xde, 0xad, 0xbe, 0xef]), "deadbeef");
+        assert_eq!(hex_encode(&[0x00, 0xff]), "00ff");
     }
 }

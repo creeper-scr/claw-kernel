@@ -30,11 +30,14 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, warn};
+use dashmap::DashMap;
 
 use crate::types::ChannelMessage;
 
@@ -518,7 +521,232 @@ impl Default for ChannelRouterBuilder {
     }
 }
 
+// ─── DeduplicatingRouter ──────────────────────────────────────────────────
+
+/// Default TTL for seen message IDs.
+const DEFAULT_DEDUP_TTL: Duration = Duration::from_secs(60);
+
+/// How many `route` / `broadcast_route` calls between lazy GC sweeps.
+const DEFAULT_GC_INTERVAL: usize = 64;
+
+/// A wrapper around [`ChannelRouter`] that silently drops duplicate messages.
+///
+/// Deduplication is keyed on [`ChannelMessage::id`].  If the same `id` arrives
+/// within [`ttl`][DeduplicatingRouter::ttl] (default 60 s) of its first
+/// occurrence, the duplicate is discarded:
+///
+/// - [`route`][DeduplicatingRouter::route] returns `None`
+/// - [`broadcast_route`][DeduplicatingRouter::broadcast_route] returns an empty
+///   `Vec`
+///
+/// Expired entries are removed lazily every `gc_interval` calls (default 64)
+/// to avoid accumulating unbounded state under low-traffic conditions.
+///
+/// # Example
+///
+/// ```rust
+/// use claw_channel::router::{ChannelRouterBuilder, DeduplicatingRouter};
+///
+/// let inner = ChannelRouterBuilder::new()
+///     .default_agent("agent-a")
+///     .build();
+/// let router = DeduplicatingRouter::new(inner);
+/// ```
+pub struct DeduplicatingRouter {
+    inner: ChannelRouter,
+    seen: DashMap<String, Instant>,
+    ttl: Duration,
+    call_count: AtomicUsize,
+    gc_interval: usize,
+}
+
+impl DeduplicatingRouter {
+    /// Wrap `inner` with the default 60 s TTL and GC interval of 64 calls.
+    pub fn new(inner: ChannelRouter) -> Self {
+        Self {
+            inner,
+            seen: DashMap::new(),
+            ttl: DEFAULT_DEDUP_TTL,
+            call_count: AtomicUsize::new(0),
+            gc_interval: DEFAULT_GC_INTERVAL,
+        }
+    }
+
+    /// Override the deduplication TTL.
+    pub fn with_ttl(mut self, ttl: Duration) -> Self {
+        self.ttl = ttl;
+        self
+    }
+
+    /// Override the lazy-GC interval (number of calls between sweeps).
+    pub fn with_gc_interval(mut self, n: usize) -> Self {
+        self.gc_interval = n;
+        self
+    }
+
+    /// Check whether `id` is a duplicate and update the seen map.
+    ///
+    /// Returns `true` when the message is a **duplicate** (should be dropped).
+    fn is_duplicate(&self, id: &str) -> bool {
+        let now = Instant::now();
+
+        // Trigger lazy GC every `gc_interval` calls.
+        let prev = self.call_count.fetch_add(1, Ordering::Relaxed);
+        if prev % self.gc_interval == 0 {
+            let ttl = self.ttl;
+            self.seen.retain(|_, t| now.duration_since(*t) < ttl);
+        }
+
+        if let Some(t) = self.seen.get(id) {
+            if now.duration_since(*t) < self.ttl {
+                return true; // duplicate within TTL window
+            }
+        }
+
+        // First occurrence (or TTL expired) — record now and allow through.
+        self.seen.insert(id.to_string(), now);
+        false
+    }
+
+    /// Route `msg` to the appropriate agent, discarding duplicates.
+    ///
+    /// Returns `None` when the message is a duplicate **or** no rule matched.
+    pub fn route(&self, msg: &ChannelMessage) -> Option<String> {
+        if self.is_duplicate(&msg.id) {
+            debug!(msg_id = %msg.id, "DeduplicatingRouter: dropping duplicate message");
+            return None;
+        }
+        self.inner.route(msg)
+    }
+
+    /// Fan-out route `msg` to all matching agents, discarding duplicates.
+    ///
+    /// Returns an empty `Vec` when the message is a duplicate.
+    pub fn broadcast_route(&self, msg: &ChannelMessage) -> Vec<String> {
+        if self.is_duplicate(&msg.id) {
+            debug!(msg_id = %msg.id, "DeduplicatingRouter: dropping duplicate (broadcast)");
+            return vec![];
+        }
+        self.inner.broadcast_route(msg)
+    }
+
+    /// Number of unique message IDs currently tracked (including expired ones
+    /// that have not yet been swept by the lazy GC).
+    pub fn seen_count(&self) -> usize {
+        self.seen.len()
+    }
+
+    /// Forward to the inner router for rule management.
+    pub fn inner(&self) -> &ChannelRouter {
+        &self.inner
+    }
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod dedup_tests {
+    use super::*;
+    use crate::types::{ChannelId, ChannelMessage, Platform};
+
+    fn make_msg(id: &str) -> ChannelMessage {
+        let mut msg =
+            ChannelMessage::inbound(ChannelId::new("ch-1"), Platform::Stdin, "hello");
+        msg.id = id.to_string();
+        msg
+    }
+
+    fn router_with_default() -> DeduplicatingRouter {
+        let inner = ChannelRouterBuilder::new()
+            .default_agent("agent-a")
+            .build();
+        DeduplicatingRouter::new(inner)
+    }
+
+    #[test]
+    fn test_first_message_routed() {
+        let router = router_with_default();
+        let msg = make_msg("msg-1");
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-a"));
+    }
+
+    #[test]
+    fn test_duplicate_within_ttl_dropped() {
+        let router = router_with_default();
+        let msg = make_msg("msg-dup");
+        // First delivery — should be routed.
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-a"));
+        // Second delivery of the same ID within TTL — should be dropped.
+        assert!(router.route(&msg).is_none());
+    }
+
+    #[test]
+    fn test_different_ids_both_routed() {
+        let router = router_with_default();
+        assert_eq!(router.route(&make_msg("a")).as_deref(), Some("agent-a"));
+        assert_eq!(router.route(&make_msg("b")).as_deref(), Some("agent-a"));
+    }
+
+    #[test]
+    fn test_expired_message_re_routed() {
+        let inner = ChannelRouterBuilder::new()
+            .default_agent("agent-a")
+            .build();
+        // Very short TTL so we can expire it immediately.
+        let router = DeduplicatingRouter::new(inner).with_ttl(Duration::from_nanos(1));
+
+        let msg = make_msg("msg-old");
+        router.route(&msg); // first pass — enters seen
+        // Sleep just enough for TTL to expire (1 ns is already past at the next call).
+        std::thread::sleep(Duration::from_millis(1));
+        // Second pass — TTL has expired; should be re-routed.
+        assert_eq!(router.route(&msg).as_deref(), Some("agent-a"));
+    }
+
+    #[test]
+    fn test_broadcast_duplicate_dropped() {
+        let router = router_with_default();
+        let msg = make_msg("bc-dup");
+        assert_eq!(router.broadcast_route(&msg), vec!["agent-a"]);
+        assert!(router.broadcast_route(&msg).is_empty());
+    }
+
+    #[test]
+    fn test_seen_count_increments() {
+        let router = router_with_default();
+        router.route(&make_msg("x1"));
+        router.route(&make_msg("x2"));
+        // Each unique ID adds one entry.
+        assert_eq!(router.seen_count(), 2);
+    }
+
+    #[test]
+    fn test_gc_removes_expired_entries() {
+        let inner = ChannelRouterBuilder::new()
+            .default_agent("agent-a")
+            .build();
+        // Short TTL + GC fires every 1 call so we can observe the cleanup.
+        let router = DeduplicatingRouter::new(inner)
+            .with_ttl(Duration::from_nanos(1))
+            .with_gc_interval(1);
+
+        router.route(&make_msg("gc-1"));
+        std::thread::sleep(Duration::from_millis(1));
+        // This call triggers GC which should evict the expired "gc-1" entry,
+        // then re-insert it as fresh.
+        router.route(&make_msg("gc-1"));
+        // After re-insertion, seen_count == 1 (not growing unbounded).
+        assert_eq!(router.seen_count(), 1);
+    }
+
+    #[test]
+    fn test_with_ttl_builder() {
+        let inner = ChannelRouterBuilder::new().build();
+        let router = DeduplicatingRouter::new(inner).with_ttl(Duration::from_secs(30));
+        assert_eq!(router.ttl, Duration::from_secs(30));
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

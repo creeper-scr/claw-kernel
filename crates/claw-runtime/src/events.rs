@@ -1,6 +1,7 @@
 use crate::a2a::protocol::A2AMessage;
 use crate::agent_types::AgentId;
 use crate::extension::ExtensionEvent;
+use crate::trigger_event::TriggerEvent;
 use serde::{Deserialize, Serialize};
 
 /// System-wide lifecycle events broadcast over the EventBus.
@@ -96,6 +97,12 @@ pub enum Event {
 
     // ── System ───────────────────────────────────────────────────────────────
     Shutdown,
+
+    // ── Trigger system ───────────────────────────────────────────────────────
+    /// Emitted when a trigger fires (Cron / Webhook / Event).
+    /// Downstream handlers (e.g. TriggerDispatcher) subscribe to this variant
+    /// to inject messages into target agents.
+    TriggerFired(TriggerEvent),
 
     // ── Custom (from scripts) ─────────────────────────────────────────────────
     /// Emitted by scripts via the events bridge.

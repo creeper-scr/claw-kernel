@@ -74,12 +74,18 @@ pub mod lua;
 #[cfg(feature = "engine-v8")]
 pub mod v8;
 
+#[cfg(feature = "engine-lua")]
+pub mod tool_compiler;
+
 pub use error::{CompileError, ScriptError};
 pub use traits::ScriptEngine;
-pub use types::{EngineType, FsBridgeConfig, NetBridgeConfig, Script, ScriptContext, ScriptValue};
+pub use types::{EngineType, FsBridgeConfig, ModuleHandle, NetBridgeConfig, Script, ScriptContext, ScriptValue};
 
 #[cfg(feature = "engine-lua")]
 pub use lua::LuaEngine;
+
+#[cfg(feature = "engine-lua")]
+pub use tool_compiler::LuaToolCompiler;
 
 #[cfg(feature = "engine-v8")]
 pub use v8::{

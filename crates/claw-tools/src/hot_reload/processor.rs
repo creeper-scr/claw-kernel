@@ -19,7 +19,7 @@ use crate::hot_reload::validation::ToolWatcher;
 use crate::hot_reload::versioned::VersionedModule;
 use crate::hot_reload::watcher::WatchEvent;
 use crate::registry::ToolRegistry;
-use crate::traits::Tool;
+use crate::traits::{ScriptToolCompiler, Tool};
 use crate::types::HotLoadingConfig;
 
 /// Result of processing a file change.
@@ -40,6 +40,8 @@ pub struct HotReloadProcessor {
     registry: Arc<ToolRegistry>,
     config: HotLoadingConfig,
     tool_watcher: ToolWatcher,
+    /// Optional script compiler injected at construction time.
+    compiler: Option<Arc<dyn ScriptToolCompiler>>,
 }
 
 impl HotReloadProcessor {
@@ -50,6 +52,7 @@ impl HotReloadProcessor {
             registry,
             config,
             tool_watcher,
+            compiler: None,
         }
     }
 
@@ -62,7 +65,24 @@ impl HotReloadProcessor {
             registry,
             config,
             tool_watcher,
+            compiler: None,
         }
+    }
+
+    /// Attach a [`ScriptToolCompiler`] so that watched script files are actually
+    /// compiled and registered as live tools.
+    ///
+    /// Without a compiler every call to `compile_tool` returns an error.
+    /// Inject a compiler to enable real script-tool hot-loading:
+    ///
+    /// ```rust,ignore
+    /// use claw_script::LuaToolCompiler;
+    /// let processor = HotReloadProcessor::new(registry, config)
+    ///     .with_compiler(LuaToolCompiler::arc());
+    /// ```
+    pub fn with_compiler(mut self, compiler: Arc<dyn ScriptToolCompiler>) -> Self {
+        self.compiler = Some(compiler);
+        self
     }
 
     /// Run the processor, handling events from the given receiver.
@@ -242,26 +262,40 @@ impl HotReloadProcessor {
 
     /// Compile a tool from source content.
     ///
-    /// This is a placeholder implementation. In a real system, this would:
-    /// - Parse the script (Lua, JS, etc.)
-    /// - Validate permissions
-    /// - Compile to an executable form
-    async fn compile_tool(&self, _content: &str, path: &Path) -> Result<Arc<dyn Tool>, LoadError> {
-        // This is a simplified implementation
-        // In the real system, this would integrate with claw-script for actual compilation
+    /// Delegates to the injected [`ScriptToolCompiler`] when one has been set via
+    /// [`Self::with_compiler`].  Returns `LoadError::CompileError` if no compiler
+    /// is attached or if the compiler does not support the file's extension.
+    async fn compile_tool(&self, content: &str, path: &Path) -> Result<Arc<dyn Tool>, LoadError> {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
 
-        // Derive tool name from file stem
-        let tool_name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| LoadError::ParseError("invalid file name".to_string()))?;
-
-        // For now, return a placeholder error indicating compilation is needed
-        // The actual implementation would use the script engine
-        Err(LoadError::CompileError(format!(
-            "compilation not implemented for '{}' - integrate with script engine",
-            tool_name
-        )))
+        match &self.compiler {
+            Some(compiler) if compiler.supports_extension(ext) => {
+                compiler.compile(path, content).await
+            }
+            Some(_) => {
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("<unknown>");
+                Err(LoadError::CompileError(format!(
+                    "no compiler supports extension '{}' for tool '{}'",
+                    ext, name
+                )))
+            }
+            None => {
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("<unknown>");
+                Err(LoadError::CompileError(format!(
+                    "no ScriptToolCompiler attached — call with_compiler() to enable script-tool loading (tool: '{}')",
+                    name
+                )))
+            }
+        }
     }
 
     /// Load a tool directly from a file path.

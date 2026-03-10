@@ -1,8 +1,10 @@
+use std::path::Path;
+
 use async_trait::async_trait;
 
 use crate::{
     error::ScriptError,
-    types::{Script, ScriptContext, ScriptValue},
+    types::{ModuleHandle, Script, ScriptContext, ScriptValue},
 };
 
 /// Core trait for embedded script engines.
@@ -17,6 +19,31 @@ pub trait ScriptEngine: Send + Sync {
         script: &Script,
         ctx: &ScriptContext,
     ) -> Result<ScriptValue, ScriptError>;
+
+    /// Call a named function that was defined in a previously loaded module.
+    ///
+    /// The `module` handle is obtained via [`load_module`].  `fn_name` must
+    /// refer to a top-level function (or table path, engine-specific) exported
+    /// by that module.  `args` are passed as positional arguments.
+    ///
+    /// Returns the function's return value as a JSON value.
+    async fn call(
+        &self,
+        module: &ModuleHandle,
+        fn_name: &str,
+        args: Vec<serde_json::Value>,
+        ctx: &ScriptContext,
+    ) -> Result<ScriptValue, ScriptError>;
+
+    /// Load a module from disk and return an opaque handle.
+    ///
+    /// The file is read, syntax-validated, and returned as a `ModuleHandle`.
+    /// Actual execution / function registration happens lazily inside `call()`.
+    ///
+    /// # Errors
+    /// - [`ScriptError::ModuleNotFound`] — path does not exist or cannot be read.
+    /// - [`ScriptError::Compile`] — source has syntax errors.
+    async fn load_module(&self, path: &Path) -> Result<ModuleHandle, ScriptError>;
 
     /// Check if a script compiles (no execution).
     fn validate(&self, script: &Script) -> Result<(), ScriptError>;

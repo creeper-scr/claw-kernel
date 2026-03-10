@@ -34,6 +34,7 @@
 //! ```
 
 pub mod error;
+pub mod retry;
 pub mod router;
 pub mod stdin;
 pub mod traits;
@@ -46,7 +47,8 @@ pub mod webhook;
 pub mod discord;
 
 pub use error::ChannelError;
-pub use router::{AgentId as RouterAgentId, ChannelRouter, ChannelRouterBuilder, RouterError, RoutingRule};
+pub use retry::RetryableChannel;
+pub use router::{AgentId as RouterAgentId, ChannelRouter, ChannelRouterBuilder, DeduplicatingRouter, RouterError, RoutingRule};
 pub use stdin::StdinChannel;
 pub use traits::{Channel, ChannelEvent, ChannelEventPublisher, NoopChannelEventPublisher};
 pub use types::{ChannelId, ChannelMessage, MessageDirection, Platform};

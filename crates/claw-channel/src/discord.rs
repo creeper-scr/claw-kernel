@@ -13,7 +13,7 @@
 
 use crate::{
     error::ChannelError,
-    traits::Channel,
+    traits::{Channel, ChannelEvent, ChannelEventPublisher},
     types::{ChannelId, ChannelMessage, Platform},
 };
 use async_trait::async_trait;
@@ -35,6 +35,8 @@ use twilight_model::id::{marker::ChannelMarker, Id};
 pub struct DiscordChannel {
     /// Logical channel identifier used within the claw system.
     id: ChannelId,
+    /// Agent identifier forwarded in published channel events.
+    agent_id: String,
     /// Discord bot token.
     token: String,
     /// Numeric Discord channel ID.
@@ -51,6 +53,8 @@ pub struct DiscordChannel {
     connected: Arc<AtomicBool>,
     /// Retry policy applied to outbound `send()` calls.
     retry_config: RetryConfig,
+    /// Optional EventBus publisher — wires the channel into the runtime event system.
+    event_publisher: Option<Arc<dyn ChannelEventPublisher>>,
 }
 
 impl DiscordChannel {
@@ -64,6 +68,7 @@ impl DiscordChannel {
         let http_client = Arc::new(HttpClient::new(token.clone()));
         Self {
             id,
+            agent_id: String::new(),
             token,
             discord_channel_id,
             http_client,
@@ -72,6 +77,7 @@ impl DiscordChannel {
             shard_handle: Mutex::new(None),
             connected: Arc::new(AtomicBool::new(false)),
             retry_config: RetryConfig::default(),
+            event_publisher: None,
         }
     }
 
@@ -98,6 +104,24 @@ impl DiscordChannel {
     /// errors.
     pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
         self.retry_config = config;
+        self
+    }
+
+    /// Attach a [`ChannelEventPublisher`] to wire this channel into the
+    /// runtime EventBus.
+    ///
+    /// Once set, `send()` publishes [`ChannelEvent::MessageSent`] and
+    /// `recv()` publishes [`ChannelEvent::MessageReceived`] on every call.
+    /// `connect()` and `disconnect()` publish [`ChannelEvent::ConnectionState`].
+    /// All publish calls are best-effort; failures do not affect the primary
+    /// send/recv result.
+    pub fn with_event_publisher(
+        mut self,
+        agent_id: impl Into<String>,
+        publisher: Arc<dyn ChannelEventPublisher>,
+    ) -> Self {
+        self.agent_id = agent_id.into();
+        self.event_publisher = Some(publisher);
         self
     }
 }
@@ -176,6 +200,16 @@ impl Channel for DiscordChannel {
         });
 
         *self.shard_handle.lock().await = Some(shard_task);
+
+        if let Some(pub_) = &self.event_publisher {
+            let _ = pub_
+                .publish(ChannelEvent::ConnectionState {
+                    channel: self.id.to_string(),
+                    platform: Platform::Discord,
+                    connected: true,
+                })
+                .await;
+        }
         Ok(())
     }
 
@@ -188,17 +222,28 @@ impl Channel for DiscordChannel {
     async fn send(&self, message: ChannelMessage) -> Result<(), ChannelError> {
         const DISCORD_MAX_MSG_LEN: usize = 2000;
         if message.content.len() > DISCORD_MAX_MSG_LEN {
-            return Err(ChannelError::SendFailed(format!(
+            let err = Err(ChannelError::SendFailed(format!(
                 "message exceeds Discord 2000-character limit ({} chars)",
                 message.content.len()
             )));
+            if let Some(pub_) = &self.event_publisher {
+                let _ = pub_
+                    .publish(ChannelEvent::MessageSent {
+                        agent_id: self.agent_id.clone(),
+                        channel: self.id.to_string(),
+                        platform: Platform::Discord,
+                        success: false,
+                    })
+                    .await;
+            }
+            return err;
         }
 
         let client = Arc::clone(&self.http_client);
         let discord_id = self.discord_id();
         let content = message.content.clone();
 
-        with_retry_mapped(
+        let result = with_retry_mapped(
             || {
                 let client = Arc::clone(&client);
                 let content = content.clone();
@@ -217,19 +262,44 @@ impl Channel for DiscordChannel {
             // prevents the most common permanent 400 error before we get here.
             |_| true,
         )
-        .await
+        .await;
+
+        if let Some(pub_) = &self.event_publisher {
+            let _ = pub_
+                .publish(ChannelEvent::MessageSent {
+                    agent_id: self.agent_id.clone(),
+                    channel: self.id.to_string(),
+                    platform: Platform::Discord,
+                    success: result.is_ok(),
+                })
+                .await;
+        }
+        result
     }
 
     /// Receive the next inbound message.
     ///
     /// Blocks until a message arrives or the inbound channel is closed.
     async fn recv(&self) -> Result<ChannelMessage, ChannelError> {
-        self.inbound_rx
+        let result = self
+            .inbound_rx
             .lock()
             .await
             .recv()
             .await
-            .ok_or_else(|| ChannelError::ReceiveFailed("inbound channel closed".to_string()))
+            .ok_or_else(|| ChannelError::ReceiveFailed("inbound channel closed".to_string()));
+
+        if let (Ok(msg), Some(pub_)) = (&result, &self.event_publisher) {
+            let _ = pub_
+                .publish(ChannelEvent::MessageReceived {
+                    agent_id: self.agent_id.clone(),
+                    channel: self.id.to_string(),
+                    platform: Platform::Discord,
+                    content_preview: msg.content.chars().take(64).collect(),
+                })
+                .await;
+        }
+        result
     }
 
     /// Disconnect from the Discord gateway.
@@ -237,6 +307,16 @@ impl Channel for DiscordChannel {
         self.connected.store(false, Ordering::SeqCst);
         if let Some(handle) = self.shard_handle.lock().await.take() {
             handle.abort();
+        }
+
+        if let Some(pub_) = &self.event_publisher {
+            let _ = pub_
+                .publish(ChannelEvent::ConnectionState {
+                    channel: self.id.to_string(),
+                    platform: Platform::Discord,
+                    connected: false,
+                })
+                .await;
         }
         Ok(())
     }
@@ -247,10 +327,37 @@ impl Channel for DiscordChannel {
 mod tests {
     use super::*;
     use crate::types::{MessageDirection, Platform};
+    use std::sync::Mutex as StdMutex;
 
     fn make_channel() -> DiscordChannel {
         DiscordChannel::new(ChannelId::new("test-discord-ch"), "fake-token", 123_456_789)
     }
+
+    // ── helper: a publisher that records all emitted events ─────────────────
+
+    struct CapturingPublisher {
+        events: Arc<StdMutex<Vec<ChannelEvent>>>,
+    }
+
+    impl CapturingPublisher {
+        fn new() -> (Arc<dyn ChannelEventPublisher>, Arc<StdMutex<Vec<ChannelEvent>>>) {
+            let events = Arc::new(StdMutex::new(Vec::new()));
+            let publisher = Arc::new(Self {
+                events: Arc::clone(&events),
+            });
+            (publisher, events)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ChannelEventPublisher for CapturingPublisher {
+        async fn publish(&self, event: ChannelEvent) -> Result<(), ChannelError> {
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    // ── existing tests ───────────────────────────────────────────────────────
 
     #[test]
     fn test_discord_channel_new() {
@@ -302,5 +409,77 @@ mod tests {
             err.to_string().contains("2000-character limit"),
             "expected 2000-character limit error, got: {err}"
         );
+    }
+
+    // ── event publisher tests ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_recv_publishes_message_received_event() {
+        let (publisher, captured) = CapturingPublisher::new();
+        let ch = DiscordChannel::new(ChannelId::new("dc-ep"), "fake-token", 999)
+            .with_event_publisher("agent-dc", publisher);
+
+        ch.inject_for_test(ChannelMessage::inbound(
+            ChannelId::new("dc-ep"),
+            Platform::Discord,
+            "discord hello",
+        ));
+
+        ch.recv().await.expect("recv ok");
+
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ChannelEvent::MessageReceived {
+                agent_id,
+                channel,
+                platform,
+                content_preview,
+            } => {
+                assert_eq!(agent_id, "agent-dc");
+                assert_eq!(channel, "dc-ep");
+                assert_eq!(*platform, Platform::Discord);
+                assert_eq!(content_preview, "discord hello");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_overlong_publishes_failed_event() {
+        let (publisher, captured) = CapturingPublisher::new();
+        let ch = DiscordChannel::new(ChannelId::new("dc-ep2"), "fake-token", 999)
+            .with_event_publisher("agent-dc2", publisher);
+
+        let long_content = "a".repeat(2001);
+        let msg = ChannelMessage::outbound(
+            ChannelId::new("dc-ep2"),
+            Platform::Discord,
+            long_content,
+        );
+        let _ = ch.send(msg).await;
+
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ChannelEvent::MessageSent { success, .. } => assert!(!success),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_publishes_connection_state() {
+        let (publisher, captured) = CapturingPublisher::new();
+        let ch = DiscordChannel::new(ChannelId::new("dc-ep3"), "fake-token", 999)
+            .with_event_publisher("agent-dc3", publisher);
+
+        ch.disconnect().await.expect("disconnect ok");
+
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            ChannelEvent::ConnectionState { connected, .. } => assert!(!connected),
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }

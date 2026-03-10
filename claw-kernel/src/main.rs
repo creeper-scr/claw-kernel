@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use std::process;
 use tracing::{error, info, warn};
+use zeroize::Zeroizing;
 
 mod cli;
 
@@ -177,18 +178,21 @@ async fn load_config(
 /// 3. Config file (`~/.config/claw-kernel/power.key`)
 ///
 /// Returns the plaintext key for verification, or an error if no key is found.
-fn resolve_power_key(cli_key: Option<String>) -> Result<String> {
+///
+/// The returned `Zeroizing<String>` automatically zeroes the plaintext key
+/// when it is dropped, preventing the secret from lingering in freed memory.
+fn resolve_power_key(cli_key: Option<String>) -> Result<Zeroizing<String>> {
     // Priority 1: CLI argument
     if let Some(key) = cli_key {
         if !key.is_empty() {
-            return Ok(key);
+            return Ok(Zeroizing::new(key));
         }
     }
 
     // Priority 2: Environment variable
     if let Ok(env_key) = std::env::var(POWER_KEY_ENV_VAR) {
         if !env_key.is_empty() {
-            return Ok(env_key);
+            return Ok(Zeroizing::new(env_key));
         }
     }
 

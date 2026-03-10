@@ -95,7 +95,7 @@ impl RetryConfig {
 /// use std::time::Duration;
 /// use claw_pal::retry::{RetryConfig, with_retry_mapped};
 ///
-/// async fn example() -> Result<(), String> {
+/// async fn example() -> Result<&'static str, String> {
 ///     let config = RetryConfig::new().with_base_delay(Duration::from_millis(100));
 ///     with_retry_mapped(
 ///         || async { Ok::<_, String>("data") },

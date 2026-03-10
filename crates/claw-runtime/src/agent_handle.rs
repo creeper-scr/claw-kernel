@@ -27,9 +27,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::{agent_types::AgentId, error::RuntimeError};
+use crate::{agent_types::{AgentId, ResourceUsage}, error::RuntimeError};
+
+/// Shared read-only view of the orchestrator's agent map, used by
+/// [`IpcAgentHandle`] to query per-agent resource usage without holding a
+/// reference to the full orchestrator.
+pub(crate) type AgentsMap<S> = Arc<DashMap<AgentId, S>>;
 
 // ─── Response types ───────────────────────────────────────────────────────────
 
@@ -110,6 +116,8 @@ pub struct IpcAgentHandle {
     pub agent_id: AgentId,
     /// Shared, hot-swappable sender to the agent's message loop.
     pub(crate) shared_tx: SharedSender,
+    /// Shared view of the orchestrator's agent map, used for resource queries.
+    pub(crate) agents: Arc<DashMap<AgentId, crate::orchestrator::AgentState>>,
 }
 
 impl IpcAgentHandle {
@@ -167,6 +175,17 @@ impl IpcAgentHandle {
             .map_err(|_| RuntimeError::Timeout)?
             .map_err(|_| RuntimeError::AgentNotFound(self.agent_id.0.clone()))?
     }
+
+    /// Return the latest resource usage snapshot for this agent.
+    ///
+    /// Reads directly from the shared orchestrator agent map — no async IPC
+    /// round-trip is needed.  Returns `None` if the agent is no longer
+    /// registered or if no resource data has been collected yet.
+    pub fn resource_usage(&self) -> Option<ResourceUsage> {
+        self.agents
+            .get(&self.agent_id)
+            .and_then(|state| state.value().to_resource_usage())
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -179,6 +198,7 @@ mod tests {
         IpcAgentHandle {
             agent_id: AgentId::new(id),
             shared_tx: Arc::new(tokio::sync::Mutex::new(Some(tx))),
+            agents: Arc::new(dashmap::DashMap::new()),
         }
     }
 
@@ -217,6 +237,7 @@ mod tests {
         let handle = IpcAgentHandle {
             agent_id: AgentId::new("restarting-agent"),
             shared_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            agents: Arc::new(dashmap::DashMap::new()),
         };
 
         let result = handle.send("hello").await;
@@ -235,6 +256,7 @@ mod tests {
         let handle = IpcAgentHandle {
             agent_id: AgentId::new("swap-agent"),
             shared_tx: Arc::clone(&shared),
+            agents: Arc::new(dashmap::DashMap::new()),
         };
 
         // Drop rx1 — old loop is dead.
@@ -310,5 +332,68 @@ mod tests {
             "expected Timeout or AgentNotFound, got {:?}",
             result
         );
+    }
+
+    // ── resource_usage tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_resource_usage_returns_none_when_agent_not_in_map() {
+        let agents: Arc<DashMap<AgentId, crate::orchestrator::AgentState>> =
+            Arc::new(DashMap::new());
+        let (tx, _rx) = std::sync::mpsc::channel::<()>();
+        let _ = tx; // suppress unused warning
+        let handle = IpcAgentHandle {
+            agent_id: AgentId::new("ghost"),
+            shared_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            agents,
+        };
+        assert!(handle.resource_usage().is_none());
+    }
+
+    #[test]
+    fn test_resource_usage_returns_none_before_health_check() {
+        use crate::agent_types::AgentConfig;
+
+        let agent_id = AgentId::new("no-health");
+        let agents: Arc<DashMap<AgentId, crate::orchestrator::AgentState>> =
+            Arc::new(DashMap::new());
+        agents.insert(
+            agent_id.clone(),
+            crate::orchestrator::AgentState::new(AgentConfig::new("no-health"), None),
+        );
+
+        let handle = IpcAgentHandle {
+            agent_id,
+            shared_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            agents,
+        };
+        // No health check run yet → resource_usage is None.
+        assert!(handle.resource_usage().is_none());
+    }
+
+    #[test]
+    fn test_resource_usage_reflects_health_memory() {
+        use crate::agent_types::AgentConfig;
+        use crate::orchestrator::{AgentState, HealthStatus};
+
+        let agent_id = AgentId::new("healthy");
+        let agents: Arc<DashMap<AgentId, AgentState>> = Arc::new(DashMap::new());
+        let mut state = AgentState::new(AgentConfig::new("healthy"), None);
+
+        // Inject a health snapshot with 2048 KB of memory.
+        let mut health = HealthStatus::new(agent_id.clone());
+        health.memory_usage_kb = Some(2048);
+        state.health = Some(health);
+        agents.insert(agent_id.clone(), state);
+
+        let handle = IpcAgentHandle {
+            agent_id,
+            shared_tx: Arc::new(tokio::sync::Mutex::new(None)),
+            agents,
+        };
+
+        let usage = handle.resource_usage().expect("should have resource usage");
+        assert_eq!(usage.memory_bytes, Some(2048 * 1024));
+        assert_eq!(usage.cpu_ms, None);
     }
 }
