@@ -121,9 +121,9 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
 - [x] `ScriptEngine` trait + `EngineType` enum
 - [x] `LuaEngine` (mlua 0.9.4, Lua 5.4, spawn_blocking)
 - [x] `ToolsBridge` (tool registry → Lua)
-- [x] All 7 Lua bridges: `tools`, `fs`, `net`, `memory`, `agent`, `events`, `dirs`
+- [x] All 7 Lua bridges: `tools`, `fs`, `net`, `llm`, `agent`, `events`, `dirs`
 - [x] `V8Engine` (deno_core, ES2022+, TypeScript) — `engine-v8` feature
-- [x] All V8 bridges: `tools`, `fs`, `net`, `memory`, `agent`, `events`, `dirs`
+- [x] All V8 bridges: `tools`, `fs`, `net`, `llm`, `agent`, `events`, `dirs`
 - [x] Hot-reload support for scripts
 
 ### claw-server (KernelServer / IPC Daemon)
@@ -160,7 +160,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
 - [x] **Script Bridges** — all 4 shipped ahead of schedule in v0.1.0 (see [ADR-009](docs/adr/009-bridge-roadmap.md))
   - [x] `DirsBridge` — platform config/data/cache/tools paths
-  - [x] `MemoryBridge` — key-value + semantic search for scripts
+  - [x] `LlmBridge` — LLM completions and streaming for scripts
   - [x] `EventsBridge` — emit / subscribe to EventBus from Lua
   - [x] `AgentBridge` — spawn and manage sub-agents from Lua (was P3/v0.3.0)
   
@@ -201,7 +201,7 @@ See [CHANGELOG.md](CHANGELOG.md) for full version history.
 
 **What v1.0.0 DOES include:**
 - 5 LLM providers (Anthropic, OpenAI, Ollama, DeepSeek, Moonshot)
-- Lua scripting engine with all 7 bridges: `fs`, `net`, `tools`, `dirs`, `memory`, `events`, `agent`
+- Lua scripting engine with all 7 bridges: `fs`, `net`, `tools`, `dirs`, `llm`, `events`, `agent`
 - In-memory history (SQLite history deferred to v1.1)
 - Basic sandbox (Linux seccomp stub, macOS Seatbelt stub, Windows skeleton)
 - Hot-loading tools
@@ -511,7 +511,7 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 - [x] **脚本 Bridge** —— 全部 4 个在 v0.1.0 提前完成（见 [ADR-009](docs/adr/009-bridge-roadmap.md)）
   - [x] `DirsBridge` —— 平台配置/数据/缓存/工具目录路径
-  - [x] `MemoryBridge` —— 脚本内键值存储 + 语义搜索
+  - [x] `LlmBridge` —— 脚本内 LLM 补全与流式调用
   - [x] `EventsBridge` —— 从 Lua 发送/订阅 EventBus 事件
   - [x] `AgentBridge` —— 从 Lua 创建和管理子 Agent（原 P3/v0.3.0，提前完成）
   
@@ -552,7 +552,7 @@ Want to help? Check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 **v1.0.0 包含内容：**
 - 5 个 LLM Provider（Anthropic、OpenAI、Ollama、DeepSeek、Moonshot）
-- Lua 脚本引擎，含全部 7 个 Bridge：`fs`、`net`、`tools`、`dirs`、`memory`、`events`、`agent`
+- Lua 脚本引擎，含全部 7 个 Bridge：`fs`、`net`、`tools`、`dirs`、`llm`、`events`、`agent`
 - 内存历史（SQLite 历史推迟到 v1.1）
 - 基础沙箱（Linux seccomp stub、macOS Seatbelt stub、Windows skeleton）
 - 热加载工具

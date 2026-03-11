@@ -194,10 +194,18 @@ interface RustBridge {
     complete(messages: Message[], opts?: LlmOpts): string;  // blocking, returns full response
     stream(messages: Message[], opts?: LlmOpts): string[];  // returns array of text chunks
   };
+
+  // Log ✅ Implemented (V8 only, not available in Lua)
+  log: {
+    info(message: string): void;
+    warn(message: string): void;
+    error(message: string): void;
+    debug(message: string): void;
+  };
 }
 ```
 
-> **Note:** `llm` 仅在 Lua 引擎中可用（`bridge/llm.rs`）；V8 引擎目前暂未露出 LLM bridge。
+> **Note:** `llm` bridge 在 Lua 和 V8 引擎中都可用（v1.4.0+）。V8 引擎额外提供 `log` bridge（Lua 引擎无此 bridge）。
 
 ---
 
@@ -213,6 +221,7 @@ pub struct RustBridge {
     pub agent: Option<AgentBridge>,
     pub dirs: Option<DirsBridge>,
     pub llm: Option<LlmBridge>,   // v1.4.0 新增，GAP-01
+    pub log: Option<LogBridge>,   // V8 only
     // Note: MemoryBridge 已移除 (D1, v1.3.0)
 }
 ```
@@ -242,6 +251,17 @@ end
 支持的 `opts` 字段：`model` (string)、`max_tokens` (integer)、`temperature` (number)。
 支持的 `role` 字符串：`"user"` / `"assistant"` / `"system"` / `"tool"`。
 
+### bridge/log.rs — Log Bridge (V8 only)
+
+`LogBridge` 将日志功能暴露给 V8/TypeScript 脚本。仅在 V8 引擎中可用，Lua 引擎无此 bridge。
+
+```typescript
+// Log bridge (V8 only)
+claw.log.info("Information message");
+claw.log.warn("Warning message");
+claw.log.error("Error message");
+claw.log.debug("Debug message");
+```
 ### bridge/conversion.rs — 类型转换层 (Fix-G, v1.1.0)
 
 `conversion.rs` 从 `tools.rs` 中提取，封装 Lua value ↔ Rust/JSON 类型的公用转换函数。内部模块（`pub(crate)`），供各 bridge 共享使用。
@@ -326,6 +346,18 @@ const body = await resp.text();
 // JSON utilities
 const obj = claw.json.parse('{"key": "value"}');
 const str = claw.json.stringify(obj, { pretty: true });
+
+// LLM bridge (v1.4.0+, requires RustBridge::with_llm())
+const reply = await claw.llm.complete(
+    [{ role: "user", content: "Summarize this" }],
+    { model: "claude-opus-4-6", max_tokens: 512 }
+);
+console.log(reply);
+
+// Log bridge (V8 only, not available in Lua)
+claw.log.info("This is an info message");
+claw.log.warn("This is a warning");
+claw.log.error("This is an error");
 
 // Note: claw.memory.* is NOT available (D1 decision, v1.3.0).
 // Use the `claw-memory` crate's Rust API directly for memory operations.

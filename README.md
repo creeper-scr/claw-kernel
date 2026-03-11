@@ -122,7 +122,7 @@ Optional features: `engine-v8` (~100MB binary size increase). See [CONTRIBUTING.
 
 **Power Mode:** full system access, explicit opt-in with a Power Key (min 12 chars):
 ```bash
-claw-kernel --power-mode --power-key <your-key>
+claw-kernel-server --power-key <your-key>
 ```
 
 Details: [Safe Mode](docs/guides/safe-mode.md) · [Power Mode](docs/guides/power-mode.md)
